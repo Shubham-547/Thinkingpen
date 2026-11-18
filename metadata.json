@@ -1,0 +1,6 @@
+{
+  "name": "ScholarPress",
+  "description": "Educational content publishing, study library, and creator monetization marketplace for notes, PDFs, articles, e-books, research papers, video lectures, poems, and stories.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

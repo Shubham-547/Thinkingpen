@@ -1,0 +1,234 @@
+@import "tailwindcss";
+@custom-variant dark (&:where(.dark, .dark *));
+
+@layer base {
+  :root {
+    --sp-navy: #0f2547;
+    --sp-navy-hover: #1b3b6f;
+    --sp-canvas: #f8fafc;
+    --sp-surface: #ffffff;
+    --sp-border: #e2e8f0;
+    --sp-ink: #0f172a;
+    --sp-muted: #475569;
+    --sp-accent-gold: #b45309;
+  }
+
+  .dark {
+    --sp-navy: #38bdf8;
+    --sp-navy-hover: #7dd3fc;
+    --sp-canvas: #0b1120;
+    --sp-surface: #111a2e;
+    --sp-border: #1e293b;
+    --sp-ink: #f1f5f9;
+    --sp-muted: #94a3b8;
+    --sp-accent-gold: #f59e0b;
+  }
+
+  html {
+    font-family: "Plus Jakarta Sans", system-ui, -apple-system, sans-serif;
+    scroll-behavior: smooth;
+    overflow-x: clip;
+  }
+
+  body {
+    overflow-x: clip;
+  }
+
+  h1,
+  h2,
+  .font-display {
+    font-family: "Fraunces", Georgia, serif;
+    text-wrap: balance;
+  }
+
+  .font-mono,
+  .tabular-nums {
+    font-variant-numeric: tabular-nums;
+  }
+
+  .font-mono {
+    font-family: "IBM Plex Mono", ui-monospace, SFMono-Regular, monospace;
+  }
+
+  button:not(:disabled),
+  a[href] {
+    cursor: pointer;
+  }
+
+  *:focus-visible {
+    outline: 2px solid #1b3b6f;
+    outline-offset: 2px;
+  }
+
+  .dark *:focus-visible {
+    outline-color: #60a5fa;
+  }
+
+  /* Prevent iOS zoom on focused inputs on small touch screens */
+  @media (max-width: 640px) {
+    input:not([type="checkbox"]):not([type="radio"]):not([type="range"]):not([type="file"]),
+    select,
+    textarea {
+      font-size: 16px;
+    }
+  }
+}
+
+.no-scrollbar {
+  -ms-overflow-style: none;
+  scrollbar-width: none;
+}
+
+.no-scrollbar::-webkit-scrollbar {
+  display: none;
+}
+
+/* Smooth momentum scroll for horizontal tables and tab strips on touch devices */
+.touch-scroll-x {
+  -webkit-overflow-scrolling: touch;
+}
+
+/* Academic editorial prose typography */
+.reading-prose {
+  font-size: 1.0625rem;
+  line-height: 1.8;
+  color: #1e293b;
+  max-width: 72ch;
+}
+
+.dark .reading-prose {
+  color: #e2e8f0;
+  letter-spacing: 0.008em;
+}
+
+.reading-prose h1,
+.reading-prose h2,
+.reading-prose h3 {
+  font-family: "Fraunces", Georgia, serif;
+  color: #0f172a;
+  font-weight: 600;
+  margin-top: 2rem;
+  margin-bottom: 0.75rem;
+  line-height: 1.3;
+  scroll-margin-top: 5.5rem;
+}
+
+.dark .reading-prose h1,
+.dark .reading-prose h2,
+.dark .reading-prose h3 {
+  color: #f8fafc;
+}
+
+.reading-prose h2 {
+  font-size: 1.5rem;
+  padding-bottom: 0.4rem;
+  border-bottom: 1px solid #e2e8f0;
+}
+
+.dark .reading-prose h2 {
+  border-bottom-color: #1e293b;
+}
+
+.reading-prose h3 {
+  font-size: 1.2rem;
+}
+
+.reading-prose p {
+  margin-bottom: 1.15rem;
+}
+
+.reading-prose ul,
+.reading-prose ol {
+  margin-bottom: 1.25rem;
+  padding-left: 1.5rem;
+}
+
+.reading-prose ul {
+  list-style-type: disc;
+}
+
+.reading-prose ol {
+  list-style-type: decimal;
+}
+
+.reading-prose li {
+  margin-bottom: 0.45rem;
+}
+
+.reading-prose blockquote {
+  margin: 1.5rem 0;
+  padding: 1rem 1.25rem;
+  background: #f1f5f9;
+  border: 1px solid #e2e8f0;
+  border-radius: 0.5rem;
+  font-style: italic;
+}
+
+.dark .reading-prose blockquote {
+  background: #172036;
+  border-color: #26344f;
+}
+
+.reading-prose pre,
+.reading-prose code {
+  font-family: "IBM Plex Mono", monospace;
+  font-size: 0.875rem;
+}
+
+.reading-prose pre {
+  background: #0f172a;
+  color: #f8fafc;
+  padding: 1rem 1.25rem;
+  border-radius: 0.5rem;
+  overflow-x: auto;
+  margin: 1.25rem 0;
+}
+
+.reading-prose img {
+  max-width: 100%;
+  border-radius: 0.5rem;
+  margin: 1.5rem 0;
+  border: 1px solid #e2e8f0;
+}
+
+.dark .reading-prose img {
+  border-color: #1e293b;
+}
+
+/* Rich Text Editor editable surface */
+.sp-rte-editor {
+  min-height: 280px;
+  outline: none;
+}
+
+.sp-rte-editor:empty::before {
+  content: attr(data-placeholder);
+  color: #94a3b8;
+  pointer-events: none;
+}
+
+/* Reading progress bar */
+#reading-progress-bar {
+  position: fixed;
+  top: 0;
+  left: 0;
+  height: 3px;
+  background: #0f2547;
+  z-index: 60;
+  width: 0%;
+  transition: width 80ms linear;
+}
+
+.dark #reading-progress-bar {
+  background: #38bdf8;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  html {
+    scroll-behavior: auto;
+  }
+  * {
+    transition-duration: 0.01ms !important;
+    animation-duration: 0.01ms !important;
+  }
+}

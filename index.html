@@ -1,0 +1,41 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>ScholarPress — Educational Content Publishing & Knowledge Marketplace</title>
+    <meta
+      name="description"
+      content="Educational content publishing, study library, and creator monetization marketplace for notes, PDFs, articles, e-books, research papers, video lectures, poems, and stories."
+    />
+    <meta property="og:title" content="ScholarPress — Educational Content Publishing & Knowledge Marketplace" />
+    <meta
+      property="og:description"
+      content="Share your knowledge, publish educational notes, PDFs, articles, and lectures, and earn transparently."
+    />
+    <meta property="og:type" content="website" />
+    <meta name="twitter:card" content="summary_large_image" />
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,500;9..144,600;9..144,700&family=IBM+Plex+Mono:wght@400;500;600&family=Plus+Jakarta+Sans:wght@400;500;600;700&display=swap"
+      rel="stylesheet"
+    />
+    <script>
+      (function () {
+        try {
+          var saved = localStorage.getItem('sp_theme');
+          if (saved === 'dark' || (!saved && window.matchMedia('(prefers-color-scheme: dark)').matches)) {
+            document.documentElement.classList.add('dark');
+          }
+        } catch (e) {}
+      })();
+    </script>
+  </head>
+  <body class="bg-[#F8FAFC] text-[#0F172A] dark:bg-[#0B1120] dark:text-[#F1F5F9] antialiased selection:bg-[#0F2547] selection:text-white">
+    <div id="app-shell" class="min-h-screen flex flex-col"></div>
+    <div id="modal-root"></div>
+    <div id="toast-root" class="fixed bottom-6 right-6 z-50 flex flex-col gap-2 max-w-sm pointer-events-none"></div>
+    <script type="module" src="/src/main.js"></script>
+  </body>
+</html>
