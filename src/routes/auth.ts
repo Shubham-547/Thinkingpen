@@ -1,15 +1,24 @@
 import { Router } from 'express';
-import { and, count, eq, gt, isNull } from 'drizzle-orm';
+import { and, count, desc, eq, gt, isNull, sql } from 'drizzle-orm';
 import { db } from '../db/index.ts';
 import {
   auditLogs,
   authTokens,
+  contents,
   creatorProfiles,
   creatorWallets,
   notifications,
+  userActivitySessions,
+  userDailyVisits,
   userProfiles,
   users,
 } from '../db/schema.ts';
+import {
+  generateUnique10DigitUid,
+  getIstCalendarDate,
+  isUsernameTaken,
+  validateUsername,
+} from '../lib/identity.ts';
 import {
   createSessionToken,
   generateRandomToken,
@@ -20,6 +29,7 @@ import {
 import {
   isOwnerAdminEmail,
   isSuperAdminEmail,
+  optionalAuth,
   requireAuth,
   type AuthRequest,
 } from '../middleware/auth.ts';
@@ -53,9 +63,20 @@ async function buildUserEnvelope(userId: number) {
     .from(notifications)
     .where(and(eq(notifications.userId, userId), eq(notifications.isRead, false)));
 
+  let publicUid = user.publicUid;
+  if (!publicUid) {
+    publicUid = await generateUnique10DigitUid();
+    await db
+      .update(users)
+      .set({ publicUid, updatedAt: new Date() })
+      .where(eq(users.id, user.id));
+  }
+
   return {
     id: user.id,
     uid: user.uid,
+    publicUid,
+    username: user.username || null,
     email: user.email,
     name: user.name,
     role: user.role,
@@ -73,6 +94,34 @@ async function buildUserEnvelope(userId: number) {
   };
 }
 
+// GET /api/auth/check-username?username=...
+router.get('/check-username', optionalAuth, async (req: AuthRequest, res) => {
+  try {
+    const raw = String(req.query.username || '');
+    const check = validateUsername(raw);
+    if (!check.valid) {
+      return res.json({
+        valid: false,
+        available: false,
+        normalized: check.normalized,
+        message: check.error,
+      });
+    }
+    const taken = await isUsernameTaken(check.normalized, req.user?.id);
+    return res.json({
+      valid: true,
+      available: !taken,
+      normalized: check.normalized,
+      message: taken
+        ? 'This Unique ID is already taken by another user. Please choose another.'
+        : `@${check.normalized} is available!`,
+    });
+  } catch (error) {
+    console.error('Check username error:', error);
+    return res.status(500).json({ error: 'Unable to check Unique ID right now.' });
+  }
+});
+
 // POST /api/auth/register
 router.post('/register', async (req, res) => {
   try {
@@ -80,6 +129,13 @@ router.post('/register', async (req, res) => {
     const email = String(req.body?.email || '').trim().toLowerCase();
     const password = String(req.body?.password || '');
     const registerAsCreator = Boolean(req.body?.registerAsCreator);
+    const rawUsername = String(req.body?.username || '').trim();
+    const state = String(req.body?.state || '').trim().slice(0, 80);
+    const country = String(req.body?.country || '').trim().slice(0, 80);
+    const occupationRole = String(req.body?.occupationRole || '').trim().slice(0, 80);
+    const gender = String(req.body?.gender || '').trim().slice(0, 40);
+    const dateOfBirth = String(req.body?.dateOfBirth || '').trim().slice(0, 20);
+    const bio = String(req.body?.bio || req.body?.description || '').trim().slice(0, 800);
 
     if (name.length < 2 || name.length > 80) {
       return res.status(400).json({ error: 'Please enter a valid full name (2–80 characters).' });
@@ -91,12 +147,27 @@ router.post('/register', async (req, res) => {
       return res.status(400).json({ error: 'Password must be at least 8 characters long.' });
     }
 
+    let finalUsername: string | null = null;
+    if (rawUsername) {
+      const uCheck = validateUsername(rawUsername);
+      if (!uCheck.valid) {
+        return res.status(400).json({ error: uCheck.error });
+      }
+      if (await isUsernameTaken(uCheck.normalized)) {
+        return res.status(409).json({
+          error: 'This Unique ID is already registered by another user. Please choose a different ID.',
+        });
+      }
+      finalUsername = uCheck.normalized;
+    }
+
     const [existing] = await db.select().from(users).where(eq(users.email, email)).limit(1);
     if (existing) {
       return res.status(409).json({ error: 'An account with this email already exists.' });
     }
 
     const uid = `local-${generateRandomToken(12)}`;
+    const publicUid = await generateUnique10DigitUid();
     const passwordHash = hashPassword(password);
     const role = isOwnerAdminEmail(email) ? 'admin' : registerAsCreator ? 'creator' : 'user';
 
@@ -104,8 +175,11 @@ router.post('/register', async (req, res) => {
       .insert(users)
       .values({
         uid,
+        publicUid,
+        username: finalUsername,
         email,
         name,
+        bio: bio || null,
         passwordHash,
         role,
         status: 'active',
@@ -113,7 +187,22 @@ router.post('/register', async (req, res) => {
       })
       .returning();
 
-    await db.insert(userProfiles).values({ userId: created.id }).onConflictDoNothing();
+    const profileCompleted = Boolean(finalUsername && (state || country || occupationRole));
+    const combinedLocation = [state, country].filter(Boolean).join(', ');
+    await db
+      .insert(userProfiles)
+      .values({
+        userId: created.id,
+        state: state || null,
+        country: country || null,
+        location: combinedLocation || null,
+        occupationRole: occupationRole || null,
+        headline: occupationRole || null,
+        gender: gender || null,
+        dateOfBirth: dateOfBirth || null,
+        profileCompleted,
+      })
+      .onConflictDoNothing();
 
     if (role === 'creator' || role === 'admin') {
       await db
@@ -517,10 +606,16 @@ router.post('/bootstrap-admin', requireAuth, async (req: AuthRequest, res) => {
 router.put('/profile', requireAuth, async (req: AuthRequest, res) => {
   try {
     const name = String(req.body?.name || req.user!.name).trim();
-    const bio = String(req.body?.bio || '').trim().slice(0, 800);
+    const bio = String(req.body?.bio ?? req.body?.description ?? '').trim().slice(0, 800);
     const headline = String(req.body?.headline || '').trim().slice(0, 140);
     const institution = String(req.body?.institution || '').trim().slice(0, 140);
-    const location = String(req.body?.location || '').trim().slice(0, 100);
+    const state = String(req.body?.state || '').trim().slice(0, 80);
+    const country = String(req.body?.country || '').trim().slice(0, 80);
+    const occupationRole = String(req.body?.occupationRole || '').trim().slice(0, 80);
+    const gender = String(req.body?.gender || '').trim().slice(0, 40);
+    const dateOfBirth = String(req.body?.dateOfBirth || '').trim().slice(0, 20);
+    const rawLocation = String(req.body?.location || '').trim().slice(0, 100);
+    const location = rawLocation || [state, country].filter(Boolean).join(', ');
     const languagePreference = String(req.body?.languagePreference || 'English').trim();
     const websiteUrl = sanitizeSafeUrl(req.body?.websiteUrl, false)?.slice(0, 240) || '';
 
@@ -528,27 +623,62 @@ router.put('/profile', requireAuth, async (req: AuthRequest, res) => {
       return res.status(400).json({ error: 'Name must be at least 2 characters.' });
     }
 
+    const userUpdates: Record<string, unknown> = {
+      name,
+      bio,
+      updatedAt: new Date(),
+    };
+
+    if (req.body?.username !== undefined) {
+      const rawUsername = String(req.body.username || '').trim();
+      if (rawUsername) {
+        const uCheck = validateUsername(rawUsername);
+        if (!uCheck.valid) {
+          return res.status(400).json({ error: uCheck.error });
+        }
+        const taken = await isUsernameTaken(uCheck.normalized, req.user!.id);
+        if (taken) {
+          return res.status(409).json({
+            error: 'This Unique ID is already taken by another user. Each Unique ID can belong to only one user.',
+          });
+        }
+        userUpdates.username = uCheck.normalized;
+      }
+    }
+
     await db
       .update(users)
-      .set({ name, bio, updatedAt: new Date() })
+      .set(userUpdates)
       .where(eq(users.id, req.user!.id));
 
     await db
       .insert(userProfiles)
       .values({
         userId: req.user!.id,
-        headline,
-        institution,
-        location,
+        headline: headline || occupationRole || null,
+        institution: institution || null,
+        location: location || null,
+        state: state || null,
+        country: country || null,
+        occupationRole: occupationRole || null,
+        gender: gender || null,
+        dateOfBirth: dateOfBirth || null,
+        profileCompleted: true,
         languagePreference,
         websiteUrl,
       })
       .onConflictDoUpdate({
         target: userProfiles.userId,
         set: {
-          headline,
-          institution,
-          location,
+          headline: headline || occupationRole || null,
+          institution: institution || null,
+          location: location || null,
+          state: state || null,
+          country: country || null,
+          occupationRole: occupationRole || null,
+          gender: gender || null,
+          dateOfBirth: dateOfBirth || null,
+          profileCompleted: true,
           languagePreference,
           websiteUrl,
           updatedAt: new Date(),
@@ -569,10 +699,124 @@ router.put('/profile', requireAuth, async (req: AuthRequest, res) => {
     }
 
     const envelope = await buildUserEnvelope(req.user!.id);
-    return res.json({ user: envelope, message: 'Profile saved.' });
+    return res.json({ user: envelope, message: 'Profile saved successfully.' });
   } catch (error) {
     console.error('Update profile error:', error);
     return res.status(500).json({ error: 'Unable to update profile.' });
+  }
+});
+
+// POST /api/auth/activity/heartbeat (Digital activity tracking — NEVER tracks Primary Super Admin)
+router.post('/activity/heartbeat', requireAuth, async (req: AuthRequest, res) => {
+  try {
+    // STRICT SUPER ADMIN PRIVACY SHIELD: Primary Super Admin is never tracked or logged
+    if (isSuperAdminEmail(req.user!.email)) {
+      return res.json({ ok: true, tracked: false, sessionId: null });
+    }
+
+    const userId = req.user!.id;
+    const rawPagePath = String(req.body?.pagePath || '/').trim().slice(0, 240) || '/';
+    const rawPageTitle = String(req.body?.pageTitle || '').trim().slice(0, 200) || null;
+    const rawDelta = Number(req.body?.deltaSeconds || 0);
+    const deltaSeconds = Number.isFinite(rawDelta)
+      ? Math.max(0, Math.min(60, Math.round(rawDelta)))
+      : 0;
+    const isNewPage = Boolean(req.body?.isNewPage);
+    const rawSessionId = req.body?.sessionId ? Number(req.body.sessionId) : null;
+
+    let validContentId: number | null = null;
+    if (req.body?.contentId) {
+      const cid = Number(req.body.contentId);
+      if (Number.isInteger(cid) && cid > 0) {
+        const [exists] = await db
+          .select({ id: contents.id })
+          .from(contents)
+          .where(eq(contents.id, cid))
+          .limit(1);
+        if (exists) validContentId = exists.id;
+      }
+    }
+
+    const now = new Date();
+    const cal = getIstCalendarDate(now);
+
+    // 1. Upsert daily visit calendar record (Day / Month / Year)
+    await db
+      .insert(userDailyVisits)
+      .values({
+        userId,
+        visitDate: cal.visitDate,
+        visitYear: cal.visitYear,
+        visitMonth: cal.visitMonth,
+        visitDay: cal.visitDay,
+        pageViews: 1,
+        totalSeconds: deltaSeconds,
+        firstSeenAt: now,
+        lastSeenAt: now,
+      })
+      .onConflictDoUpdate({
+        target: [userDailyVisits.userId, userDailyVisits.visitDate],
+        set: {
+          pageViews: sql`${userDailyVisits.pageViews} + ${isNewPage ? 1 : 0}`,
+          totalSeconds: sql`${userDailyVisits.totalSeconds} + ${deltaSeconds}`,
+          lastSeenAt: now,
+        },
+      });
+
+    // 2. Update active session or start a new session entry
+    let activeSessionId: number | null = null;
+    if (rawSessionId && Number.isInteger(rawSessionId) && !isNewPage) {
+      const [existingSession] = await db
+        .select()
+        .from(userActivitySessions)
+        .where(
+          and(
+            eq(userActivitySessions.id, rawSessionId),
+            eq(userActivitySessions.userId, userId),
+            eq(userActivitySessions.pagePath, rawPagePath)
+          )
+        )
+        .orderBy(desc(userActivitySessions.lastSeenAt))
+        .limit(1);
+
+      const withinFiveMins =
+        existingSession && now.getTime() - new Date(existingSession.lastSeenAt).getTime() <= 5 * 60 * 1000;
+
+      if (existingSession && withinFiveMins) {
+        await db
+          .update(userActivitySessions)
+          .set({
+            durationSeconds: sql`${userActivitySessions.durationSeconds} + ${deltaSeconds}`,
+            pageTitle: rawPageTitle || existingSession.pageTitle,
+            contentId: validContentId ?? existingSession.contentId,
+            lastSeenAt: now,
+          })
+          .where(eq(userActivitySessions.id, existingSession.id));
+        activeSessionId = existingSession.id;
+      }
+    }
+
+    if (!activeSessionId) {
+      const [created] = await db
+        .insert(userActivitySessions)
+        .values({
+          userId,
+          contentId: validContentId,
+          pagePath: rawPagePath,
+          pageTitle: rawPageTitle,
+          durationSeconds: deltaSeconds,
+          visitDate: cal.visitDate,
+          startedAt: now,
+          lastSeenAt: now,
+        })
+        .returning({ id: userActivitySessions.id });
+      activeSessionId = created.id;
+    }
+
+    return res.json({ ok: true, tracked: true, sessionId: activeSessionId });
+  } catch (error) {
+    console.error('Activity heartbeat error:', error);
+    return res.status(500).json({ error: 'Unable to record activity.' });
   }
 });
 

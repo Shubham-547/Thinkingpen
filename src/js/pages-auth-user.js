@@ -15,6 +15,53 @@ import {
 } from './api.js';
 import { signInWithGoogle } from './firebase.js';
 
+const OCCUPATION_ROLES = [
+  'School Student',
+  'College Student',
+  'Competitive Exam Aspirant',
+  'Teacher / Educator',
+  'Engineer',
+  'Doctor',
+  'Artist',
+  'Businessman / Entrepreneur',
+  'Researcher',
+  'Working Professional',
+  'Other',
+];
+
+const GENDER_OPTIONS = ['Male', 'Female', 'Non-binary', 'Prefer not to say'];
+
+function wireUsernameAvailabilityCheck(inputEl, feedbackEl) {
+  if (!inputEl || !feedbackEl) return;
+  let timer = null;
+  const runCheck = async () => {
+    const raw = inputEl.value.trim().replace(/^@+/, '');
+    if (!raw) {
+      feedbackEl.textContent = 'Choose a unique ID (3–30 chars: letters, numbers, . _ -).';
+      feedbackEl.className = 'text-[11px] text-slate-500 mt-1';
+      return;
+    }
+    feedbackEl.textContent = 'Checking availability...';
+    feedbackEl.className = 'text-[11px] text-slate-500 mt-1';
+    try {
+      const res = await apiFetch(`/api/auth/check-username?username=${encodeURIComponent(raw)}`);
+      if (res.valid && res.available) {
+        feedbackEl.textContent = `✓ ${res.message}`;
+        feedbackEl.className = 'text-[11px] font-medium text-emerald-700 dark:text-emerald-400 mt-1';
+      } else {
+        feedbackEl.textContent = `✕ ${res.message || 'Not available'}`;
+        feedbackEl.className = 'text-[11px] font-medium text-red-600 dark:text-red-400 mt-1';
+      }
+    } catch {
+      feedbackEl.textContent = '';
+    }
+  };
+  inputEl.addEventListener('input', () => {
+    window.clearTimeout(timer);
+    timer = window.setTimeout(runCheck, 350);
+  });
+}
+
 export function renderAuthPage(container, mode = 'login') {
   const isSignup = mode === 'signup';
   const isForgot = mode === 'forgot';
@@ -134,13 +181,17 @@ export function renderAuthPage(container, mode = 'login') {
   }
 
   container.innerHTML = `
-    <div class="max-w-md mx-auto px-4 py-8 sm:py-14">
+    <div class="${isSignup ? 'max-w-2xl' : 'max-w-md'} mx-auto px-4 py-8 sm:py-12">
       <div class="bg-white dark:bg-[#111A2E] border border-slate-200 dark:border-slate-800 rounded-xl p-5 sm:p-8">
         <h1 class="font-display text-2xl font-semibold text-slate-900 dark:text-white mb-1.5">
           ${isSignup ? 'Create your ScholarPress account' : 'Sign in to ScholarPress'}
         </h1>
         <p class="text-sm text-slate-600 dark:text-slate-400 mb-6">
-          ${isSignup ? 'Read free resources, build your library, or publish and monetize your work.' : 'Access your library, creator studio, and payouts.'}
+          ${
+            isSignup
+              ? 'Fill in your unique ID and profile details. You will automatically receive a unique 10-digit UID upon registration.'
+              : 'Access your library, profile, creator studio, and payouts.'
+          }
         </p>
 
         <!-- Primary Google Sign-In (Firebase Auth) -->
@@ -157,33 +208,85 @@ export function renderAuthPage(container, mode = 'login') {
         <form id="auth-email-form" class="space-y-4">
           ${
             isSignup
-              ? `<div>
-                  <label class="block text-xs font-semibold text-slate-600 dark:text-slate-300 mb-1">Full Name</label>
-                  <input name="name" required placeholder="e.g. Aarav Sharma" class="w-full px-3.5 py-2.5 text-sm rounded-lg border border-slate-300 dark:border-slate-700 bg-slate-50 dark:bg-[#0B1120]" />
+              ? `<div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                  <div>
+                    <label class="block text-xs font-semibold text-slate-600 dark:text-slate-300 mb-1">Full Name *</label>
+                    <input name="name" required placeholder="e.g. Aarav Sharma" class="w-full px-3.5 py-2.5 text-sm rounded-lg border border-slate-300 dark:border-slate-700 bg-slate-50 dark:bg-[#0B1120]" />
+                  </div>
+                  <div>
+                    <label class="block text-xs font-semibold text-slate-600 dark:text-slate-300 mb-1">Unique User ID (Unique Name) *</label>
+                    <div class="relative">
+                      <span class="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400 text-sm font-mono">@</span>
+                      <input id="signup-username-input" name="username" required minlength="3" maxlength="30" placeholder="aarav_sharma" autocomplete="username" class="w-full pl-7 pr-3.5 py-2.5 text-sm font-mono rounded-lg border border-slate-300 dark:border-slate-700 bg-slate-50 dark:bg-[#0B1120]" />
+                    </div>
+                    <div id="signup-username-feedback" class="text-[11px] text-slate-500 mt-1">Only one user can hold each Unique ID.</div>
+                  </div>
                 </div>`
               : ''
           }
-          <div>
-            <label class="block text-xs font-semibold text-slate-600 dark:text-slate-300 mb-1">Email Address</label>
-            <input name="email" type="email" required placeholder="you@university.edu" class="w-full px-3.5 py-2.5 text-sm rounded-lg border border-slate-300 dark:border-slate-700 bg-slate-50 dark:bg-[#0B1120]" />
-          </div>
-          <div>
-            <div class="flex items-center justify-between mb-1">
-              <label class="text-xs font-semibold text-slate-600 dark:text-slate-300">Password</label>
-              ${!isSignup ? `<a href="#/forgot-password" class="text-xs text-[#1B3B6F] dark:text-sky-400 hover:underline">Forgot password?</a>` : ''}
+          <div class="${isSignup ? 'grid grid-cols-1 sm:grid-cols-2 gap-4' : 'space-y-4'}">
+            <div>
+              <label class="block text-xs font-semibold text-slate-600 dark:text-slate-300 mb-1">Email Address ${isSignup ? '*' : ''}</label>
+              <input name="email" type="email" required placeholder="you@university.edu" class="w-full px-3.5 py-2.5 text-sm rounded-lg border border-slate-300 dark:border-slate-700 bg-slate-50 dark:bg-[#0B1120]" />
             </div>
-            <input name="password" type="password" minlength="8" required placeholder="Minimum 8 characters" class="w-full px-3.5 py-2.5 text-sm rounded-lg border border-slate-300 dark:border-slate-700 bg-slate-50 dark:bg-[#0B1120]" />
+            <div>
+              <div class="flex items-center justify-between mb-1">
+                <label class="text-xs font-semibold text-slate-600 dark:text-slate-300">Password ${isSignup ? '*' : ''}</label>
+                ${!isSignup ? `<a href="#/forgot-password" class="text-xs text-[#1B3B6F] dark:text-sky-400 hover:underline">Forgot password?</a>` : ''}
+              </div>
+              <input name="password" type="password" minlength="8" required placeholder="Minimum 8 characters" class="w-full px-3.5 py-2.5 text-sm rounded-lg border border-slate-300 dark:border-slate-700 bg-slate-50 dark:bg-[#0B1120]" />
+            </div>
           </div>
           ${
             isSignup
-              ? `<label class="flex items-start gap-2.5 text-xs text-slate-600 dark:text-slate-300 cursor-pointer pt-1">
+              ? `<div class="pt-4 mt-2 border-t border-slate-100 dark:border-slate-800 space-y-4">
+                  <div>
+                    <div class="text-xs font-semibold uppercase tracking-wider text-[#0F2547] dark:text-sky-400">Your Profile Details</div>
+                    <p class="text-[11px] text-slate-500 mt-0.5">Shown on your profile page. A unique 10-digit UID will be generated automatically.</p>
+                  </div>
+                  <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                    <div>
+                      <label class="block text-xs font-semibold text-slate-600 dark:text-slate-300 mb-1">State *</label>
+                      <input name="state" required placeholder="e.g. Bihar, Maharashtra, Delhi" class="w-full px-3.5 py-2 text-sm rounded-lg border border-slate-300 dark:border-slate-700 bg-slate-50 dark:bg-[#0B1120]" />
+                    </div>
+                    <div>
+                      <label class="block text-xs font-semibold text-slate-600 dark:text-slate-300 mb-1">Country *</label>
+                      <input name="country" required value="India" placeholder="e.g. India" class="w-full px-3.5 py-2 text-sm rounded-lg border border-slate-300 dark:border-slate-700 bg-slate-50 dark:bg-[#0B1120]" />
+                    </div>
+                  </div>
+                  <div class="grid grid-cols-1 sm:grid-cols-3 gap-4">
+                    <div>
+                      <label class="block text-xs font-semibold text-slate-600 dark:text-slate-300 mb-1">Your Role / Profession *</label>
+                      <select name="occupationRole" required class="w-full px-3 py-2 text-sm rounded-lg border border-slate-300 dark:border-slate-700 bg-slate-50 dark:bg-[#0B1120]">
+                        <option value="">Select Role</option>
+                        ${OCCUPATION_ROLES.map((r) => `<option value="${esc(r)}">${esc(r)}</option>`).join('')}
+                      </select>
+                    </div>
+                    <div>
+                      <label class="block text-xs font-semibold text-slate-600 dark:text-slate-300 mb-1">Gender *</label>
+                      <select name="gender" required class="w-full px-3 py-2 text-sm rounded-lg border border-slate-300 dark:border-slate-700 bg-slate-50 dark:bg-[#0B1120]">
+                        <option value="">Select Gender</option>
+                        ${GENDER_OPTIONS.map((g) => `<option value="${esc(g)}">${esc(g)}</option>`).join('')}
+                      </select>
+                    </div>
+                    <div>
+                      <label class="block text-xs font-semibold text-slate-600 dark:text-slate-300 mb-1">Date of Birth *</label>
+                      <input name="dateOfBirth" type="date" required class="w-full px-3 py-2 text-sm rounded-lg border border-slate-300 dark:border-slate-700 bg-slate-50 dark:bg-[#0B1120]" />
+                    </div>
+                  </div>
+                  <div>
+                    <label class="block text-xs font-semibold text-slate-600 dark:text-slate-300 mb-1">Description / About You</label>
+                    <textarea name="bio" rows="2" placeholder="Tell us briefly about your studies, profession, or interests..." class="w-full px-3.5 py-2 text-sm rounded-lg border border-slate-300 dark:border-slate-700 bg-slate-50 dark:bg-[#0B1120]"></textarea>
+                  </div>
+                </div>
+                <label class="flex items-start gap-2.5 text-xs text-slate-600 dark:text-slate-300 cursor-pointer pt-1">
                   <input type="checkbox" name="registerAsCreator" class="mt-0.5 rounded" />
                   <span>Also enable <strong>Creator / Publisher</strong> tools so I can upload notes, PDFs, articles, and lectures (I agree to the <a href="#/terms" class="underline">Creator Agreement</a>).</span>
                 </label>`
               : ''
           }
           <button type="submit" class="w-full py-2.5 px-4 text-sm font-semibold rounded-lg bg-[#0F2547] hover:bg-[#1B3B6F] dark:bg-sky-500 dark:hover:bg-sky-400 text-white dark:text-slate-950 transition-colors">
-            ${isSignup ? 'Create Account' : 'Sign In'}
+            ${isSignup ? 'Create Account & Generate 10-Digit UID' : 'Sign In'}
           </button>
         </form>
 
@@ -197,6 +300,13 @@ export function renderAuthPage(container, mode = 'login') {
       </div>
     </div>
   `;
+
+  if (isSignup) {
+    wireUsernameAvailabilityCheck(
+      document.getElementById('signup-username-input'),
+      document.getElementById('signup-username-feedback')
+    );
+  }
 
   const consumePostLoginRedirect = (fallbackHash) => {
     try {
@@ -220,6 +330,11 @@ export function renderAuthPage(container, mode = 'login') {
       store.user = res.user;
       notifyStore();
       showToast(`Signed in as ${res.user.name}.`, 'success');
+      const needsProfileSetup = !res.user.username || !res.user.profile?.profileCompleted;
+      if (needsProfileSetup && !res.user.isSuperAdmin) {
+        window.location.hash = '#/complete-profile';
+        return;
+      }
       const defaultDest = res.user.role === 'admin' ? '#/admin' : '#/dashboard';
       window.location.hash = consumePostLoginRedirect(defaultDest);
     } catch (err) {
@@ -235,8 +350,15 @@ export function renderAuthPage(container, mode = 'login') {
       const payload = isSignup
         ? {
             name: fd.get('name'),
+            username: fd.get('username'),
             email: fd.get('email'),
             password: fd.get('password'),
+            state: fd.get('state'),
+            country: fd.get('country'),
+            occupationRole: fd.get('occupationRole'),
+            gender: fd.get('gender'),
+            dateOfBirth: fd.get('dateOfBirth'),
+            bio: fd.get('bio'),
             registerAsCreator: fd.get('registerAsCreator') === 'on',
           }
         : {
@@ -248,21 +370,155 @@ export function renderAuthPage(container, mode = 'login') {
       setSessionToken(res.token);
       store.user = res.user;
       notifyStore();
-      showToast(isSignup ? 'Account created successfully.' : `Welcome back, ${res.user.name}.`, 'success');
+      showToast(
+        isSignup
+          ? `Account created! Your 10-digit UID is ${res.user.publicUid}.`
+          : `Welcome back, ${res.user.name}.`,
+        'success'
+      );
 
       const defaultDest =
         res.user.role === 'admin'
           ? '#/admin'
           : res.user.role === 'creator'
           ? '#/creator'
-          : '#/dashboard';
+          : '#/dashboard/settings';
       const redirectTarget = consumePostLoginRedirect(null);
       if (redirectTarget) {
         window.location.hash = redirectTarget;
-      } else if (isSignup && res.verificationTokenPreview) {
-        window.location.hash = `#/verify-email?token=${encodeURIComponent(res.verificationTokenPreview)}`;
       } else {
         window.location.hash = defaultDest;
+      }
+    } catch (err) {
+      showToast(err.message, 'error');
+    }
+  });
+}
+
+export function renderCompleteProfilePage(container) {
+  if (!store.user) {
+    window.location.hash = '#/login';
+    return;
+  }
+  const u = store.user;
+  const prof = u.profile || {};
+
+  container.innerHTML = `
+    <div class="max-w-2xl mx-auto px-4 py-8 sm:py-12">
+      <div class="bg-white dark:bg-[#111A2E] border border-slate-200 dark:border-slate-800 rounded-xl p-5 sm:p-8 space-y-6">
+        <div>
+          <h1 class="font-display text-2xl sm:text-3xl font-semibold text-slate-900 dark:text-white">Complete Your Profile</h1>
+          <p class="text-sm text-slate-600 dark:text-slate-400 mt-1">
+            Welcome, <strong>${esc(u.name)}</strong>! Choose your permanent Unique User ID and fill in your profile details below.
+          </p>
+        </div>
+
+        <div class="p-4 rounded-xl bg-slate-50 dark:bg-[#0B1120] border border-slate-200 dark:border-slate-800 flex flex-wrap items-center justify-between gap-3">
+          <div>
+            <div class="text-[11px] uppercase tracking-wider font-semibold text-slate-500">Your Auto-Assigned 10-Digit Unique UID</div>
+            <div class="font-mono text-2xl font-bold text-[#0F2547] dark:text-sky-400 tracking-widest mt-0.5">${esc(u.publicUid || '—')}</div>
+          </div>
+          <button type="button" id="cp-copy-uid" class="px-3.5 py-2 text-xs font-semibold rounded-lg border border-slate-300 dark:border-slate-700 hover:bg-slate-100 dark:hover:bg-slate-800">
+            Copy UID
+          </button>
+        </div>
+
+        <form id="complete-profile-form" class="space-y-4">
+          <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
+            <div>
+              <label class="block text-xs font-semibold text-slate-600 dark:text-slate-300 mb-1">Full Name *</label>
+              <input name="name" value="${esc(u.name)}" required class="w-full px-3.5 py-2 text-sm rounded-lg border border-slate-300 dark:border-slate-700 bg-slate-50 dark:bg-[#0B1120]" />
+            </div>
+            <div>
+              <label class="block text-xs font-semibold text-slate-600 dark:text-slate-300 mb-1">Unique User ID (Unique Name) *</label>
+              <div class="relative">
+                <span class="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400 text-sm font-mono">@</span>
+                <input id="cp-username-input" name="username" value="${esc(u.username || '')}" required minlength="3" maxlength="30" placeholder="your_unique_id" class="w-full pl-7 pr-3.5 py-2 text-sm font-mono rounded-lg border border-slate-300 dark:border-slate-700 bg-slate-50 dark:bg-[#0B1120]" />
+              </div>
+              <div id="cp-username-feedback" class="text-[11px] text-slate-500 mt-1">Only one user can hold each Unique ID.</div>
+            </div>
+          </div>
+
+          <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
+            <div>
+              <label class="block text-xs font-semibold text-slate-600 dark:text-slate-300 mb-1">State *</label>
+              <input name="state" value="${esc(prof.state || '')}" required placeholder="e.g. Bihar, Uttar Pradesh, Karnataka" class="w-full px-3.5 py-2 text-sm rounded-lg border border-slate-300 dark:border-slate-700 bg-slate-50 dark:bg-[#0B1120]" />
+            </div>
+            <div>
+              <label class="block text-xs font-semibold text-slate-600 dark:text-slate-300 mb-1">Country *</label>
+              <input name="country" value="${esc(prof.country || 'India')}" required placeholder="e.g. India" class="w-full px-3.5 py-2 text-sm rounded-lg border border-slate-300 dark:border-slate-700 bg-slate-50 dark:bg-[#0B1120]" />
+            </div>
+          </div>
+
+          <div class="grid grid-cols-1 sm:grid-cols-3 gap-4">
+            <div>
+              <label class="block text-xs font-semibold text-slate-600 dark:text-slate-300 mb-1">Role / Profession *</label>
+              <select name="occupationRole" required class="w-full px-3 py-2 text-sm rounded-lg border border-slate-300 dark:border-slate-700 bg-slate-50 dark:bg-[#0B1120]">
+                <option value="">Select Role</option>
+                ${OCCUPATION_ROLES.map((r) => `<option value="${esc(r)}" ${prof.occupationRole === r ? 'selected' : ''}>${esc(r)}</option>`).join('')}
+              </select>
+            </div>
+            <div>
+              <label class="block text-xs font-semibold text-slate-600 dark:text-slate-300 mb-1">Gender *</label>
+              <select name="gender" required class="w-full px-3 py-2 text-sm rounded-lg border border-slate-300 dark:border-slate-700 bg-slate-50 dark:bg-[#0B1120]">
+                <option value="">Select Gender</option>
+                ${GENDER_OPTIONS.map((g) => `<option value="${esc(g)}" ${prof.gender === g ? 'selected' : ''}>${esc(g)}</option>`).join('')}
+              </select>
+            </div>
+            <div>
+              <label class="block text-xs font-semibold text-slate-600 dark:text-slate-300 mb-1">Date of Birth *</label>
+              <input name="dateOfBirth" type="date" value="${esc(prof.dateOfBirth || '')}" required class="w-full px-3 py-2 text-sm rounded-lg border border-slate-300 dark:border-slate-700 bg-slate-50 dark:bg-[#0B1120]" />
+            </div>
+          </div>
+
+          <div>
+            <label class="block text-xs font-semibold text-slate-600 dark:text-slate-300 mb-1">Description / About Me</label>
+            <textarea name="bio" rows="3" placeholder="Write a short bio about your education, goals, or profession..." class="w-full px-3.5 py-2 text-sm rounded-lg border border-slate-300 dark:border-slate-700 bg-slate-50 dark:bg-[#0B1120]">${esc(u.bio || '')}</textarea>
+          </div>
+
+          <div class="flex flex-wrap items-center justify-between gap-3 pt-2">
+            <button type="submit" class="px-6 py-2.5 text-sm font-semibold rounded-lg bg-[#0F2547] hover:bg-[#1B3B6F] dark:bg-sky-500 text-white dark:text-slate-950">
+              Save Profile &amp; Continue
+            </button>
+            <a href="#/dashboard/settings" class="text-xs text-slate-500 hover:underline">Skip for now</a>
+          </div>
+        </form>
+      </div>
+    </div>
+  `;
+
+  wireUsernameAvailabilityCheck(
+    document.getElementById('cp-username-input'),
+    document.getElementById('cp-username-feedback')
+  );
+
+  document.getElementById('cp-copy-uid')?.addEventListener('click', () => {
+    if (u.publicUid && navigator.clipboard) {
+      navigator.clipboard.writeText(u.publicUid);
+      showToast(`UID ${u.publicUid} copied!`, 'success');
+    }
+  });
+
+  document.getElementById('complete-profile-form')?.addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const fd = new FormData(e.target);
+    try {
+      const res = await apiFetch('/api/auth/profile', {
+        method: 'PUT',
+        body: Object.fromEntries(fd.entries()),
+      });
+      store.user = res.user;
+      notifyStore();
+      showToast('Profile completed successfully!', 'success');
+      let target = null;
+      try {
+        target = sessionStorage.getItem('sp_post_login_redirect');
+        if (target) sessionStorage.removeItem('sp_post_login_redirect');
+      } catch {}
+      if (target && target.startsWith('#/')) {
+        window.location.hash = target;
+      } else {
+        window.location.hash = res.user.role === 'admin' ? '#/admin' : '#/dashboard/settings';
       }
     } catch (err) {
       showToast(err.message, 'error');
@@ -624,39 +880,129 @@ export async function renderUserDashboardPage(container, activeTab = 'overview')
         </div>
       `;
     } else if (activeTab === 'settings') {
-      const prof = store.user.profile || {};
+      const u = store.user;
+      const prof = u.profile || {};
       tabBody = `
-        <div class="max-w-2xl">
-          <h2 class="font-display text-2xl font-semibold text-slate-900 dark:text-white mb-6">Profile &amp; Account Settings</h2>
-          <form id="user-profile-form" class="bg-white dark:bg-[#111A2E] border border-slate-200 dark:border-slate-800 rounded-xl p-6 space-y-4">
-            <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
+        <div class="max-w-3xl space-y-6">
+          <div>
+            <h2 class="font-display text-2xl font-semibold text-slate-900 dark:text-white">My Profile &amp; Account Identity</h2>
+            <p class="text-xs text-slate-500 dark:text-slate-400 mt-1">Your permanent 10-digit UID, unique handle, and personal details.</p>
+          </div>
+
+          <!-- Profile Identity Overview Card -->
+          <div class="bg-white dark:bg-[#111A2E] border border-slate-200 dark:border-slate-800 rounded-xl p-5 sm:p-6 space-y-5">
+            <div class="flex flex-wrap items-start justify-between gap-4 pb-4 border-b border-slate-100 dark:border-slate-800">
+              <div class="flex items-center gap-3.5">
+                <div class="w-12 h-12 rounded-full bg-[#0F2547] dark:bg-sky-500 text-white dark:text-slate-950 font-display text-lg font-bold flex items-center justify-center shrink-0">
+                  ${esc(u.name.slice(0, 1).toUpperCase())}
+                </div>
+                <div>
+                  <div class="font-display text-xl font-semibold text-slate-900 dark:text-white">${esc(u.name)}</div>
+                  <div class="text-xs text-slate-500 dark:text-slate-400 font-mono">
+                    ${u.username ? `@${esc(u.username)}` : '<span class="text-amber-600 dark:text-amber-400">Unique ID not set yet</span>'} · ${esc(u.email)}
+                  </div>
+                </div>
+              </div>
+              <div class="p-3 rounded-lg bg-slate-50 dark:bg-[#0B1120] border border-slate-200 dark:border-slate-800 flex items-center gap-3">
+                <div>
+                  <div class="text-[10px] uppercase tracking-wider font-semibold text-slate-400">10-Digit Unique UID</div>
+                  <div class="font-mono text-base font-bold text-[#0F2547] dark:text-sky-400 tracking-wider">${esc(u.publicUid || '—')}</div>
+                </div>
+                <button type="button" id="profile-copy-uid" class="px-2.5 py-1.5 text-[11px] font-semibold rounded border border-slate-300 dark:border-slate-700 hover:bg-slate-100 dark:hover:bg-slate-800">Copy</button>
+              </div>
+            </div>
+
+            <div class="grid grid-cols-2 sm:grid-cols-3 gap-4 text-xs">
               <div>
-                <label class="block text-xs font-semibold text-slate-600 dark:text-slate-300 mb-1">Full Name</label>
-                <input name="name" value="${esc(store.user.name)}" required class="w-full px-3.5 py-2 text-sm rounded-lg border border-slate-300 dark:border-slate-700 bg-slate-50 dark:bg-[#0B1120]" />
+                <div class="text-slate-400">Role / Profession</div>
+                <div class="font-semibold text-slate-900 dark:text-white mt-0.5">${esc(prof.occupationRole || 'Not specified')}</div>
               </div>
               <div>
-                <label class="block text-xs font-semibold text-slate-600 dark:text-slate-300 mb-1">Email (read-only)</label>
-                <input value="${esc(store.user.email)}" disabled class="w-full px-3.5 py-2 text-sm rounded-lg border border-slate-200 dark:border-slate-800 bg-slate-100 dark:bg-slate-900 opacity-75" />
+                <div class="text-slate-400">State</div>
+                <div class="font-semibold text-slate-900 dark:text-white mt-0.5">${esc(prof.state || 'Not specified')}</div>
+              </div>
+              <div>
+                <div class="text-slate-400">Country</div>
+                <div class="font-semibold text-slate-900 dark:text-white mt-0.5">${esc(prof.country || 'Not specified')}</div>
+              </div>
+              <div>
+                <div class="text-slate-400">Gender</div>
+                <div class="font-semibold text-slate-900 dark:text-white mt-0.5">${esc(prof.gender || 'Not specified')}</div>
+              </div>
+              <div>
+                <div class="text-slate-400">Date of Birth</div>
+                <div class="font-semibold text-slate-900 dark:text-white mt-0.5 font-mono">${esc(prof.dateOfBirth || 'Not specified')}</div>
+              </div>
+              <div>
+                <div class="text-slate-400">Member Since</div>
+                <div class="font-semibold text-slate-900 dark:text-white mt-0.5">${formatDate(u.createdAt)}</div>
+              </div>
+            </div>
+
+            ${
+              u.bio
+                ? `<div class="pt-3 border-t border-slate-100 dark:border-slate-800 text-xs">
+                    <div class="text-slate-400 mb-1">Description</div>
+                    <p class="text-slate-700 dark:text-slate-300 leading-relaxed">${esc(u.bio)}</p>
+                  </div>`
+                : ''
+            }
+          </div>
+
+          <form id="user-profile-form" class="bg-white dark:bg-[#111A2E] border border-slate-200 dark:border-slate-800 rounded-xl p-5 sm:p-6 space-y-4">
+            <h3 class="font-display text-lg font-semibold text-slate-900 dark:text-white">Edit Profile Details</h3>
+            <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
+              <div>
+                <label class="block text-xs font-semibold text-slate-600 dark:text-slate-300 mb-1">Full Name *</label>
+                <input name="name" value="${esc(u.name)}" required class="w-full px-3.5 py-2 text-sm rounded-lg border border-slate-300 dark:border-slate-700 bg-slate-50 dark:bg-[#0B1120]" />
+              </div>
+              <div>
+                <label class="block text-xs font-semibold text-slate-600 dark:text-slate-300 mb-1">Unique User ID (Unique Name) *</label>
+                <div class="relative">
+                  <span class="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400 text-sm font-mono">@</span>
+                  <input id="settings-username-input" name="username" value="${esc(u.username || '')}" required minlength="3" maxlength="30" placeholder="your_unique_id" class="w-full pl-7 pr-3.5 py-2 text-sm font-mono rounded-lg border border-slate-300 dark:border-slate-700 bg-slate-50 dark:bg-[#0B1120]" />
+                </div>
+                <div id="settings-username-feedback" class="text-[11px] text-slate-500 mt-1">Each Unique ID can be held by only one user.</div>
+              </div>
+            </div>
+            <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
+              <div>
+                <label class="block text-xs font-semibold text-slate-600 dark:text-slate-300 mb-1">State</label>
+                <input name="state" value="${esc(prof.state || '')}" placeholder="e.g. Bihar, Maharashtra, Delhi" class="w-full px-3.5 py-2 text-sm rounded-lg border border-slate-300 dark:border-slate-700 bg-slate-50 dark:bg-[#0B1120]" />
+              </div>
+              <div>
+                <label class="block text-xs font-semibold text-slate-600 dark:text-slate-300 mb-1">Country</label>
+                <input name="country" value="${esc(prof.country || 'India')}" placeholder="e.g. India" class="w-full px-3.5 py-2 text-sm rounded-lg border border-slate-300 dark:border-slate-700 bg-slate-50 dark:bg-[#0B1120]" />
+              </div>
+            </div>
+            <div class="grid grid-cols-1 sm:grid-cols-3 gap-4">
+              <div>
+                <label class="block text-xs font-semibold text-slate-600 dark:text-slate-300 mb-1">Role / Profession</label>
+                <select name="occupationRole" class="w-full px-3 py-2 text-sm rounded-lg border border-slate-300 dark:border-slate-700 bg-slate-50 dark:bg-[#0B1120]">
+                  <option value="">Select Role</option>
+                  ${OCCUPATION_ROLES.map((r) => `<option value="${esc(r)}" ${prof.occupationRole === r ? 'selected' : ''}>${esc(r)}</option>`).join('')}
+                </select>
+              </div>
+              <div>
+                <label class="block text-xs font-semibold text-slate-600 dark:text-slate-300 mb-1">Gender</label>
+                <select name="gender" class="w-full px-3 py-2 text-sm rounded-lg border border-slate-300 dark:border-slate-700 bg-slate-50 dark:bg-[#0B1120]">
+                  <option value="">Select Gender</option>
+                  ${GENDER_OPTIONS.map((g) => `<option value="${esc(g)}" ${prof.gender === g ? 'selected' : ''}>${esc(g)}</option>`).join('')}
+                </select>
+              </div>
+              <div>
+                <label class="block text-xs font-semibold text-slate-600 dark:text-slate-300 mb-1">Date of Birth</label>
+                <input name="dateOfBirth" type="date" value="${esc(prof.dateOfBirth || '')}" class="w-full px-3 py-2 text-sm rounded-lg border border-slate-300 dark:border-slate-700 bg-slate-50 dark:bg-[#0B1120]" />
               </div>
             </div>
             <div>
-              <label class="block text-xs font-semibold text-slate-600 dark:text-slate-300 mb-1">Bio</label>
-              <textarea name="bio" rows="3" class="w-full px-3.5 py-2 text-sm rounded-lg border border-slate-300 dark:border-slate-700 bg-slate-50 dark:bg-[#0B1120]">${esc(store.user.bio || '')}</textarea>
+              <label class="block text-xs font-semibold text-slate-600 dark:text-slate-300 mb-1">Description / Bio</label>
+              <textarea name="bio" rows="3" placeholder="Tell others about your academic background, profession, or goals..." class="w-full px-3.5 py-2 text-sm rounded-lg border border-slate-300 dark:border-slate-700 bg-slate-50 dark:bg-[#0B1120]">${esc(u.bio || '')}</textarea>
             </div>
             <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
               <div>
-                <label class="block text-xs font-semibold text-slate-600 dark:text-slate-300 mb-1">Headline / Role</label>
-                <input name="headline" value="${esc(prof.headline || '')}" placeholder="e.g. M.Sc. Physics Student" class="w-full px-3.5 py-2 text-sm rounded-lg border border-slate-300 dark:border-slate-700 bg-slate-50 dark:bg-[#0B1120]" />
-              </div>
-              <div>
-                <label class="block text-xs font-semibold text-slate-600 dark:text-slate-300 mb-1">Institution / University</label>
-                <input name="institution" value="${esc(prof.institution || '')}" class="w-full px-3.5 py-2 text-sm rounded-lg border border-slate-300 dark:border-slate-700 bg-slate-50 dark:bg-[#0B1120]" />
-              </div>
-            </div>
-            <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
-              <div>
-                <label class="block text-xs font-semibold text-slate-600 dark:text-slate-300 mb-1">Location</label>
-                <input name="location" value="${esc(prof.location || '')}" placeholder="e.g. Bengaluru, India" class="w-full px-3.5 py-2 text-sm rounded-lg border border-slate-300 dark:border-slate-700 bg-slate-50 dark:bg-[#0B1120]" />
+                <label class="block text-xs font-semibold text-slate-600 dark:text-slate-300 mb-1">Institution / Organization</label>
+                <input name="institution" value="${esc(prof.institution || '')}" placeholder="e.g. Delhi University / AIIMS / Company" class="w-full px-3.5 py-2 text-sm rounded-lg border border-slate-300 dark:border-slate-700 bg-slate-50 dark:bg-[#0B1120]" />
               </div>
               <div>
                 <label class="block text-xs font-semibold text-slate-600 dark:text-slate-300 mb-1">Preferred Reading Language</label>
@@ -672,7 +1018,7 @@ export async function renderUserDashboardPage(container, activeTab = 'overview')
             <button type="submit" class="px-5 py-2.5 text-sm font-semibold rounded-lg bg-[#0F2547] dark:bg-sky-500 text-white dark:text-slate-950">Save Profile</button>
           </form>
 
-          <form id="user-password-form" class="mt-6 bg-white dark:bg-[#111A2E] border border-slate-200 dark:border-slate-800 rounded-xl p-6 space-y-4">
+          <form id="user-password-form" class="bg-white dark:bg-[#111A2E] border border-slate-200 dark:border-slate-800 rounded-xl p-5 sm:p-6 space-y-4">
             <div>
               <h3 class="font-display text-lg font-semibold text-slate-900 dark:text-white">Account Security &amp; Password</h3>
               <p class="text-xs text-slate-500 dark:text-slate-400 mt-0.5">Update your password anytime. Minimum 8 characters recommended.</p>
@@ -701,7 +1047,8 @@ export async function renderUserDashboardPage(container, activeTab = 'overview')
               <div class="flex items-center justify-between gap-3 px-2 sm:px-3 pb-2.5 mb-2.5 border-b border-slate-100 dark:border-slate-800">
                 <div class="min-w-0">
                   <div class="font-semibold text-sm text-slate-900 dark:text-white truncate">${esc(store.user.name)}</div>
-                  <div class="text-xs text-slate-500 capitalize">${esc(store.user.role)} Account</div>
+                  <div class="text-xs text-slate-500 truncate">${store.user.username ? `@${esc(store.user.username)}` : `${esc(store.user.role)} Account`}</div>
+                  ${store.user.publicUid ? `<div class="text-[11px] font-mono text-slate-400 mt-0.5">UID: ${esc(store.user.publicUid)}</div>` : ''}
                 </div>
                 <div class="flex lg:hidden items-center gap-2 shrink-0">
                   ${store.user.role === 'creator' || store.user.role === 'admin' ? `<a href="#/creator" class="text-xs font-semibold text-[#1B3B6F] dark:text-sky-400 whitespace-nowrap">Creator →</a>` : ''}
@@ -846,6 +1193,18 @@ export async function renderUserDashboardPage(container, activeTab = 'overview')
       });
     });
 
+    wireUsernameAvailabilityCheck(
+      document.getElementById('settings-username-input'),
+      document.getElementById('settings-username-feedback')
+    );
+
+    document.getElementById('profile-copy-uid')?.addEventListener('click', () => {
+      if (store.user?.publicUid && navigator.clipboard) {
+        navigator.clipboard.writeText(store.user.publicUid);
+        showToast(`UID ${store.user.publicUid} copied!`, 'success');
+      }
+    });
+
     document.getElementById('user-profile-form')?.addEventListener('submit', async (e) => {
       e.preventDefault();
       const fd = new FormData(e.target);
@@ -857,6 +1216,7 @@ export async function renderUserDashboardPage(container, activeTab = 'overview')
         store.user = res.user;
         notifyStore();
         showToast(res.message, 'success');
+        renderUserDashboardPage(container, activeTab);
       } catch (err) {
         showToast(err.message, 'error');
       }

@@ -11,10 +11,12 @@ import {
   showToast,
   store,
 } from './api.js';
+import { clearTrackedContent, setTrackedContent } from './tracker.js';
 
 let activeScrollHandler = null;
 
 export function cleanupReaderProgress() {
+  clearTrackedContent();
   if (activeScrollHandler) {
     window.removeEventListener('scroll', activeScrollHandler);
     activeScrollHandler = null;
@@ -33,6 +35,8 @@ export async function renderContentDetailPage(container, slug) {
     const creator = data.creator;
     const files = data.files || [];
     const authToken = await getAuthToken();
+
+    setTrackedContent(c.id, c.title);
 
     // Reading progress bar
     const progressEl = document.createElement('div');

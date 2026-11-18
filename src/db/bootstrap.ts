@@ -1,6 +1,7 @@
 import { count } from 'drizzle-orm';
 import { db } from './index.ts';
 import { adminSettings, categories } from './schema.ts';
+import { backfillMissingPublicUids } from '../lib/identity.ts';
 
 const DEFAULT_SETTINGS = [
   { key: 'site_name', value: 'ScholarPress' },
@@ -25,8 +26,7 @@ const DEFAULT_CATEGORIES = [
 ];
 
 /**
- * Idempotently populates baseline settings and categories when connected to a fresh empty database
- * (e.g. first boot on Render PostgreSQL). Does nothing if data already exists.
+ * Idempotently populates baseline settings, categories, and missing 10-digit user UIDs.
  */
 export async function ensureBaselineCatalog(): Promise<void> {
   try {
@@ -38,6 +38,11 @@ export async function ensureBaselineCatalog(): Promise<void> {
         .insert(categories)
         .values(DEFAULT_CATEGORIES.map((c) => ({ ...c, isFeatured: true })))
         .onConflictDoNothing();
+    }
+
+    const backfilled = await backfillMissingPublicUids();
+    if (backfilled > 0) {
+      console.log(`Assigned 10-digit unique UID to ${backfilled} existing user(s).`);
     }
   } catch (err) {
     console.warn('Baseline catalog bootstrap skipped:', (err as Error).message);

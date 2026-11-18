@@ -3,6 +3,7 @@ import { eq } from 'drizzle-orm';
 import { db } from '../db/index.ts';
 import { users } from '../db/schema.ts';
 import { adminAuth } from '../lib/firebase-admin.ts';
+import { generateUnique10DigitUid } from '../lib/identity.ts';
 import { verifySessionToken } from '../lib/security.ts';
 
 export type DbUser = typeof users.$inferSelect;
@@ -47,10 +48,12 @@ export async function getOrCreateFirebaseUser(params: {
       const isPrimary = isSuperAdminEmail(cleanEmail);
       const nextRole = isPrimary ? 'admin' : byEmail.role;
       const nextStatus = isPrimary ? 'active' : byEmail.status;
+      const nextPublicUid = byEmail.publicUid || (await generateUnique10DigitUid());
       const [updated] = await db
         .update(users)
         .set({
           uid: params.uid,
+          publicUid: nextPublicUid,
           emailVerified: true,
           avatarUrl: byEmail.avatarUrl || params.picture || null,
           role: nextRole,
@@ -62,10 +65,12 @@ export async function getOrCreateFirebaseUser(params: {
       return updated;
     }
 
+    const publicUid = await generateUnique10DigitUid();
     const [inserted] = await db
       .insert(users)
       .values({
         uid: params.uid,
+        publicUid,
         email: cleanEmail,
         name: displayName,
         role: desiredRole,
@@ -102,14 +107,25 @@ async function resolveUserFromToken(token: string): Promise<DbUser | null> {
         .where(eq(users.id, payload.userId))
         .limit(1);
       if (!user) return null;
-      // Primary Super Admin can never lose admin role or be deactivated without editing source code
-      if (isSuperAdminEmail(user.email) && (user.role !== 'admin' || user.status !== 'active')) {
+
+      const needsHeal =
+        (isSuperAdminEmail(user.email) && (user.role !== 'admin' || user.status !== 'active')) ||
+        !user.publicUid;
+
+      if (needsHeal) {
+        const nextPublicUid = user.publicUid || (await generateUnique10DigitUid());
+        const isPrimary = isSuperAdminEmail(user.email);
         const [restored] = await db
           .update(users)
-          .set({ role: 'admin', status: 'active', updatedAt: new Date() })
+          .set({
+            publicUid: nextPublicUid,
+            role: isPrimary ? 'admin' : user.role,
+            status: isPrimary ? 'active' : user.status,
+            updatedAt: new Date(),
+          })
           .where(eq(users.id, user.id))
           .returning();
-        return restored || { ...user, role: 'admin', status: 'active' };
+        return restored || { ...user, publicUid: nextPublicUid };
       }
       return user;
     } catch (error) {

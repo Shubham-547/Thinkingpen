@@ -24,10 +24,12 @@ import { cleanupReaderProgress, renderContentDetailPage } from './js/pages-reade
 import {
   renderAuthPage,
   renderBecomeCreatorPage,
+  renderCompleteProfilePage,
   renderUserDashboardPage,
 } from './js/pages-auth-user.js';
 import { renderCreatorDashboardPage } from './js/pages-creator.js';
 import { renderAdminDashboardPage } from './js/pages-admin.js';
+import { notifyRouteChange, startActivityTracker } from './js/tracker.js';
 
 function getRoutePath() {
   const raw = window.location.hash.replace(/^#/, '') || '/';
@@ -78,12 +80,14 @@ function renderHeaderHtml() {
           <span class="hidden sm:inline max-w-[110px] truncate">${esc(user.name)}</span>
           ${user.unreadNotifications > 0 ? `<span class="font-mono text-[10px] text-amber-600 dark:text-amber-400">(${user.unreadNotifications})</span>` : ''}
         </button>
-        <div id="user-menu-dropdown" class="hidden absolute right-0 top-12 w-56 rounded-xl bg-white dark:bg-[#111A2E] border border-slate-200 dark:border-slate-800 shadow-xl py-2 z-50 text-sm">
+        <div id="user-menu-dropdown" class="hidden absolute right-0 top-12 w-60 rounded-xl bg-white dark:bg-[#111A2E] border border-slate-200 dark:border-slate-800 shadow-xl py-2 z-50 text-sm">
           <div class="px-4 py-2 border-b border-slate-100 dark:border-slate-800">
             <div class="font-semibold text-xs text-slate-900 dark:text-white truncate">${esc(user.name)}</div>
-            <div class="text-[11px] text-slate-500 truncate">${esc(user.email)}</div>
+            <div class="text-[11px] text-slate-500 truncate">${user.username ? `@${esc(user.username)}` : esc(user.email)}</div>
+            ${user.publicUid ? `<div class="text-[10px] font-mono text-slate-400 mt-0.5">UID: ${esc(user.publicUid)}</div>` : ''}
           </div>
           <a href="#/dashboard" class="block px-4 py-2.5 text-xs text-slate-700 dark:text-slate-200 hover:bg-slate-50 dark:hover:bg-slate-800">Reader Dashboard</a>
+          <a href="#/dashboard/settings" class="block px-4 py-2.5 text-xs text-slate-700 dark:text-slate-200 hover:bg-slate-50 dark:hover:bg-slate-800">My Profile &amp; UID</a>
           <a href="#/dashboard/library" class="block px-4 py-2.5 text-xs text-slate-700 dark:text-slate-200 hover:bg-slate-50 dark:hover:bg-slate-800">My Library &amp; Purchases</a>
           <a href="#/dashboard/notifications" class="block px-4 py-2.5 text-xs text-slate-700 dark:text-slate-200 hover:bg-slate-50 dark:hover:bg-slate-800">Notifications ${user.unreadNotifications > 0 ? `(${user.unreadNotifications})` : ''}</a>
           ${
@@ -291,6 +295,26 @@ async function routeCurrentView() {
   if (!main) return;
   const path = getRoutePath();
   window.scrollTo({ top: 0 });
+  if (!path.startsWith('/content/')) {
+    const labelMap = {
+      '/': 'Home Page',
+      '/explore': 'Explore Catalog',
+      '/notes': 'Educational Notes',
+      '/study-materials': 'Study Materials',
+      '/pdf-library': 'PDF Library',
+      '/articles': 'Articles & Essays',
+      '/videos': 'Video Lectures',
+      '/poems-stories': 'Poems & Stories',
+      '/categories': 'Categories',
+      '/creators': 'Creator Directory',
+      '/dashboard': 'Reader Dashboard',
+      '/dashboard/settings': 'Profile Settings',
+      '/complete-profile': 'Complete Profile Setup',
+      '/creator': 'Creator Studio',
+      '/admin': 'Admin Console',
+    };
+    notifyRouteChange(path, labelMap[path] || path);
+  }
 
   if (path === '/' || path === '') {
     await renderHomePage(main);
@@ -368,6 +392,8 @@ async function routeCurrentView() {
     renderAuthPage(main, 'reset');
   } else if (path === '/verify-email') {
     renderAuthPage(main, 'verify');
+  } else if (path === '/complete-profile') {
+    renderCompleteProfilePage(main);
   } else if (path === '/become-creator') {
     renderBecomeCreatorPage(main);
   } else if (path === '/dashboard' || path.startsWith('/dashboard/')) {
@@ -380,8 +406,10 @@ async function routeCurrentView() {
     const tab = path.split('/')[2] || 'overview';
     await renderCreatorDashboardPage(main, tab);
   } else if (path === '/admin' || path.startsWith('/admin/')) {
-    const tab = path.split('/')[2] || 'overview';
-    await renderAdminDashboardPage(main, tab);
+    const parts = path.split('/');
+    const tab = parts[2] || 'overview';
+    const subParam = parts[3] ? decodeURIComponent(parts.slice(3).join('/')) : null;
+    await renderAdminDashboardPage(main, tab, subParam);
   } else {
     await renderHomePage(main);
   }
@@ -390,6 +418,7 @@ async function routeCurrentView() {
 async function bootstrap() {
   renderShell();
   loadStoredSessionToken();
+  startActivityTracker();
   await loadGlobalCatalogMeta();
 
   let initialRouted = false;

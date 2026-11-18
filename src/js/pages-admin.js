@@ -10,7 +10,37 @@ import {
   store,
 } from './api.js';
 
-export async function renderAdminDashboardPage(container, activeTab = 'overview') {
+function formatDuration(totalSeconds) {
+  const sec = Math.max(0, Math.round(Number(totalSeconds || 0)));
+  if (sec < 60) return `${sec}s`;
+  const hrs = Math.floor(sec / 3600);
+  const mins = Math.floor((sec % 3600) / 60);
+  const rem = sec % 60;
+  if (hrs > 0) return `${hrs}h ${mins}m${rem > 0 ? ` ${rem}s` : ''}`;
+  return `${mins}m ${rem}s`;
+}
+
+function formatDateTime(iso) {
+  if (!iso) return '—';
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return '—';
+  return d.toLocaleString('en-IN', {
+    day: '2-digit',
+    month: 'short',
+    year: 'numeric',
+    hour: '2-digit',
+    minute: '2-digit',
+  });
+}
+
+function formatTimeOnly(iso) {
+  if (!iso) return '—';
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return '—';
+  return d.toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' });
+}
+
+export async function renderAdminDashboardPage(container, activeTab = 'overview', subParam = null) {
   if (!store.user) {
     window.location.hash = '#/login';
     return;
@@ -31,6 +61,7 @@ export async function renderAdminDashboardPage(container, activeTab = 'overview'
   const tabs = [
     { id: 'overview', label: 'Overview & Reports' },
     { id: 'users', label: 'User Management' },
+    { id: 'tracker', label: 'User Tracker' },
     { id: 'creators', label: 'Creator Management' },
     { id: 'approvals', label: 'Content Approvals' },
     { id: 'contents', label: 'Content Management' },
@@ -198,12 +229,14 @@ export async function renderAdminDashboardPage(container, activeTab = 'overview'
                 }
               </p>
             </div>
+            <a href="#/admin/tracker" class="px-4 py-2 text-xs font-semibold rounded-lg bg-[#0F2547] dark:bg-sky-500 text-white dark:text-slate-950 whitespace-nowrap">Open Digital User Tracker →</a>
           </div>
           <div class="bg-white dark:bg-[#111A2E] border border-slate-200 dark:border-slate-800 rounded-xl overflow-x-auto touch-scroll-x">
-            <table class="w-full min-w-[680px] text-left text-sm">
+            <table class="w-full min-w-[760px] text-left text-sm">
               <thead class="text-xs text-slate-500 border-b border-slate-200 dark:border-slate-800">
                 <tr>
                   <th class="px-4 py-3 font-semibold">User</th>
+                  <th class="px-4 py-3 font-semibold">UID &amp; Unique ID</th>
                   <th class="px-4 py-3 font-semibold">Role</th>
                   <th class="px-4 py-3 font-semibold">Status</th>
                   <th class="px-4 py-3 font-semibold">Joined</th>
@@ -225,6 +258,16 @@ export async function renderAdminDashboardPage(container, activeTab = 'overview'
                       </div>
                       <div class="text-xs text-slate-500">${esc(u.email)}</div>
                     </td>
+                    <td class="px-4 py-3 text-xs font-mono">
+                      ${
+                        isPrimary
+                          ? `<span class="text-slate-400 font-sans">Shielded</span>`
+                          : `
+                            <div class="text-slate-800 dark:text-slate-200">${esc(u.publicUid || '—')}</div>
+                            <div class="text-slate-500">${u.username ? `@${esc(u.username)}` : 'No ID set'}</div>
+                          `
+                      }
+                    </td>
                     <td class="px-4 py-3">
                       ${
                         lockedForActor
@@ -235,11 +278,16 @@ export async function renderAdminDashboardPage(container, activeTab = 'overview'
                       }
                     </td>
                     <td class="px-4 py-3">${renderStatusLabel(u.status)}</td>
-                    <td class="px-4 py-3 text-xs text-slate-500">${formatDate(u.createdAt)}</td>
+                    <td class="px-4 py-3 text-xs text-slate-500 whitespace-nowrap">${formatDate(u.createdAt)}</td>
                     <td class="px-4 py-3 text-right whitespace-nowrap space-x-2 text-xs font-semibold">
                       ${
+                        !isPrimary
+                          ? `<a href="#/admin/tracker/${u.id}" class="text-[#0F2547] dark:text-sky-400 hover:underline">Track</a>`
+                          : ''
+                      }
+                      ${
                         lockedForActor
-                          ? `<span class="text-slate-400 font-normal">Protected</span>`
+                          ? `<span class="text-slate-400 font-normal">${isPrimary ? 'Shielded' : 'Protected'}</span>`
                           : `
                             ${u.status !== 'active' ? `<button type="button" data-uid="${u.id}" data-status="active" class="adm-user-status text-emerald-700 dark:text-emerald-400 hover:underline">Activate</button>` : ''}
                             ${u.status !== 'suspended' ? `<button type="button" data-uid="${u.id}" data-status="suspended" class="adm-user-status text-amber-700 dark:text-amber-400 hover:underline">Suspend</button>` : ''}
@@ -256,6 +304,503 @@ export async function renderAdminDashboardPage(container, activeTab = 'overview'
           </div>
         </div>
       `;
+    } else if (activeTab === 'tracker') {
+      const qs = window.location.hash.includes('?')
+        ? new URLSearchParams(window.location.hash.split('?')[1])
+        : new URLSearchParams();
+      const searchQ = qs.get('q') || '';
+
+      if (subParam) {
+        // Full User Digital Dossier View
+        let dossier = null;
+        let dossierError = null;
+        try {
+          dossier = await apiFetch(`/api/admin/users/${encodeURIComponent(subParam)}/dossier`);
+        } catch (err) {
+          dossierError = err.message || 'Unable to load user dossier.';
+        }
+
+        if (dossierError || !dossier) {
+          bodyHtml = `
+            <div class="space-y-6">
+              <div class="flex items-center justify-between gap-3">
+                <h1 class="font-display text-2xl font-semibold text-slate-900 dark:text-white">Digital User Tracker</h1>
+                <a href="#/admin/tracker" class="text-xs font-semibold text-[#0F2547] dark:text-sky-400 hover:underline">← Back to Tracker Search</a>
+              </div>
+              <div class="p-6 rounded-xl bg-amber-50 dark:bg-amber-950/30 border border-amber-200 dark:border-amber-900 text-sm text-amber-900 dark:text-amber-200">
+                ${esc(dossierError)}
+              </div>
+            </div>
+          `;
+        } else {
+          const u = dossier.user;
+          const p = dossier.profile || {};
+          const live = dossier.liveStatus || {};
+          const sum = dossier.summary || {};
+          const contentHistory = dossier.contentHistory || [];
+          const userPayments = dossier.spending?.payments || [];
+          const visits = dossier.visits || { byYear: [], byMonth: [], dailyLogs: [] };
+          const recentSessions = dossier.recentSessions || [];
+
+          bodyHtml = `
+            <div class="space-y-6">
+              <div class="flex flex-wrap items-center justify-between gap-3">
+                <div>
+                  <a href="#/admin/tracker" class="text-xs font-semibold text-[#0F2547] dark:text-sky-400 hover:underline">← Back to User Tracker</a>
+                  <h1 class="font-display text-2xl sm:text-3xl font-semibold text-slate-900 dark:text-white mt-1">
+                    ${esc(u.name)} ${u.username ? `<span class="font-mono text-base font-normal text-slate-500">@${esc(u.username)}</span>` : ''}
+                  </h1>
+                </div>
+                <div class="flex items-center gap-2">
+                  <button type="button" id="adm-dossier-refresh" class="px-3.5 py-2 text-xs font-semibold rounded-lg border border-slate-300 dark:border-slate-700 hover:bg-slate-100 dark:hover:bg-slate-800">
+                    Refresh Live Data
+                  </button>
+                </div>
+              </div>
+
+              <!-- Live Presence Banner -->
+              <div class="p-4 sm:p-5 rounded-xl border ${
+                live.isOnline
+                  ? 'bg-emerald-50/70 dark:bg-emerald-950/25 border-emerald-200 dark:border-emerald-900'
+                  : 'bg-white dark:bg-[#111A2E] border-slate-200 dark:border-slate-800'
+              } flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+                <div class="space-y-1">
+                  <div class="flex items-center gap-2 text-xs font-semibold">
+                    <span class="w-2.5 h-2.5 rounded-full ${live.isOnline ? 'bg-emerald-500 animate-pulse' : 'bg-slate-400'}"></span>
+                    <span class="${live.isOnline ? 'text-emerald-800 dark:text-emerald-300' : 'text-slate-600 dark:text-slate-300'}">
+                      ${live.isOnline ? 'ONLINE NOW — Live Viewing' : `Last Seen: ${formatDateTime(live.lastSeenAt)}`}
+                    </span>
+                  </div>
+                  ${
+                    live.currentSession
+                      ? `<div class="text-sm font-medium text-slate-900 dark:text-white">
+                          ${live.isOnline ? 'Currently viewing:' : 'Last viewed:'}
+                          ${
+                            live.currentSession.contentSlug
+                              ? `<a href="#/content/${esc(live.currentSession.contentSlug)}" class="underline text-[#0F2547] dark:text-sky-400">${esc(live.currentSession.pageTitle)}</a>`
+                              : `<span>${esc(live.currentSession.pageTitle || live.currentSession.pagePath)}</span>`
+                          }
+                          <span class="text-xs font-mono text-slate-500 ml-2">(${formatDuration(live.currentSession.durationSeconds)} in session)</span>
+                        </div>`
+                      : `<div class="text-xs text-slate-500">No browsing activity recorded for this account yet.</div>`
+                  }
+                </div>
+                <div class="text-right font-mono text-xs shrink-0">
+                  <div class="text-slate-400">10-Digit UID</div>
+                  <div class="text-base font-bold text-[#0F2547] dark:text-sky-400 tracking-wider">${esc(u.publicUid || '—')}</div>
+                </div>
+              </div>
+
+              <!-- 4-Column Activity & Spending KPI Strip -->
+              <div class="grid grid-cols-2 lg:grid-cols-4 gap-4">
+                <div class="p-4 rounded-xl bg-white dark:bg-[#111A2E] border border-slate-200 dark:border-slate-800">
+                  <div class="text-xs text-slate-500">Total Money Spent</div>
+                  <div class="font-mono text-2xl font-semibold text-emerald-700 dark:text-emerald-400 mt-1 tabular-nums">${formatInr(sum.totalSpentInr || 0)}</div>
+                  <div class="text-[11px] text-slate-400 mt-1">${sum.successfulPaymentsCount || 0} successful payment(s)</div>
+                </div>
+                <div class="p-4 rounded-xl bg-white dark:bg-[#111A2E] border border-slate-200 dark:border-slate-800">
+                  <div class="text-xs text-slate-500">Contents Viewed</div>
+                  <div class="font-mono text-2xl font-semibold text-slate-900 dark:text-white mt-1 tabular-nums">${sum.totalContentsViewed || 0}</div>
+                  <div class="text-[11px] text-slate-400 mt-1">Reading time: ${formatDuration(sum.totalContentReadSeconds || 0)}</div>
+                </div>
+                <div class="p-4 rounded-xl bg-white dark:bg-[#111A2E] border border-slate-200 dark:border-slate-800">
+                  <div class="text-xs text-slate-500">Total Time on Website</div>
+                  <div class="font-mono text-2xl font-semibold text-[#0F2547] dark:text-sky-400 mt-1 tabular-nums">${formatDuration(sum.totalWebsiteSeconds || 0)}</div>
+                  <div class="text-[11px] text-slate-400 mt-1">Across all recorded sessions</div>
+                </div>
+                <div class="p-4 rounded-xl bg-white dark:bg-[#111A2E] border border-slate-200 dark:border-slate-800">
+                  <div class="text-xs text-slate-500">Total Visit Days</div>
+                  <div class="font-mono text-2xl font-semibold text-slate-900 dark:text-white mt-1 tabular-nums">${sum.totalVisitDays || 0} days</div>
+                  <div class="text-[11px] text-slate-400 mt-1">${sum.firstVisitDate ? `Since ${esc(sum.firstVisitDate)}` : 'No visits yet'}</div>
+                </div>
+              </div>
+
+              <!-- Full Profile & Demographic Card -->
+              <div class="bg-white dark:bg-[#111A2E] border border-slate-200 dark:border-slate-800 rounded-xl p-5 sm:p-6 space-y-4">
+                <h2 class="font-display text-lg font-semibold text-slate-900 dark:text-white">Complete User Profile Details</h2>
+                <div class="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-4 text-xs">
+                  <div>
+                    <div class="text-slate-400">10-Digit UID</div>
+                    <div class="font-mono font-semibold text-slate-900 dark:text-white mt-0.5">${esc(u.publicUid || '—')}</div>
+                  </div>
+                  <div>
+                    <div class="text-slate-400">Unique ID</div>
+                    <div class="font-mono font-semibold text-slate-900 dark:text-white mt-0.5">${u.username ? `@${esc(u.username)}` : '—'}</div>
+                  </div>
+                  <div>
+                    <div class="text-slate-400">Email Address</div>
+                    <div class="font-semibold text-slate-900 dark:text-white mt-0.5 break-all">${esc(u.email)}</div>
+                  </div>
+                  <div>
+                    <div class="text-slate-400">Account Role &amp; Status</div>
+                    <div class="font-semibold text-slate-900 dark:text-white mt-0.5 capitalize">${esc(u.role)} · ${esc(u.status)}</div>
+                  </div>
+                  <div>
+                    <div class="text-slate-400">Occupation Role</div>
+                    <div class="font-semibold text-slate-900 dark:text-white mt-0.5">${esc(p.occupationRole || '—')}</div>
+                  </div>
+                  <div>
+                    <div class="text-slate-400">State</div>
+                    <div class="font-semibold text-slate-900 dark:text-white mt-0.5">${esc(p.state || '—')}</div>
+                  </div>
+                  <div>
+                    <div class="text-slate-400">Country</div>
+                    <div class="font-semibold text-slate-900 dark:text-white mt-0.5">${esc(p.country || '—')}</div>
+                  </div>
+                  <div>
+                    <div class="text-slate-400">Gender</div>
+                    <div class="font-semibold text-slate-900 dark:text-white mt-0.5">${esc(p.gender || '—')}</div>
+                  </div>
+                  <div>
+                    <div class="text-slate-400">Date of Birth</div>
+                    <div class="font-mono font-semibold text-slate-900 dark:text-white mt-0.5">${esc(p.dateOfBirth || '—')}</div>
+                  </div>
+                  <div>
+                    <div class="text-slate-400">Institution</div>
+                    <div class="font-semibold text-slate-900 dark:text-white mt-0.5">${esc(p.institution || '—')}</div>
+                  </div>
+                  <div>
+                    <div class="text-slate-400">Joined On</div>
+                    <div class="font-semibold text-slate-900 dark:text-white mt-0.5">${formatDateTime(u.createdAt)}</div>
+                  </div>
+                  <div>
+                    <div class="text-slate-400">Preferred Language</div>
+                    <div class="font-semibold text-slate-900 dark:text-white mt-0.5">${esc(p.languagePreference || 'English')}</div>
+                  </div>
+                </div>
+                <div class="pt-3 border-t border-slate-100 dark:border-slate-800 text-xs">
+                  <div class="text-slate-400 mb-1">Description / Bio</div>
+                  <p class="text-slate-700 dark:text-slate-300">${esc(u.bio || 'No description provided.')}</p>
+                </div>
+              </div>
+
+              <!-- Content Viewing History & Exact Time Spent -->
+              <div class="bg-white dark:bg-[#111A2E] border border-slate-200 dark:border-slate-800 rounded-xl overflow-hidden">
+                <div class="p-5 border-b border-slate-100 dark:border-slate-800">
+                  <h2 class="font-display text-lg font-semibold text-slate-900 dark:text-white">Content Viewing History (${contentHistory.length} Publications)</h2>
+                  <p class="text-xs text-slate-500 mt-0.5">Exact list of every publication viewed by this user, number of visits, and total time spent reading/watching.</p>
+                </div>
+                <div class="overflow-x-auto touch-scroll-x">
+                  <table class="w-full min-w-[640px] text-left text-xs">
+                    <thead class="text-slate-500 border-b border-slate-200 dark:border-slate-800">
+                      <tr>
+                        <th class="px-4 py-3 font-semibold">Publication</th>
+                        <th class="px-4 py-3 font-semibold">Format</th>
+                        <th class="px-4 py-3 font-semibold text-right">Sessions</th>
+                        <th class="px-4 py-3 font-semibold text-right">Total Time Spent</th>
+                        <th class="px-4 py-3 font-semibold text-right">Last Viewed</th>
+                      </tr>
+                    </thead>
+                    <tbody class="divide-y divide-slate-100 dark:divide-slate-800">
+                      ${
+                        contentHistory.length
+                          ? contentHistory
+                              .map(
+                                (c) => `
+                              <tr>
+                                <td class="px-4 py-3 font-medium text-slate-900 dark:text-white">
+                                  <a href="#/content/${esc(c.slug)}" class="hover:underline">${esc(c.title)}</a>
+                                </td>
+                                <td class="px-4 py-3 text-slate-500">${esc(c.contentType)} · ${c.isFree ? 'Free' : formatInr(c.priceInr)}</td>
+                                <td class="px-4 py-3 text-right font-mono tabular-nums">${c.viewsCount}</td>
+                                <td class="px-4 py-3 text-right font-mono font-semibold text-[#0F2547] dark:text-sky-400 tabular-nums">${formatDuration(c.totalDurationSeconds)}</td>
+                                <td class="px-4 py-3 text-right text-slate-500 whitespace-nowrap">${formatDateTime(c.lastViewedAt)}</td>
+                              </tr>
+                            `
+                              )
+                              .join('')
+                          : `<tr><td colspan="5" class="px-4 py-8 text-center text-slate-500">This user has not opened any publications yet.</td></tr>`
+                      }
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+
+              <!-- Spending & Payment History -->
+              <div class="bg-white dark:bg-[#111A2E] border border-slate-200 dark:border-slate-800 rounded-xl overflow-hidden">
+                <div class="p-5 border-b border-slate-100 dark:border-slate-800 flex flex-wrap items-center justify-between gap-2">
+                  <div>
+                    <h2 class="font-display text-lg font-semibold text-slate-900 dark:text-white">Spending &amp; Payment History</h2>
+                    <p class="text-xs text-slate-500 mt-0.5">Every payment attempted or completed on ScholarPress, with exact date and amount.</p>
+                  </div>
+                  <div class="font-mono text-sm font-bold text-emerald-700 dark:text-emerald-400">Total Spent: ${formatInr(sum.totalSpentInr || 0)}</div>
+                </div>
+                <div class="overflow-x-auto touch-scroll-x">
+                  <table class="w-full min-w-[640px] text-left text-xs">
+                    <thead class="text-slate-500 border-b border-slate-200 dark:border-slate-800">
+                      <tr>
+                        <th class="px-4 py-3 font-semibold">Date &amp; Time</th>
+                        <th class="px-4 py-3 font-semibold">Publication</th>
+                        <th class="px-4 py-3 font-semibold">Receipt No.</th>
+                        <th class="px-4 py-3 font-semibold">Status</th>
+                        <th class="px-4 py-3 font-semibold text-right">Amount</th>
+                      </tr>
+                    </thead>
+                    <tbody class="divide-y divide-slate-100 dark:divide-slate-800">
+                      ${
+                        userPayments.length
+                          ? userPayments
+                              .map(
+                                (pay) => `
+                              <tr>
+                                <td class="px-4 py-3 text-slate-500 whitespace-nowrap">${formatDateTime(pay.createdAt)}</td>
+                                <td class="px-4 py-3 font-medium text-slate-900 dark:text-white">
+                                  <a href="#/content/${esc(pay.contentSlug)}" class="hover:underline">${esc(pay.contentTitle)}</a>
+                                </td>
+                                <td class="px-4 py-3 font-mono">${esc(pay.receiptNumber)}</td>
+                                <td class="px-4 py-3">${renderStatusLabel(pay.status)}</td>
+                                <td class="px-4 py-3 text-right font-mono font-semibold tabular-nums">${formatInr(pay.amountInr)}</td>
+                              </tr>
+                            `
+                              )
+                              .join('')
+                          : `<tr><td colspan="5" class="px-4 py-8 text-center text-slate-500">No payments recorded for this user yet.</td></tr>`
+                      }
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+
+              <!-- Visit Calendar Breakdown: Year / Month / Exact Day -->
+              <div class="bg-white dark:bg-[#111A2E] border border-slate-200 dark:border-slate-800 rounded-xl p-5 sm:p-6 space-y-6">
+                <div>
+                  <h2 class="font-display text-lg font-semibold text-slate-900 dark:text-white">Website Visit Calendar (Year · Month · Day)</h2>
+                  <p class="text-xs text-slate-500 mt-0.5">Exact breakdown of which years, months, and individual days this user visited the website.</p>
+                </div>
+
+                <!-- Year-wise cards -->
+                <div>
+                  <div class="text-xs font-semibold uppercase tracking-wider text-slate-400 mb-2.5">Year-Wise Summary</div>
+                  ${
+                    visits.byYear.length
+                      ? `<div class="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                          ${visits.byYear
+                            .map(
+                              (y) => `
+                            <div class="p-3.5 rounded-lg bg-slate-50 dark:bg-[#0B1120] border border-slate-200 dark:border-slate-800">
+                              <div class="font-mono text-lg font-bold text-slate-900 dark:text-white">${y.year}</div>
+                              <div class="text-xs text-slate-600 dark:text-slate-300 mt-1 tabular-nums">
+                                <strong>${y.days}</strong> active day(s) · <strong>${formatDuration(y.totalSeconds)}</strong> · ${y.pageViews} views
+                              </div>
+                            </div>
+                          `
+                            )
+                            .join('')}
+                        </div>`
+                      : `<p class="text-xs text-slate-500">No yearly visit records yet.</p>`
+                  }
+                </div>
+
+                <!-- Month-wise table -->
+                <div>
+                  <div class="text-xs font-semibold uppercase tracking-wider text-slate-400 mb-2.5">Month-Wise Breakdown</div>
+                  ${
+                    visits.byMonth.length
+                      ? `<div class="overflow-x-auto border border-slate-200 dark:border-slate-800 rounded-lg">
+                          <table class="w-full text-left text-xs">
+                            <thead class="bg-slate-50 dark:bg-[#0B1120] text-slate-500 border-b border-slate-200 dark:border-slate-800">
+                              <tr>
+                                <th class="px-4 py-2.5 font-semibold">Month &amp; Year</th>
+                                <th class="px-4 py-2.5 font-semibold text-right">Active Days</th>
+                                <th class="px-4 py-2.5 font-semibold text-right">Page Views</th>
+                                <th class="px-4 py-2.5 font-semibold text-right">Total Time Spent</th>
+                              </tr>
+                            </thead>
+                            <tbody class="divide-y divide-slate-100 dark:divide-slate-800">
+                              ${visits.byMonth
+                                .map(
+                                  (m) => `
+                                <tr>
+                                  <td class="px-4 py-2.5 font-semibold text-slate-900 dark:text-white">${esc(m.label)}</td>
+                                  <td class="px-4 py-2.5 text-right font-mono tabular-nums">${m.days} day(s)</td>
+                                  <td class="px-4 py-2.5 text-right font-mono tabular-nums">${m.pageViews}</td>
+                                  <td class="px-4 py-2.5 text-right font-mono font-semibold text-[#0F2547] dark:text-sky-400 tabular-nums">${formatDuration(m.totalSeconds)}</td>
+                                </tr>
+                              `
+                                )
+                                .join('')}
+                            </tbody>
+                          </table>
+                        </div>`
+                      : `<p class="text-xs text-slate-500">No monthly visit records yet.</p>`
+                  }
+                </div>
+
+                <!-- Exact Day-by-Day Visit Log -->
+                <div>
+                  <div class="text-xs font-semibold uppercase tracking-wider text-slate-400 mb-2.5">Day-by-Day Visit Log (${visits.dailyLogs.length} Days)</div>
+                  ${
+                    visits.dailyLogs.length
+                      ? `<div class="overflow-x-auto border border-slate-200 dark:border-slate-800 rounded-lg max-h-96 overflow-y-auto">
+                          <table class="w-full min-w-[560px] text-left text-xs">
+                            <thead class="sticky top-0 bg-slate-50 dark:bg-[#0B1120] text-slate-500 border-b border-slate-200 dark:border-slate-800">
+                              <tr>
+                                <th class="px-4 py-2.5 font-semibold">Date</th>
+                                <th class="px-4 py-2.5 font-semibold">Day</th>
+                                <th class="px-4 py-2.5 font-semibold text-right">Page Views</th>
+                                <th class="px-4 py-2.5 font-semibold text-right">Time on Site</th>
+                                <th class="px-4 py-2.5 font-semibold text-right">First / Last Seen</th>
+                              </tr>
+                            </thead>
+                            <tbody class="divide-y divide-slate-100 dark:divide-slate-800">
+                              ${visits.dailyLogs
+                                .map(
+                                  (d) => `
+                                <tr>
+                                  <td class="px-4 py-2.5 font-mono font-semibold text-slate-900 dark:text-white">${esc(d.visitDate)}</td>
+                                  <td class="px-4 py-2.5 text-slate-600 dark:text-slate-300">${esc(d.dayOfWeek)}</td>
+                                  <td class="px-4 py-2.5 text-right font-mono tabular-nums">${d.pageViews}</td>
+                                  <td class="px-4 py-2.5 text-right font-mono font-semibold text-[#0F2547] dark:text-sky-400 tabular-nums">${formatDuration(d.totalSeconds)}</td>
+                                  <td class="px-4 py-2.5 text-right font-mono text-slate-500 whitespace-nowrap">${formatTimeOnly(d.firstSeenAt)} – ${formatTimeOnly(d.lastSeenAt)}</td>
+                                </tr>
+                              `
+                                )
+                                .join('')}
+                            </tbody>
+                          </table>
+                        </div>`
+                      : `<p class="text-xs text-slate-500">No daily visits recorded yet.</p>`
+                  }
+                </div>
+              </div>
+
+              <!-- Recent Live Activity Trail -->
+              <div class="bg-white dark:bg-[#111A2E] border border-slate-200 dark:border-slate-800 rounded-xl overflow-hidden">
+                <div class="p-5 border-b border-slate-100 dark:border-slate-800">
+                  <h2 class="font-display text-lg font-semibold text-slate-900 dark:text-white">Recent Page-by-Page Activity Trail</h2>
+                </div>
+                <div class="overflow-x-auto touch-scroll-x">
+                  <table class="w-full min-w-[600px] text-left text-xs">
+                    <thead class="text-slate-500 border-b border-slate-200 dark:border-slate-800">
+                      <tr>
+                        <th class="px-4 py-2.5 font-semibold">Page / Content</th>
+                        <th class="px-4 py-2.5 font-semibold">Path</th>
+                        <th class="px-4 py-2.5 font-semibold text-right">Duration</th>
+                        <th class="px-4 py-2.5 font-semibold text-right">Last Active</th>
+                      </tr>
+                    </thead>
+                    <tbody class="divide-y divide-slate-100 dark:divide-slate-800">
+                      ${
+                        recentSessions.length
+                          ? recentSessions
+                              .map(
+                                (s) => `
+                              <tr>
+                                <td class="px-4 py-2.5 font-medium text-slate-900 dark:text-white">
+                                  ${
+                                    s.contentSlug
+                                      ? `<a href="#/content/${esc(s.contentSlug)}" class="hover:underline">${esc(s.contentTitle || s.pageTitle || s.pagePath)}</a>`
+                                      : esc(s.pageTitle || s.pagePath)
+                                  }
+                                </td>
+                                <td class="px-4 py-2.5 font-mono text-slate-500">${esc(s.pagePath)}</td>
+                                <td class="px-4 py-2.5 text-right font-mono tabular-nums">${formatDuration(s.durationSeconds)}</td>
+                                <td class="px-4 py-2.5 text-right text-slate-500 whitespace-nowrap">${formatDateTime(s.lastSeenAt)}</td>
+                              </tr>
+                            `
+                              )
+                              .join('')
+                          : `<tr><td colspan="4" class="px-4 py-8 text-center text-slate-500">No session history yet.</td></tr>`
+                      }
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            </div>
+          `;
+        }
+      } else {
+        // Tracker Search & Directory View
+        const data = await apiFetch(
+          `/api/admin/users/track${searchQ ? `?q=${encodeURIComponent(searchQ)}` : ''}`
+        );
+        const results = data.results || [];
+
+        bodyHtml = `
+          <div class="space-y-6">
+            <div>
+              <h1 class="font-display text-2xl sm:text-3xl font-semibold text-slate-900 dark:text-white">Digital User Tracker</h1>
+              <p class="text-xs text-slate-500 dark:text-slate-400 mt-1">
+                Search any user or delegated admin by their <strong>10-Digit UID</strong>, <strong>Unique ID (@name)</strong>, email, or name to inspect live viewing activity, content watch time, spending, and Day/Month/Year visit history. Primary Super Admin is strictly shielded and untrackable.
+              </p>
+            </div>
+
+            <form id="adm-tracker-search-form" class="bg-white dark:bg-[#111A2E] border border-slate-200 dark:border-slate-800 rounded-xl p-4 sm:p-5 flex flex-col sm:flex-row gap-3">
+              <input name="q" value="${esc(searchQ)}" placeholder="Enter 10-digit UID (e.g. 4829105736), @unique_id, name, or email..." class="flex-1 px-4 py-2.5 text-sm rounded-lg border border-slate-300 dark:border-slate-700 bg-slate-50 dark:bg-[#0B1120]" />
+              <div class="flex gap-2">
+                <button type="submit" class="px-5 py-2.5 text-xs font-semibold rounded-lg bg-[#0F2547] hover:bg-[#1B3B6F] dark:bg-sky-500 text-white dark:text-slate-950 whitespace-nowrap">
+                  Search &amp; Track
+                </button>
+                ${searchQ ? `<a href="#/admin/tracker" class="px-4 py-2.5 text-xs font-semibold rounded-lg border border-slate-300 dark:border-slate-700 flex items-center">Reset</a>` : ''}
+              </div>
+            </form>
+
+            ${
+              data.protected
+                ? `<div class="p-5 rounded-xl bg-amber-50 dark:bg-amber-950/30 border border-amber-200 dark:border-amber-900 text-sm text-amber-900 dark:text-amber-200">
+                    <strong>Access Shielded:</strong> ${esc(data.message)}
+                  </div>`
+                : `<div class="bg-white dark:bg-[#111A2E] border border-slate-200 dark:border-slate-800 rounded-xl overflow-x-auto touch-scroll-x">
+                    <table class="w-full min-w-[780px] text-left text-xs">
+                      <thead class="text-slate-500 border-b border-slate-200 dark:border-slate-800">
+                        <tr>
+                          <th class="px-4 py-3 font-semibold">User &amp; Status</th>
+                          <th class="px-4 py-3 font-semibold">10-Digit UID / Unique ID</th>
+                          <th class="px-4 py-3 font-semibold">Live / Last Activity</th>
+                          <th class="px-4 py-3 font-semibold text-right">Contents</th>
+                          <th class="px-4 py-3 font-semibold text-right">Spent</th>
+                          <th class="px-4 py-3 font-semibold text-right">Visit Days</th>
+                          <th class="px-4 py-3 font-semibold text-right">Dossier</th>
+                        </tr>
+                      </thead>
+                      <tbody class="divide-y divide-slate-100 dark:divide-slate-800">
+                        ${
+                          results.length
+                            ? results
+                                .map(
+                                  (u) => `
+                                <tr class="hover:bg-slate-50/70 dark:hover:bg-slate-900/40">
+                                  <td class="px-4 py-3">
+                                    <div class="flex items-center gap-2">
+                                      <span class="w-2 h-2 rounded-full shrink-0 ${u.isOnline ? 'bg-emerald-500' : 'bg-slate-300 dark:bg-slate-600'}" title="${u.isOnline ? 'Online now' : 'Offline'}"></span>
+                                      <span class="font-semibold text-slate-900 dark:text-white">${esc(u.name)}</span>
+                                      <span class="capitalize text-[10px] text-slate-400">(${esc(u.role)})</span>
+                                    </div>
+                                    <div class="text-[11px] text-slate-500 pl-4">${esc(u.email)}</div>
+                                  </td>
+                                  <td class="px-4 py-3 font-mono">
+                                    <div class="font-semibold text-slate-800 dark:text-slate-200">${esc(u.publicUid || '—')}</div>
+                                    <div class="text-slate-500">${u.username ? `@${esc(u.username)}` : 'No ID set'}</div>
+                                  </td>
+                                  <td class="px-4 py-3 max-w-[220px]">
+                                    ${
+                                      u.currentPageTitle || u.currentPagePath
+                                        ? `<div class="font-medium text-slate-800 dark:text-slate-200 truncate">${esc(u.currentPageTitle || u.currentPagePath)}</div>
+                                           <div class="text-[11px] ${u.isOnline ? 'text-emerald-600 dark:text-emerald-400 font-semibold' : 'text-slate-400'}">${u.isOnline ? 'Online now' : formatDateTime(u.lastSeenAt)}</div>`
+                                        : `<span class="text-slate-400">No activity yet</span>`
+                                    }
+                                  </td>
+                                  <td class="px-4 py-3 text-right font-mono tabular-nums">${u.totalContentsViewed}</td>
+                                  <td class="px-4 py-3 text-right font-mono font-semibold text-emerald-700 dark:text-emerald-400 tabular-nums">${formatInr(u.totalSpentInr)}</td>
+                                  <td class="px-4 py-3 text-right font-mono tabular-nums">${u.totalVisitDays}d (${formatDuration(u.totalWebsiteSeconds)})</td>
+                                  <td class="px-4 py-3 text-right whitespace-nowrap">
+                                    <a href="#/admin/tracker/${u.id}" class="px-3 py-1.5 rounded-lg bg-[#0F2547] dark:bg-sky-500 text-white dark:text-slate-950 font-semibold">
+                                      View Full Detail →
+                                    </a>
+                                  </td>
+                                </tr>
+                              `
+                                )
+                                .join('')
+                            : `<tr><td colspan="7" class="px-4 py-10 text-center text-slate-500">No matching users found. Try searching by 10-digit UID, @unique_id, name, or email.</td></tr>`
+                        }
+                      </tbody>
+                    </table>
+                  </div>`
+            }
+          </div>
+        `;
+      }
     } else if (activeTab === 'creators') {
       const data = await apiFetch('/api/admin/users');
       const creators = data.users.filter((u) => u.role === 'creator' || u.role === 'admin');
@@ -735,13 +1280,33 @@ export async function renderAdminDashboardPage(container, activeTab = 'overview'
       </div>
     `;
 
-    wireAdminHandlers(container, activeTab);
+    wireAdminHandlers(container, activeTab, subParam);
   } catch (err) {
     container.innerHTML = `<div class="max-w-3xl mx-auto p-12 text-red-600">${esc(err.message)}</div>`;
   }
 }
 
-function wireAdminHandlers(container, activeTab) {
+function wireAdminHandlers(container, activeTab, subParam = null) {
+  // User Tracker search & dossier refresh
+  document.getElementById('adm-tracker-search-form')?.addEventListener('submit', (e) => {
+    e.preventDefault();
+    const q = String(new FormData(e.target).get('q') || '').trim();
+    if (!q) {
+      window.location.hash = '#/admin/tracker';
+      return;
+    }
+    // If exact 10-digit UID or starts with @, open direct dossier lookup immediately
+    if (/^\d{10}$/.test(q) || q.startsWith('@')) {
+      window.location.hash = `#/admin/tracker/${encodeURIComponent(q.replace(/^@+/, ''))}`;
+    } else {
+      window.location.hash = `#/admin/tracker?q=${encodeURIComponent(q)}`;
+    }
+  });
+
+  document.getElementById('adm-dossier-refresh')?.addEventListener('click', () => {
+    renderAdminDashboardPage(container, activeTab, subParam);
+  });
+
   // Date filter
   document.getElementById('admin-date-filter')?.addEventListener('submit', (e) => {
     e.preventDefault();

@@ -1,5 +1,5 @@
 import { Router } from 'express';
-import { and, asc, count, desc, eq, gte, lte, sql } from 'drizzle-orm';
+import { and, asc, count, desc, eq, gte, inArray, lte, sql } from 'drizzle-orm';
 import { db } from '../db/index.ts';
 import {
   adminSettings,
@@ -16,6 +16,9 @@ import {
   reports,
   subjects,
   transactions,
+  userActivitySessions,
+  userDailyVisits,
+  userProfiles,
   users,
   withdrawals,
 } from '../db/schema.ts';
@@ -236,12 +239,17 @@ router.get('/users', async (req: AuthRequest, res) => {
     const rows = await db
       .select({
         id: users.id,
+        publicUid: users.publicUid,
+        username: users.username,
         email: users.email,
         name: users.name,
         role: users.role,
         status: users.status,
         emailVerified: users.emailVerified,
         createdAt: users.createdAt,
+        state: userProfiles.state,
+        country: userProfiles.country,
+        occupationRole: userProfiles.occupationRole,
         displayName: creatorProfiles.displayName,
         verified: creatorProfiles.verified,
         customCommissionRate: creatorProfiles.customCommissionRate,
@@ -251,20 +259,488 @@ router.get('/users', async (req: AuthRequest, res) => {
         withdrawnAmountInr: creatorWallets.withdrawnAmountInr,
       })
       .from(users)
+      .leftJoin(userProfiles, eq(userProfiles.userId, users.id))
       .leftJoin(creatorProfiles, eq(creatorProfiles.userId, users.id))
       .leftJoin(creatorWallets, eq(creatorWallets.creatorId, users.id))
       .orderBy(desc(users.createdAt));
 
     return res.json({
       actorIsSuperAdmin: isSuperAdminEmail(req.user!.email),
-      users: rows.map((u) => ({
-        ...u,
-        isSuperAdmin: isSuperAdminEmail(u.email),
-      })),
+      users: rows.map((u) => {
+        const isPrimary = isSuperAdminEmail(u.email);
+        return {
+          ...u,
+          // Strictly shield Primary Super Admin's private identity details from admin directory
+          publicUid: isPrimary ? null : u.publicUid,
+          username: isPrimary ? null : u.username,
+          state: isPrimary ? null : u.state,
+          country: isPrimary ? null : u.country,
+          occupationRole: isPrimary ? null : u.occupationRole,
+          isSuperAdmin: isPrimary,
+        };
+      }),
     });
   } catch (error) {
     console.error('Admin users error:', error);
     return res.status(500).json({ error: 'Unable to fetch users.' });
+  }
+});
+
+// GET /api/admin/users/track?q=... (Search & list trackable users — Primary Super Admin strictly shielded)
+router.get('/users/track', async (req: AuthRequest, res) => {
+  try {
+    const rawQ = String(req.query.q || '').trim();
+    const cleanQ = rawQ.replace(/^@+/, '').toLowerCase();
+
+    const allUsers = await db
+      .select({
+        id: users.id,
+        publicUid: users.publicUid,
+        username: users.username,
+        email: users.email,
+        name: users.name,
+        role: users.role,
+        status: users.status,
+        createdAt: users.createdAt,
+        state: userProfiles.state,
+        country: userProfiles.country,
+        occupationRole: userProfiles.occupationRole,
+      })
+      .from(users)
+      .leftJoin(userProfiles, eq(userProfiles.userId, users.id))
+      .orderBy(desc(users.createdAt));
+
+    // Check if the query specifically targets Primary Super Admin
+    if (cleanQ) {
+      const superAdminRow = allUsers.find((u) => isSuperAdminEmail(u.email));
+      if (superAdminRow) {
+        const hitsSuperAdmin =
+          superAdminRow.email.toLowerCase() === cleanQ ||
+          (superAdminRow.publicUid && superAdminRow.publicUid.toLowerCase() === cleanQ) ||
+          (superAdminRow.username && superAdminRow.username.toLowerCase() === cleanQ);
+        if (hitsSuperAdmin) {
+          return res.json({
+            protected: true,
+            message:
+              'Primary Super Admin details and activity are strictly protected and cannot be accessed by anyone.',
+            results: [],
+          });
+        }
+      }
+    }
+
+    // Filter out Primary Super Admin ALWAYS; delegated admins and regular users ARE trackable
+    const trackable = allUsers.filter((u) => {
+      if (isSuperAdminEmail(u.email)) return false;
+      if (!cleanQ) return true;
+      return (
+        (u.publicUid && u.publicUid.toLowerCase().includes(cleanQ)) ||
+        (u.username && u.username.toLowerCase().includes(cleanQ)) ||
+        u.name.toLowerCase().includes(cleanQ) ||
+        u.email.toLowerCase().includes(cleanQ) ||
+        String(u.id) === cleanQ
+      );
+    });
+
+    const sliced = trackable.slice(0, 50);
+    const userIds = sliced.map((u) => u.id);
+
+    if (userIds.length === 0) {
+      return res.json({ protected: false, results: [] });
+    }
+
+    const [recentSessions, spendAgg, visitAgg, contentAgg] = await Promise.all([
+      db
+        .select({
+          userId: userActivitySessions.userId,
+          pagePath: userActivitySessions.pagePath,
+          pageTitle: userActivitySessions.pageTitle,
+          contentId: userActivitySessions.contentId,
+          lastSeenAt: userActivitySessions.lastSeenAt,
+        })
+        .from(userActivitySessions)
+        .where(inArray(userActivitySessions.userId, userIds))
+        .orderBy(desc(userActivitySessions.lastSeenAt)),
+      db
+        .select({
+          userId: payments.userId,
+          totalSpentInr: sql<number>`COALESCE(SUM(${payments.amountInr}), 0)`,
+        })
+        .from(payments)
+        .where(and(inArray(payments.userId, userIds), eq(payments.status, 'captured')))
+        .groupBy(payments.userId),
+      db
+        .select({
+          userId: userDailyVisits.userId,
+          totalVisitDays: count(userDailyVisits.id),
+          totalSeconds: sql<number>`COALESCE(SUM(${userDailyVisits.totalSeconds}), 0)`,
+        })
+        .from(userDailyVisits)
+        .where(inArray(userDailyVisits.userId, userIds))
+        .groupBy(userDailyVisits.userId),
+      db
+        .select({
+          userId: userActivitySessions.userId,
+          totalContentsViewed: sql<number>`COUNT(DISTINCT ${userActivitySessions.contentId})`,
+        })
+        .from(userActivitySessions)
+        .where(
+          and(
+            inArray(userActivitySessions.userId, userIds),
+            sql`${userActivitySessions.contentId} IS NOT NULL`
+          )
+        )
+        .groupBy(userActivitySessions.userId),
+    ]);
+
+    const latestByUser = new Map<
+      number,
+      { pagePath: string; pageTitle: string | null; contentId: number | null; lastSeenAt: Date }
+    >();
+    for (const s of recentSessions) {
+      if (!latestByUser.has(s.userId)) {
+        latestByUser.set(s.userId, s);
+      }
+    }
+    const spendByUser = new Map(spendAgg.map((r) => [r.userId, Number(r.totalSpentInr || 0)]));
+    const visitByUser = new Map(
+      visitAgg.map((r) => [
+        r.userId,
+        { totalVisitDays: Number(r.totalVisitDays || 0), totalSeconds: Number(r.totalSeconds || 0) },
+      ])
+    );
+    const contentByUser = new Map(
+      contentAgg.map((r) => [r.userId, Number(r.totalContentsViewed || 0)])
+    );
+
+    const nowMs = Date.now();
+    const results = sliced.map((u) => {
+      const latest = latestByUser.get(u.id);
+      const lastSeenAt = latest?.lastSeenAt || null;
+      const isOnline = Boolean(lastSeenAt && nowMs - new Date(lastSeenAt).getTime() <= 45_000);
+      const visits = visitByUser.get(u.id) || { totalVisitDays: 0, totalSeconds: 0 };
+      return {
+        ...u,
+        isOnline,
+        lastSeenAt,
+        currentPagePath: latest?.pagePath || null,
+        currentPageTitle: latest?.pageTitle || null,
+        totalSpentInr: Number((spendByUser.get(u.id) || 0).toFixed(2)),
+        totalVisitDays: visits.totalVisitDays,
+        totalWebsiteSeconds: visits.totalSeconds,
+        totalContentsViewed: contentByUser.get(u.id) || 0,
+      };
+    });
+
+    // Sort online users first, then most recently active
+    results.sort((a, b) => {
+      if (a.isOnline !== b.isOnline) return a.isOnline ? -1 : 1;
+      const tA = a.lastSeenAt ? new Date(a.lastSeenAt).getTime() : 0;
+      const tB = b.lastSeenAt ? new Date(b.lastSeenAt).getTime() : 0;
+      return tB - tA;
+    });
+
+    return res.json({ protected: false, results });
+  } catch (error) {
+    console.error('Admin user tracker search error:', error);
+    return res.status(500).json({ error: 'Unable to search users.' });
+  }
+});
+
+// GET /api/admin/users/:identifier/dossier (Full User Digital Dossier — strictly blocks Primary Super Admin)
+router.get('/users/:identifier/dossier', async (req: AuthRequest, res) => {
+  try {
+    const rawId = decodeURIComponent(String(req.params.identifier || '')).trim();
+    const cleanId = rawId.replace(/^@+/, '').toLowerCase();
+    if (!cleanId) {
+      return res.status(400).json({ error: 'User ID, 10-digit UID, or Unique Name is required.' });
+    }
+
+    let targetUser: typeof users.$inferSelect | undefined;
+
+    // 1. Check 10-digit publicUid
+    if (/^\d{10}$/.test(cleanId)) {
+      const [u] = await db.select().from(users).where(eq(users.publicUid, cleanId)).limit(1);
+      targetUser = u;
+    }
+    // 2. Check internal numeric user ID
+    if (!targetUser && /^\d+$/.test(cleanId)) {
+      const [u] = await db.select().from(users).where(eq(users.id, Number(cleanId))).limit(1);
+      targetUser = u;
+    }
+    // 3. Check Unique User ID (username) or Email
+    if (!targetUser) {
+      const [u] = await db
+        .select()
+        .from(users)
+        .where(sql`LOWER(${users.username}) = ${cleanId} OR LOWER(${users.email}) = ${cleanId}`)
+        .limit(1);
+      targetUser = u;
+    }
+
+    if (!targetUser) {
+      return res.status(404).json({ error: 'No user found matching that Unique ID or 10-digit UID.' });
+    }
+
+    // STRICT SUPER ADMIN PRIVACY SHIELD: NOBODY (not even Super Admin or any other Admin) can view Super Admin's dossier
+    if (isSuperAdminEmail(targetUser.email)) {
+      return res.status(403).json({
+        error:
+          'Primary Super Admin details and activity are strictly protected and cannot be viewed or tracked by anyone.',
+      });
+    }
+
+    const userId = targetUser.id;
+    const [profileRows, sessionsRows, dailyRows, paymentRows] = await Promise.all([
+      db.select().from(userProfiles).where(eq(userProfiles.userId, userId)).limit(1),
+      db
+        .select({
+          id: userActivitySessions.id,
+          contentId: userActivitySessions.contentId,
+          pagePath: userActivitySessions.pagePath,
+          pageTitle: userActivitySessions.pageTitle,
+          durationSeconds: userActivitySessions.durationSeconds,
+          visitDate: userActivitySessions.visitDate,
+          startedAt: userActivitySessions.startedAt,
+          lastSeenAt: userActivitySessions.lastSeenAt,
+          contentTitle: contents.title,
+          contentSlug: contents.slug,
+          contentType: contents.contentType,
+          contentIsFree: contents.isFree,
+          contentPriceInr: contents.priceInr,
+        })
+        .from(userActivitySessions)
+        .leftJoin(contents, eq(userActivitySessions.contentId, contents.id))
+        .where(eq(userActivitySessions.userId, userId))
+        .orderBy(desc(userActivitySessions.lastSeenAt))
+        .limit(500),
+      db
+        .select()
+        .from(userDailyVisits)
+        .where(eq(userDailyVisits.userId, userId))
+        .orderBy(desc(userDailyVisits.visitDate))
+        .limit(365),
+      db
+        .select({
+          id: payments.id,
+          receiptNumber: payments.receiptNumber,
+          amountInr: payments.amountInr,
+          status: payments.status,
+          mode: payments.mode,
+          createdAt: payments.createdAt,
+          contentId: contents.id,
+          contentTitle: contents.title,
+          contentSlug: contents.slug,
+        })
+        .from(payments)
+        .innerJoin(contents, eq(payments.contentId, contents.id))
+        .where(eq(payments.userId, userId))
+        .orderBy(desc(payments.createdAt)),
+    ]);
+
+    const profile = profileRows[0] || null;
+    const latestSession = sessionsRows[0] || null;
+    const nowMs = Date.now();
+    const isOnline = Boolean(
+      latestSession && nowMs - new Date(latestSession.lastSeenAt).getTime() <= 45_000
+    );
+
+    // Aggregate per-content watch/read history
+    const contentMap = new Map<
+      number,
+      {
+        contentId: number;
+        title: string;
+        slug: string;
+        contentType: string;
+        isFree: boolean;
+        priceInr: string;
+        viewsCount: number;
+        totalDurationSeconds: number;
+        firstViewedAt: Date;
+        lastViewedAt: Date;
+      }
+    >();
+
+    for (const s of sessionsRows) {
+      if (!s.contentId) continue;
+      const existing = contentMap.get(s.contentId);
+      if (!existing) {
+        contentMap.set(s.contentId, {
+          contentId: s.contentId,
+          title: s.contentTitle || s.pageTitle || `Content #${s.contentId}`,
+          slug: s.contentSlug || String(s.contentId),
+          contentType: s.contentType || 'Publication',
+          isFree: Boolean(s.contentIsFree),
+          priceInr: String(s.contentPriceInr || '0.00'),
+          viewsCount: 1,
+          totalDurationSeconds: Number(s.durationSeconds || 0),
+          firstViewedAt: s.startedAt,
+          lastViewedAt: s.lastSeenAt,
+        });
+      } else {
+        existing.viewsCount += 1;
+        existing.totalDurationSeconds += Number(s.durationSeconds || 0);
+        if (new Date(s.startedAt) < new Date(existing.firstViewedAt)) {
+          existing.firstViewedAt = s.startedAt;
+        }
+        if (new Date(s.lastSeenAt) > new Date(existing.lastViewedAt)) {
+          existing.lastViewedAt = s.lastSeenAt;
+        }
+      }
+    }
+
+    const contentHistory = Array.from(contentMap.values()).sort(
+      (a, b) => new Date(b.lastViewedAt).getTime() - new Date(a.lastViewedAt).getTime()
+    );
+    const totalContentReadSeconds = contentHistory.reduce(
+      (sum, c) => sum + c.totalDurationSeconds,
+      0
+    );
+
+    // Aggregate spending
+    const capturedPayments = paymentRows.filter((p) => p.status === 'captured');
+    const totalSpentInr = capturedPayments.reduce((sum, p) => sum + Number(p.amountInr || 0), 0);
+
+    // Aggregate Day / Month / Year visit calendar
+    const MONTH_NAMES = [
+      'Jan',
+      'Feb',
+      'Mar',
+      'Apr',
+      'May',
+      'Jun',
+      'Jul',
+      'Aug',
+      'Sep',
+      'Oct',
+      'Nov',
+      'Dec',
+    ];
+    const DAY_NAMES = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
+
+    const yearMap = new Map<
+      number,
+      { year: number; days: number; totalSeconds: number; pageViews: number }
+    >();
+    const monthMap = new Map<
+      string,
+      {
+        year: number;
+        month: number;
+        label: string;
+        days: number;
+        totalSeconds: number;
+        pageViews: number;
+      }
+    >();
+
+    const dailyLogs = dailyRows.map((d) => {
+      const yEntry = yearMap.get(d.visitYear) || {
+        year: d.visitYear,
+        days: 0,
+        totalSeconds: 0,
+        pageViews: 0,
+      };
+      yEntry.days += 1;
+      yEntry.totalSeconds += Number(d.totalSeconds || 0);
+      yEntry.pageViews += Number(d.pageViews || 0);
+      yearMap.set(d.visitYear, yEntry);
+
+      const mKey = `${d.visitYear}-${String(d.visitMonth).padStart(2, '0')}`;
+      const mEntry = monthMap.get(mKey) || {
+        year: d.visitYear,
+        month: d.visitMonth,
+        label: `${MONTH_NAMES[(d.visitMonth - 1) % 12] || d.visitMonth} ${d.visitYear}`,
+        days: 0,
+        totalSeconds: 0,
+        pageViews: 0,
+      };
+      mEntry.days += 1;
+      mEntry.totalSeconds += Number(d.totalSeconds || 0);
+      mEntry.pageViews += Number(d.pageViews || 0);
+      monthMap.set(mKey, mEntry);
+
+      const dt = new Date(`${d.visitDate}T00:00:00Z`);
+      const dayOfWeek = Number.isNaN(dt.getTime()) ? '' : DAY_NAMES[dt.getUTCDay()];
+
+      return {
+        visitDate: d.visitDate,
+        visitYear: d.visitYear,
+        visitMonth: d.visitMonth,
+        visitDay: d.visitDay,
+        dayOfWeek,
+        pageViews: Number(d.pageViews || 0),
+        totalSeconds: Number(d.totalSeconds || 0),
+        firstSeenAt: d.firstSeenAt,
+        lastSeenAt: d.lastSeenAt,
+      };
+    });
+
+    const totalWebsiteSeconds = dailyLogs.reduce((sum, d) => sum + d.totalSeconds, 0);
+    const byYear = Array.from(yearMap.values()).sort((a, b) => b.year - a.year);
+    const byMonth = Array.from(monthMap.values()).sort((a, b) =>
+      b.year !== a.year ? b.year - a.year : b.month - a.month
+    );
+
+    return res.json({
+      user: {
+        id: targetUser.id,
+        publicUid: targetUser.publicUid,
+        username: targetUser.username,
+        name: targetUser.name,
+        email: targetUser.email,
+        role: targetUser.role,
+        status: targetUser.status,
+        emailVerified: targetUser.emailVerified,
+        avatarUrl: targetUser.avatarUrl,
+        bio: targetUser.bio,
+        createdAt: targetUser.createdAt,
+      },
+      profile,
+      liveStatus: {
+        isOnline,
+        lastSeenAt: latestSession?.lastSeenAt || null,
+        currentSession: latestSession
+          ? {
+              id: latestSession.id,
+              pagePath: latestSession.pagePath,
+              pageTitle: latestSession.pageTitle || latestSession.contentTitle || latestSession.pagePath,
+              contentId: latestSession.contentId,
+              contentSlug: latestSession.contentSlug,
+              durationSeconds: Number(latestSession.durationSeconds || 0),
+              startedAt: latestSession.startedAt,
+              lastSeenAt: latestSession.lastSeenAt,
+            }
+          : null,
+      },
+      summary: {
+        totalSpentInr: Number(totalSpentInr.toFixed(2)),
+        successfulPaymentsCount: capturedPayments.length,
+        totalContentsViewed: contentHistory.length,
+        totalContentReadSeconds,
+        totalWebsiteSeconds,
+        totalVisitDays: dailyLogs.length,
+        firstVisitDate: dailyLogs.length ? dailyLogs[dailyLogs.length - 1].visitDate : null,
+        lastVisitDate: dailyLogs.length ? dailyLogs[0].visitDate : null,
+      },
+      contentHistory,
+      spending: {
+        totalSpentInr: Number(totalSpentInr.toFixed(2)),
+        payments: paymentRows,
+      },
+      visits: {
+        totalVisitDays: dailyLogs.length,
+        totalWebsiteSeconds,
+        byYear,
+        byMonth,
+        dailyLogs,
+      },
+      recentSessions: sessionsRows.slice(0, 30),
+    });
+  } catch (error) {
+    console.error('Admin user dossier error:', error);
+    return res.status(500).json({ error: 'Unable to load user tracking dossier.' });
   }
 });
 

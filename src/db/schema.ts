@@ -18,6 +18,8 @@ export const users = pgTable(
   {
     id: serial('id').primaryKey(),
     uid: text('uid').notNull().unique(),
+    publicUid: text('public_uid'), // 10-digit unique numeric UID assigned at account creation
+    username: text('username'), // Unique user ID / handle (one name per user)
     email: text('email').notNull().unique(),
     passwordHash: text('password_hash'),
     name: text('name').notNull(),
@@ -32,6 +34,8 @@ export const users = pgTable(
   (table) => [
     index('idx_users_role').on(table.role),
     index('idx_users_status').on(table.status),
+    index('idx_users_public_uid').on(table.publicUid),
+    index('idx_users_username').on(table.username),
   ]
 );
 
@@ -45,6 +49,12 @@ export const userProfiles = pgTable('user_profiles', {
   headline: text('headline'),
   institution: text('institution'),
   location: text('location'),
+  state: text('state'),
+  country: text('country'),
+  occupationRole: text('occupation_role'), // e.g., School Student, College Student, Engineer, Doctor, Artist, Businessman
+  gender: text('gender'), // Male | Female | Non-binary | Prefer not to say
+  dateOfBirth: text('date_of_birth'), // YYYY-MM-DD
+  profileCompleted: boolean('profile_completed').notNull().default(false),
   languagePreference: text('language_preference').default('English'),
   websiteUrl: text('website_url'),
   socialLinks: jsonb('social_links').$type<Record<string, string>>(),
@@ -516,6 +526,52 @@ export const contactMessages = pgTable('contact_messages', {
   status: text('status').notNull().default('new'),
   createdAt: timestamp('created_at').defaultNow().notNull(),
 });
+
+// 26. User Activity & Content Viewing Sessions (Admin Digital Tracking)
+export const userActivitySessions = pgTable(
+  'user_activity_sessions',
+  {
+    id: serial('id').primaryKey(),
+    userId: integer('user_id')
+      .references(() => users.id, { onDelete: 'cascade' })
+      .notNull(),
+    contentId: integer('content_id').references(() => contents.id, { onDelete: 'set null' }),
+    pagePath: text('page_path').notNull(),
+    pageTitle: text('page_title'),
+    durationSeconds: integer('duration_seconds').notNull().default(0),
+    visitDate: text('visit_date').notNull(), // YYYY-MM-DD
+    startedAt: timestamp('started_at').defaultNow().notNull(),
+    lastSeenAt: timestamp('last_seen_at').defaultNow().notNull(),
+  },
+  (table) => [
+    index('idx_activity_user_last_seen').on(table.userId, table.lastSeenAt),
+    index('idx_activity_user_content').on(table.userId, table.contentId),
+    index('idx_activity_user_date').on(table.userId, table.visitDate),
+  ]
+);
+
+// 27. User Daily Visits (Day / Month / Year Visit Calendar)
+export const userDailyVisits = pgTable(
+  'user_daily_visits',
+  {
+    id: serial('id').primaryKey(),
+    userId: integer('user_id')
+      .references(() => users.id, { onDelete: 'cascade' })
+      .notNull(),
+    visitDate: text('visit_date').notNull(), // YYYY-MM-DD
+    visitYear: integer('visit_year').notNull(),
+    visitMonth: integer('visit_month').notNull(), // 1..12
+    visitDay: integer('visit_day').notNull(), // 1..31
+    pageViews: integer('page_views').notNull().default(1),
+    totalSeconds: integer('total_seconds').notNull().default(0),
+    firstSeenAt: timestamp('first_seen_at').defaultNow().notNull(),
+    lastSeenAt: timestamp('last_seen_at').defaultNow().notNull(),
+  },
+  (table) => [
+    uniqueIndex('uq_user_daily_visit').on(table.userId, table.visitDate),
+    index('idx_daily_visits_user_ym').on(table.userId, table.visitYear, table.visitMonth),
+  ]
+);
 
 // Relations
 export const usersRelations = relations(users, ({ one, many }) => ({
