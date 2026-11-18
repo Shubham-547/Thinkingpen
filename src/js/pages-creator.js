@@ -635,9 +635,31 @@ function renderContentEditorHtml(editPayload, commRate) {
           </div>
         </div>
 
-        <!-- Cover Artwork Selection -->
+        <!-- Cover Artwork Selection & Direct Upload -->
         <div class="pt-4 border-t border-slate-100 dark:border-slate-800 space-y-3">
-          <label class="block text-xs font-semibold text-slate-600 dark:text-slate-300">Cover Image / Thumbnail</label>
+          <div class="flex flex-wrap items-center justify-between gap-2">
+            <label class="block text-xs font-semibold text-slate-600 dark:text-slate-300">Cover Image / Thumbnail</label>
+            <span id="ed-cover-status" class="text-[11px] text-slate-500 dark:text-slate-400">
+              ${item?.coverImageUrl?.startsWith('data:image/') ? 'Custom uploaded cover' : 'Choose a preset, upload a photo, or paste a URL'}
+            </span>
+          </div>
+
+          <!-- Left-side Upload Cover Photo + Live Preview -->
+          <div class="flex flex-col sm:flex-row items-start sm:items-center gap-3 p-3 rounded-xl border border-slate-200 dark:border-slate-800 bg-slate-50/70 dark:bg-[#0B1120]">
+            <div class="flex items-center gap-3 w-full sm:w-auto">
+              <button type="button" id="ed-cover-upload-btn" class="inline-flex items-center justify-center gap-1.5 min-h-[42px] px-3.5 py-2 text-xs font-semibold rounded-lg bg-[#0F2547] hover:bg-[#1B3B6F] dark:bg-sky-500 dark:hover:bg-sky-400 text-white dark:text-slate-950 whitespace-nowrap shrink-0 transition-colors">
+                <svg class="w-4 h-4 shrink-0" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M12 4v16m8-8H4"></path></svg>
+                <span>Upload Cover Photo</span>
+              </button>
+              <input type="file" id="ed-cover-file-input" accept="image/jpeg,image/png,image/webp,image/gif" class="hidden" />
+              <img id="ed-cover-preview" src="${esc(item?.coverImageUrl || PRESET_COVERS[0].url)}" alt="Selected cover preview" class="w-16 h-12 rounded-md object-cover border border-slate-200 dark:border-slate-700 shrink-0" />
+            </div>
+            <div class="flex-1 w-full min-w-0">
+              <input type="hidden" id="ed-cover-value" value="${esc(item?.coverImageUrl || PRESET_COVERS[0].url)}" />
+              <input name="coverImageUrl" id="ed-cover-url" value="${item?.coverImageUrl?.startsWith('data:image/') ? '' : esc(item?.coverImageUrl || PRESET_COVERS[0].url)}" placeholder="${item?.coverImageUrl?.startsWith('data:image/') ? 'Custom cover photo uploaded (or paste external image URL to replace)' : 'Or paste an external image URL (https://...)'}" class="w-full px-3 py-2 text-xs font-mono rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-[#111A2E]" />
+            </div>
+          </div>
+
           <div class="grid grid-cols-2 sm:grid-cols-4 gap-3">
             ${PRESET_COVERS.map(
               (p) => `
@@ -650,14 +672,23 @@ function renderContentEditorHtml(editPayload, commRate) {
             `
             ).join('')}
           </div>
-          <input name="coverImageUrl" id="ed-cover-url" value="${esc(item?.coverImageUrl || PRESET_COVERS[0].url)}" placeholder="Or paste image URL / upload cover file below" class="w-full px-3.5 py-2 text-xs font-mono rounded-lg border border-slate-300 dark:border-slate-700 bg-slate-50 dark:bg-[#0B1120]" />
         </div>
 
         <!-- Rich-Text Editorial Studio -->
         <div class="pt-4 border-t border-slate-100 dark:border-slate-800 space-y-2">
           <label class="block text-xs font-semibold text-slate-600 dark:text-slate-300">Full Content (Rich-Text Editor)</label>
           <div class="border border-slate-300 dark:border-slate-700 rounded-xl overflow-hidden bg-white dark:bg-[#0B1120]">
+            <!-- Formatting Toolbar (Left-first Photo & File buttons always visible) -->
             <div class="flex items-center gap-1 p-2 border-b border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-[#111A2E] overflow-x-auto no-scrollbar touch-scroll-x">
+              <button type="button" id="rte-upload-image" title="Insert Photo into Content" class="inline-flex items-center gap-1.5 min-h-[34px] px-2.5 py-1 text-xs font-semibold rounded bg-[#0F2547] text-white hover:bg-[#1B3B6F] dark:bg-sky-500 dark:text-slate-950 dark:hover:bg-sky-400 whitespace-nowrap shrink-0 transition-colors">
+                <svg class="w-3.5 h-3.5 shrink-0" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><rect x="3" y="3" width="18" height="18" rx="2" ry="2"></rect><circle cx="8.5" cy="8.5" r="1.5"></circle><polyline points="21 15 16 10 5 21"></polyline></svg>
+                <span>+ Photo</span>
+              </button>
+              <button type="button" id="rte-attach-file-top" title="Attach PDF, Video, or Document" class="inline-flex items-center gap-1.5 min-h-[34px] px-2.5 py-1 text-xs font-semibold rounded border border-slate-300 dark:border-slate-700 bg-white dark:bg-[#0B1120] text-slate-700 dark:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-800 whitespace-nowrap shrink-0 transition-colors">
+                <svg class="w-3.5 h-3.5 shrink-0" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M21.44 11.05l-9.19 9.19a6 6 0 01-8.49-8.49l9.19-9.19a4 4 0 015.66 5.66l-9.2 9.19a2 2 0 01-2.83-2.83l8.49-8.48"></path></svg>
+                <span>+ File</span>
+              </button>
+              <span class="h-4 w-px bg-slate-300 dark:bg-slate-700 mx-1 shrink-0"></span>
               <button type="button" data-cmd="formatBlock" data-val="H2" class="rte-btn min-h-[34px] px-2.5 py-1 text-xs font-semibold rounded hover:bg-slate-200 dark:hover:bg-slate-800 whitespace-nowrap shrink-0">H2</button>
               <button type="button" data-cmd="formatBlock" data-val="H3" class="rte-btn min-h-[34px] px-2.5 py-1 text-xs font-semibold rounded hover:bg-slate-200 dark:hover:bg-slate-800 whitespace-nowrap shrink-0">H3</button>
               <button type="button" data-cmd="formatBlock" data-val="P" class="rte-btn min-h-[34px] px-2.5 py-1 text-xs rounded hover:bg-slate-200 dark:hover:bg-slate-800 whitespace-nowrap shrink-0">Paragraph</button>
@@ -667,16 +698,27 @@ function renderContentEditorHtml(editPayload, commRate) {
               <button type="button" data-cmd="insertOrderedList" class="rte-btn min-h-[34px] px-2.5 py-1 text-xs rounded hover:bg-slate-200 dark:hover:bg-slate-800 whitespace-nowrap shrink-0">1. List</button>
               <button type="button" data-cmd="formatBlock" data-val="BLOCKQUOTE" class="rte-btn min-h-[34px] px-2.5 py-1 text-xs rounded hover:bg-slate-200 dark:hover:bg-slate-800 whitespace-nowrap shrink-0">Quote</button>
               <button type="button" id="rte-insert-code" class="min-h-[34px] px-2.5 py-1 text-xs font-mono rounded hover:bg-slate-200 dark:hover:bg-slate-800 whitespace-nowrap shrink-0">Code</button>
-              <span class="h-4 w-px bg-slate-300 dark:bg-slate-700 mx-0.5 shrink-0"></span>
-              <button type="button" id="rte-upload-image" class="inline-flex items-center gap-1.5 min-h-[34px] px-2.5 py-1 text-xs font-semibold rounded bg-[#0F2547] text-white hover:bg-[#1B3B6F] dark:bg-sky-500 dark:text-slate-950 dark:hover:bg-sky-400 whitespace-nowrap shrink-0 transition-colors">
-                <svg class="w-3.5 h-3.5 shrink-0" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><rect x="3" y="3" width="18" height="18" rx="2" ry="2"></rect><circle cx="8.5" cy="8.5" r="1.5"></circle><polyline points="21 15 16 10 5 21"></polyline></svg>
-                <span>Upload Photo</span>
-              </button>
               <input type="file" id="rte-image-file-input" accept="image/jpeg,image/png,image/webp,image/gif" class="hidden" />
             </div>
-            <div id="ed-rte" contenteditable="true" data-placeholder="Write your notes, article, poem, story, or lecture transcript here. Use H2 headings to auto-generate a Table of Contents, or click Upload Photo to insert diagrams and images..." class="sp-rte-editor reading-prose p-4 sm:p-5 max-w-none">${item?.bodyHtml || ''}</div>
+
+            <!-- Editable Prose Canvas -->
+            <div id="ed-rte" contenteditable="true" data-placeholder="Write your notes, article, poem, story, or lecture transcript here. Use + Photo or + File on the left to add images, PDFs, or documents..." class="sp-rte-editor reading-prose p-4 sm:p-5 max-w-none">${item?.bodyHtml || ''}</div>
+
+            <!-- Bottom-Left Composer Attachment Bar (always visible on phone & desktop) -->
+            <div class="flex flex-wrap items-center justify-between gap-2 px-3 py-2 border-t border-slate-200 dark:border-slate-800 bg-slate-50/80 dark:bg-[#111A2E]">
+              <div class="flex flex-wrap items-center gap-2">
+                <button type="button" id="rte-bottom-photo-btn" class="inline-flex items-center gap-1.5 min-h-[36px] px-3 py-1.5 text-xs font-semibold rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-[#0B1120] text-slate-800 dark:text-slate-100 hover:border-[#0F2547] dark:hover:border-sky-400 transition-colors">
+                  <svg class="w-4 h-4 text-[#0F2547] dark:text-sky-400 shrink-0" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M12 4v16m8-8H4"></path></svg>
+                  <span>Upload Photo</span>
+                </button>
+                <button type="button" id="rte-bottom-file-btn" class="inline-flex items-center gap-1.5 min-h-[36px] px-3 py-1.5 text-xs font-semibold rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-[#0B1120] text-slate-800 dark:text-slate-100 hover:border-[#0F2547] dark:hover:border-sky-400 transition-colors">
+                  <svg class="w-4 h-4 text-slate-600 dark:text-slate-300 shrink-0" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M21.44 11.05l-9.19 9.19a6 6 0 01-8.49-8.49l9.19-9.19a4 4 0 015.66 5.66l-9.2 9.19a2 2 0 01-2.83-2.83l8.49-8.48"></path></svg>
+                  <span>Attach File (PDF/Doc/Video)</span>
+                </button>
+              </div>
+              <span id="rte-pending-file-chip" class="text-[11px] text-slate-500 dark:text-slate-400">JPG, PNG, WebP, GIF · PDF, DOCX, MP4</span>
+            </div>
           </div>
-          <p class="text-[11px] text-slate-500 dark:text-slate-400">Tip: Click <strong>Upload Photo</strong> to insert JPG, PNG, WebP, or GIF images from your phone or computer (you can also paste or drag &amp; drop photos directly into the editor).</p>
         </div>
 
         <!-- Authorized Video URL (optional) -->
@@ -824,17 +866,40 @@ function wireContentEditor(container, editPayload, commRate) {
   catSel?.addEventListener('change', filterSubjects);
   filterSubjects();
 
-  // Cover preset picker
+  // Cover preset picker + direct Cover Photo upload
+  const coverValEl = document.getElementById('ed-cover-value');
+  const coverUrlEl = document.getElementById('ed-cover-url');
+  const coverPreviewEl = document.getElementById('ed-cover-preview');
+  const coverStatusEl = document.getElementById('ed-cover-status');
+  const coverUploadBtn = document.getElementById('ed-cover-upload-btn');
+  const coverFileInput = document.getElementById('ed-cover-file-input');
+
+  const setActiveCoverPreset = (url) => {
+    container.querySelectorAll('.ed-cover-preset').forEach((b) => {
+      const active = b.dataset.cover === url;
+      b.classList.toggle('border-[#0F2547]', active);
+      b.classList.toggle('dark:border-sky-400', active);
+      b.classList.toggle('border-slate-200', !active);
+    });
+  };
+
   container.querySelectorAll('.ed-cover-preset').forEach((btn) => {
     btn.addEventListener('click', () => {
-      document.getElementById('ed-cover-url').value = btn.dataset.cover;
-      container.querySelectorAll('.ed-cover-preset').forEach((b) => {
-        const active = b.dataset.cover === btn.dataset.cover;
-        b.classList.toggle('border-[#0F2547]', active);
-        b.classList.toggle('dark:border-sky-400', active);
-        b.classList.toggle('border-slate-200', !active);
-      });
+      const url = btn.dataset.cover;
+      if (coverValEl) coverValEl.value = url;
+      if (coverUrlEl) coverUrlEl.value = url;
+      if (coverPreviewEl) coverPreviewEl.src = url;
+      if (coverStatusEl) coverStatusEl.textContent = 'Preset cover selected';
+      setActiveCoverPreset(url);
     });
+  });
+
+  coverUrlEl?.addEventListener('input', () => {
+    const typed = coverUrlEl.value.trim();
+    if (coverValEl) coverValEl.value = typed;
+    if (typed && coverPreviewEl) coverPreviewEl.src = typed;
+    if (coverStatusEl) coverStatusEl.textContent = typed ? 'External image URL' : 'No cover URL set';
+    setActiveCoverPreset(typed);
   });
 
   // Rich Text Editor toolbar commands
@@ -994,6 +1059,90 @@ function wireContentEditor(container, editPayload, commRate) {
     rteImageInput?.click();
   });
 
+  document.getElementById('rte-bottom-photo-btn')?.addEventListener('click', () => {
+    saveRteSelection();
+    rteImageInput?.click();
+  });
+
+  // Wire Cover Photo direct upload using the same fast image optimizer + server validation
+  coverUploadBtn?.addEventListener('click', () => coverFileInput?.click());
+  coverFileInput?.addEventListener('change', async (e) => {
+    const rawFile = e.target.files?.[0];
+    if (!rawFile) return;
+    if (!/^image\/(jpeg|png|webp|gif)$/i.test(rawFile.type)) {
+      showToast('Please select a JPG, PNG, WebP, or GIF image for the cover.', 'error');
+      coverFileInput.value = '';
+      return;
+    }
+    const origHtml = coverUploadBtn?.innerHTML;
+    if (coverUploadBtn) {
+      coverUploadBtn.disabled = true;
+      coverUploadBtn.innerHTML = '<span>Uploading...</span>';
+    }
+    try {
+      const prepared = await optimizeEditorImage(rawFile);
+      if (prepared.size > 5 * 1024 * 1024) {
+        showToast('Cover photo exceeds 5 MB limit.', 'error');
+        return;
+      }
+      const fd = new FormData();
+      fd.append('image', prepared);
+      const res = await apiFetch('/api/creator/editor-image', { method: 'POST', body: fd });
+      if (coverValEl) coverValEl.value = res.url;
+      if (coverUrlEl) {
+        coverUrlEl.value = '';
+        coverUrlEl.placeholder = `Uploaded: ${rawFile.name} (or paste a URL to replace)`;
+      }
+      if (coverPreviewEl) coverPreviewEl.src = res.url;
+      if (coverStatusEl) coverStatusEl.textContent = `Uploaded cover: ${rawFile.name}`;
+      setActiveCoverPreset('');
+      showToast('Cover photo uploaded!', 'success');
+    } catch (err) {
+      showToast(err.message || 'Cover photo upload failed.', 'error');
+    } finally {
+      if (coverUploadBtn && origHtml) {
+        coverUploadBtn.disabled = false;
+        coverUploadBtn.innerHTML = origHtml;
+      }
+      coverFileInput.value = '';
+    }
+  });
+
+  // Wire + File shortcuts in Rich-Text Editor to the file attachment picker
+  const triggerAttachFile = () => {
+    const fileInput = document.getElementById('ed-file-input');
+    if (fileInput) {
+      fileInput.click();
+    }
+  };
+  document.getElementById('rte-attach-file-top')?.addEventListener('click', triggerAttachFile);
+  document.getElementById('rte-bottom-file-btn')?.addEventListener('click', triggerAttachFile);
+
+  document.getElementById('ed-file-input')?.addEventListener('change', async (e) => {
+    const file = e.target.files?.[0];
+    const chip = document.getElementById('rte-pending-file-chip');
+    if (!file) {
+      if (chip) chip.textContent = 'JPG, PNG, WebP, GIF · PDF, DOCX, MP4';
+      return;
+    }
+    if (editingId) {
+      try {
+        if (chip) chip.textContent = `Uploading ${file.name}...`;
+        await uploadAttachedFile(editingId);
+        showToast(`Attached "${file.name}" securely.`, 'success');
+        renderCreatorDashboardPage(container, 'upload', editingId);
+      } catch (err) {
+        showToast(err.message || 'File upload failed.', 'error');
+        if (chip) chip.textContent = 'JPG, PNG, WebP, GIF · PDF, DOCX, MP4';
+      }
+    } else {
+      if (chip) {
+        chip.innerHTML = `<span class="font-semibold text-emerald-700 dark:text-emerald-400">Ready to attach: ${esc(file.name)} (${formatBytes(file.size)})</span>`;
+      }
+      showToast(`"${file.name}" selected — it will upload automatically when you save or submit.`, 'info');
+    }
+  });
+
   rteImageInput?.addEventListener('change', (e) => {
     const file = e.target.files?.[0];
     if (file) insertUploadedImageIntoRte(file);
@@ -1096,7 +1245,10 @@ function wireContentEditor(container, editPayload, commRate) {
       shortDescription: document.getElementById('ed-desc')?.value.trim(),
       bodyHtml: document.getElementById('ed-rte')?.innerHTML || '',
       previewHtml: document.getElementById('ed-preview-html')?.value || '',
-      coverImageUrl: document.getElementById('ed-cover-url')?.value.trim(),
+      coverImageUrl:
+        (document.getElementById('ed-cover-url')?.value.trim() ||
+          document.getElementById('ed-cover-value')?.value.trim() ||
+          ''),
       categoryId: document.getElementById('ed-category')?.value || null,
       subjectId: document.getElementById('ed-subject')?.value || null,
       language: document.getElementById('ed-language')?.value || 'English',

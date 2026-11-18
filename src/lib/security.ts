@@ -116,9 +116,19 @@ export function sanitizeHtml(raw: string | null | undefined): string {
   return clean.trim();
 }
 
-export function sanitizeSafeUrl(raw: string | null | undefined, allowRelative = false): string | null {
+export function sanitizeSafeUrl(
+  raw: string | null | undefined,
+  allowRelative = false,
+  allowRasterDataUri = false
+): string | null {
   const val = String(raw || '').trim();
   if (!val) return null;
+  if (
+    allowRasterDataUri &&
+    /^data:image\/(?:png|jpeg|jpg|webp|gif);base64,[A-Za-z0-9+/=\s]+$/i.test(val)
+  ) {
+    return val;
+  }
   if (allowRelative && /^\/(?!\/)[a-zA-Z0-9._~:/?#[\]@!$&'()*+,;=%-]+$/.test(val)) {
     return val;
   }

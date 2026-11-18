@@ -287,7 +287,7 @@ router.post('/contents', requireAuth, requireCreator, async (req: AuthRequest, r
     const shortDescription = String(req.body?.shortDescription || '').trim();
     const bodyHtml = sanitizeHtml(req.body?.bodyHtml || '');
     const customPreview = sanitizeHtml(req.body?.previewHtml || '');
-    const coverImageUrl = sanitizeSafeUrl(req.body?.coverImageUrl, true);
+    const coverImageUrl = sanitizeSafeUrl(req.body?.coverImageUrl, true, true);
     const categoryId = req.body?.categoryId ? Number(req.body.categoryId) : null;
     const subjectId = req.body?.subjectId ? Number(req.body.subjectId) : null;
     const language = String(req.body?.language || 'English').trim();
@@ -442,7 +442,7 @@ router.put('/contents/:id', requireAuth, requireCreator, async (req: AuthRequest
         : existing.previewHtml;
     const coverImageUrl =
       req.body?.coverImageUrl !== undefined
-        ? sanitizeSafeUrl(req.body.coverImageUrl, true)
+        ? sanitizeSafeUrl(req.body.coverImageUrl, true, true)
         : existing.coverImageUrl;
     const categoryId =
       req.body?.categoryId !== undefined
