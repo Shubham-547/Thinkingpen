@@ -11,14 +11,15 @@ export interface AuthRequest extends Request {
   user?: DbUser;
 }
 
-const OWNER_ADMIN_EMAILS = new Set(
-  [process.env.ADMIN_EMAIL, 'ishivanibharti@gmail.com', 'personal.shubham1872@gmail.com']
-    .filter((v): v is string => Boolean(v))
-    .map((e) => e.toLowerCase().trim())
-);
+// Single immutable Primary Super Admin — can only be changed directly in source code.
+export const SUPER_ADMIN_EMAIL = 'personal.shubham1872@gmail.com';
 
-export function isOwnerAdminEmail(email: string): boolean {
-  return OWNER_ADMIN_EMAILS.has(email.toLowerCase().trim());
+export function isSuperAdminEmail(email: string | null | undefined): boolean {
+  return String(email || '').toLowerCase().trim() === SUPER_ADMIN_EMAIL;
+}
+
+export function isOwnerAdminEmail(email: string | null | undefined): boolean {
+  return isSuperAdminEmail(email);
 }
 
 /**
@@ -43,7 +44,9 @@ export async function getOrCreateFirebaseUser(params: {
       .limit(1);
 
     if (byEmail) {
-      const nextRole = isOwnerAdminEmail(cleanEmail) ? 'admin' : byEmail.role;
+      const isPrimary = isSuperAdminEmail(cleanEmail);
+      const nextRole = isPrimary ? 'admin' : byEmail.role;
+      const nextStatus = isPrimary ? 'active' : byEmail.status;
       const [updated] = await db
         .update(users)
         .set({
@@ -51,6 +54,7 @@ export async function getOrCreateFirebaseUser(params: {
           emailVerified: true,
           avatarUrl: byEmail.avatarUrl || params.picture || null,
           role: nextRole,
+          status: nextStatus,
           updatedAt: new Date(),
         })
         .where(eq(users.id, byEmail.id))
@@ -97,7 +101,17 @@ async function resolveUserFromToken(token: string): Promise<DbUser | null> {
         .from(users)
         .where(eq(users.id, payload.userId))
         .limit(1);
-      return user || null;
+      if (!user) return null;
+      // Primary Super Admin can never lose admin role or be deactivated without editing source code
+      if (isSuperAdminEmail(user.email) && (user.role !== 'admin' || user.status !== 'active')) {
+        const [restored] = await db
+          .update(users)
+          .set({ role: 'admin', status: 'active', updatedAt: new Date() })
+          .where(eq(users.id, user.id))
+          .returning();
+        return restored || { ...user, role: 'admin', status: 'active' };
+      }
+      return user;
     } catch (error) {
       console.error('Session lookup failed:', error);
       return null;

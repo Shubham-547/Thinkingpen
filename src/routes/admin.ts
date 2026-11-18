@@ -21,7 +21,7 @@ import {
 } from '../db/schema.ts';
 import { clampCommission, refundCapturedPayment } from '../lib/payments.ts';
 import { slugify } from '../lib/security.ts';
-import { requireAdmin, requireAuth, type AuthRequest } from '../middleware/auth.ts';
+import { isSuperAdminEmail, requireAdmin, requireAuth, type AuthRequest } from '../middleware/auth.ts';
 
 const router = Router();
 router.use(requireAuth, requireAdmin);
@@ -231,7 +231,7 @@ router.get('/overview', async (req: AuthRequest, res) => {
 });
 
 // GET /api/admin/users
-router.get('/users', async (_req, res) => {
+router.get('/users', async (req: AuthRequest, res) => {
   try {
     const rows = await db
       .select({
@@ -255,7 +255,13 @@ router.get('/users', async (_req, res) => {
       .leftJoin(creatorWallets, eq(creatorWallets.creatorId, users.id))
       .orderBy(desc(users.createdAt));
 
-    return res.json({ users: rows });
+    return res.json({
+      actorIsSuperAdmin: isSuperAdminEmail(req.user!.email),
+      users: rows.map((u) => ({
+        ...u,
+        isSuperAdmin: isSuperAdminEmail(u.email),
+      })),
+    });
   } catch (error) {
     console.error('Admin users error:', error);
     return res.status(500).json({ error: 'Unable to fetch users.' });
@@ -266,17 +272,48 @@ router.get('/users', async (_req, res) => {
 router.patch('/users/:id', async (req: AuthRequest, res) => {
   try {
     const targetId = Number(req.params.id);
+    if (!Number.isInteger(targetId)) {
+      return res.status(400).json({ error: 'Invalid user ID.' });
+    }
+
+    const [targetUser] = await db.select().from(users).where(eq(users.id, targetId)).limit(1);
+    if (!targetUser) return res.status(404).json({ error: 'User not found.' });
+
+    const actorIsSuperAdmin = isSuperAdminEmail(req.user!.email);
+    const targetIsSuperAdmin = isSuperAdminEmail(targetUser.email);
     const updates: Record<string, unknown> = { updatedAt: new Date() };
 
     if (req.body?.status && ['active', 'suspended', 'blocked'].includes(req.body.status)) {
+      if (targetIsSuperAdmin && req.body.status !== 'active') {
+        return res.status(403).json({
+          error: 'Primary Super Admin cannot be suspended or blocked.',
+        });
+      }
       if (targetId === req.user!.id && req.body.status !== 'active') {
         return res.status(400).json({ error: 'You cannot suspend or block your own admin account.' });
+      }
+      if (targetUser.role === 'admin' && !actorIsSuperAdmin) {
+        return res.status(403).json({
+          error: 'Only the Primary Super Admin can suspend or block another Administrator.',
+        });
       }
       updates.status = req.body.status;
     }
 
     if (req.body?.role && ['user', 'creator', 'admin'].includes(req.body.role)) {
-      updates.role = req.body.role;
+      const requestedRole = req.body.role as string;
+      if (targetIsSuperAdmin && requestedRole !== 'admin') {
+        return res.status(403).json({
+          error: 'Primary Super Admin role is locked and cannot be removed or downgraded.',
+        });
+      }
+      const touchesAdminPrivilege = requestedRole === 'admin' || targetUser.role === 'admin';
+      if (touchesAdminPrivilege && !actorIsSuperAdmin) {
+        return res.status(403).json({
+          error: 'Only the Primary Super Admin can grant or revoke Administrator access.',
+        });
+      }
+      updates.role = requestedRole;
     }
 
     const [updatedUser] = await db

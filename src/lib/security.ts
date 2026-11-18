@@ -150,13 +150,11 @@ export function estimateReadingTime(html: string): number {
 }
 
 export function createAutoPreview(html: string): string {
-  const clean = sanitizeHtml(html);
-  const paragraphs = clean.match(/<(p|h2|h3|blockquote)[^>]*>[\s\S]*?<\/\1>/gi);
-  if (paragraphs && paragraphs.length > 0) {
-    return paragraphs.slice(0, 3).join('\n');
-  }
-  const plain = clean.replace(/<[^>]+>/g, ' ').trim().slice(0, 420);
-  return `<p>${plain}${plain.length >= 420 ? '...' : ''}</p>`;
+  const clean = sanitizeHtml(html)
+    .replace(/<figure[\s\S]*?<\/figure>/gi, '')
+    .replace(/<img[^>]*>/gi, '');
+  const plain = clean.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 260);
+  return plain ? `<p>${plain}${plain.length >= 260 ? '...' : ''}</p>` : '';
 }
 
 export const ALLOWED_UPLOAD_MIMES: Record<string, { fileType: 'pdf' | 'video' | 'document' | 'cover'; maxBytes: number }> = {

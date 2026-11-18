@@ -198,6 +198,17 @@ export function renderAuthPage(container, mode = 'login') {
     </div>
   `;
 
+  const consumePostLoginRedirect = (fallbackHash) => {
+    try {
+      const target = sessionStorage.getItem('sp_post_login_redirect');
+      if (target) {
+        sessionStorage.removeItem('sp_post_login_redirect');
+        if (target.startsWith('#/')) return target;
+      }
+    } catch {}
+    return fallbackHash;
+  };
+
   document.getElementById('google-signin-btn')?.addEventListener('click', async () => {
     try {
       const { idToken } = await signInWithGoogle();
@@ -209,7 +220,8 @@ export function renderAuthPage(container, mode = 'login') {
       store.user = res.user;
       notifyStore();
       showToast(`Signed in as ${res.user.name}.`, 'success');
-      window.location.hash = res.user.role === 'admin' ? '#/admin' : '#/dashboard';
+      const defaultDest = res.user.role === 'admin' ? '#/admin' : '#/dashboard';
+      window.location.hash = consumePostLoginRedirect(defaultDest);
     } catch (err) {
       showToast(err.message || 'Google Sign-In was cancelled or failed.', 'error');
     }
@@ -238,10 +250,19 @@ export function renderAuthPage(container, mode = 'login') {
       notifyStore();
       showToast(isSignup ? 'Account created successfully.' : `Welcome back, ${res.user.name}.`, 'success');
 
-      if (isSignup && res.verificationTokenPreview) {
+      const defaultDest =
+        res.user.role === 'admin'
+          ? '#/admin'
+          : res.user.role === 'creator'
+          ? '#/creator'
+          : '#/dashboard';
+      const redirectTarget = consumePostLoginRedirect(null);
+      if (redirectTarget) {
+        window.location.hash = redirectTarget;
+      } else if (isSignup && res.verificationTokenPreview) {
         window.location.hash = `#/verify-email?token=${encodeURIComponent(res.verificationTokenPreview)}`;
       } else {
-        window.location.hash = res.user.role === 'admin' ? '#/admin' : res.user.role === 'creator' ? '#/creator' : '#/dashboard';
+        window.location.hash = defaultDest;
       }
     } catch (err) {
       showToast(err.message, 'error');

@@ -141,142 +141,171 @@ export async function renderContentDetailPage(container, slug) {
               </div>
             </header>
 
-            <!-- Inline Mobile / Tablet Quick Purchase Bar (when locked) -->
+            <!-- Inline Mobile / Tablet Quick Action Bar (when locked or before opening content) -->
             ${
               !c.hasAccess
                 ? `<div class="lg:hidden bg-white dark:bg-[#111A2E] border border-slate-200 dark:border-slate-800 rounded-xl p-4 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
                     <div>
-                      <div class="text-xs text-slate-500 dark:text-slate-400">Premium Publication · Instant Lifetime Access</div>
-                      <div class="font-mono text-xl font-semibold text-slate-900 dark:text-white tabular-nums">${formatInr(c.priceInr)}</div>
+                      <div class="text-xs text-slate-500 dark:text-slate-400">${c.isFree ? 'Free Publication · Sign In Required to Read' : 'Premium Publication · Instant Lifetime Access'}</div>
+                      <div class="font-mono text-xl font-semibold ${c.isFree ? 'text-emerald-700 dark:text-emerald-400' : 'text-slate-900 dark:text-white'} tabular-nums">${c.isFree ? 'Free' : formatInr(c.priceInr)}</div>
                     </div>
                     <button type="button" id="mobile-buy-btn" class="w-full sm:w-auto min-h-[44px] px-5 py-2.5 text-sm font-semibold rounded-lg bg-[#0F2547] hover:bg-[#1B3B6F] dark:bg-sky-500 dark:hover:bg-sky-400 text-white dark:text-slate-950 transition-colors whitespace-nowrap shrink-0">
-                      Purchase &amp; Unlock
+                      ${c.isFree ? 'Sign In & Read Free' : `Pay ${formatInr(c.priceInr)} & Unlock`}
                     </button>
                   </div>`
                 : ''
             }
 
-            <!-- Video Lecture Player (when video files exist) -->
+            <!-- Full Content & Protected Media Container (Hidden behind Cover + Details gate until unlocked/opened) -->
             ${
-              videoFiles.length
-                ? `<section class="bg-white dark:bg-[#111A2E] border border-slate-200 dark:border-slate-800 rounded-xl p-4 sm:p-6">
-                    <h2 class="font-display text-xl font-semibold text-slate-900 dark:text-white mb-4">Video Lecture</h2>
-                    ${videoFiles
-                      .map((vf) =>
-                        vf.locked
-                          ? `<div class="p-8 rounded-lg bg-slate-900 text-white text-center space-y-3">
-                              <p class="font-display text-lg font-medium">Protected Premium Video Lecture</p>
-                              <p class="text-xs text-slate-300">Purchase this resource to unlock streaming playback of "${esc(vf.originalName)}".</p>
-                            </div>`
-                          : vf.externalVideoUrl
-                          ? `<div class="space-y-2">
-                              <div class="aspect-video w-full rounded-lg overflow-hidden bg-black">
-                                <iframe src="${esc(vf.externalVideoUrl)}" class="w-full h-full" allowfullscreen></iframe>
-                              </div>
-                              <p class="text-xs text-slate-500">${esc(vf.originalName)}</p>
-                            </div>`
-                          : `<div class="space-y-2">
-                              <video controls controlsList="nodownload" class="w-full rounded-lg bg-black max-h-[480px]" src="${esc(withAuthParam(vf.accessUrl))}"></video>
-                              <p class="text-xs text-slate-500">${esc(vf.originalName)} · ${formatBytes(vf.sizeBytes)}</p>
-                            </div>`
-                      )
-                      .join('')}
-                  </section>`
-                : ''
-            }
-
-            <!-- In-Browser PDF Document Viewer with Zoom & Controls -->
-            ${
-              pdfFiles.length
-                ? `<section class="bg-white dark:bg-[#111A2E] border border-slate-200 dark:border-slate-800 rounded-xl p-4 sm:p-6">
-                    <div class="flex flex-wrap items-center justify-between gap-3 mb-4">
-                      <h2 class="font-display text-lg sm:text-xl font-semibold text-slate-900 dark:text-white">PDF Document Reader</h2>
-                      <div class="flex items-center gap-2 text-xs">
-                        <button type="button" id="pdf-zoom-out" class="min-w-[34px] min-h-[34px] px-2.5 py-1 rounded border border-slate-200 dark:border-slate-700 hover:bg-slate-100 dark:hover:bg-slate-800">−</button>
-                        <span id="pdf-zoom-label" class="font-mono tabular-nums w-12 text-center">100%</span>
-                        <button type="button" id="pdf-zoom-in" class="min-w-[34px] min-h-[34px] px-2.5 py-1 rounded border border-slate-200 dark:border-slate-700 hover:bg-slate-100 dark:hover:bg-slate-800">+</button>
+              c.hasAccess
+                ? `
+                  <!-- Gate Banner: Cover & Details shown first; 1-click Reveal Content -->
+                  <section id="rd-content-gate" class="bg-white dark:bg-[#111A2E] border border-slate-200 dark:border-slate-800 rounded-xl p-5 sm:p-8 flex flex-col sm:flex-row sm:items-center justify-between gap-5">
+                    <div class="space-y-1.5">
+                      <div class="text-xs font-semibold text-emerald-700 dark:text-emerald-400">
+                        ${c.hasPurchased ? 'Payment Verified · Unlocked in Your Library' : c.isFree ? 'Free Access Unlocked' : 'Full Access (Creator / Admin)'}
                       </div>
+                      <h2 class="font-display text-xl sm:text-2xl font-semibold text-slate-900 dark:text-white">Ready to Read Full Content</h2>
+                      <p class="text-sm text-slate-600 dark:text-slate-400">
+                        Cover page and details are displayed above. Click below to open the complete study notes, diagrams, and attached files.
+                      </p>
                     </div>
-                    ${pdfFiles
-                      .map((pf) =>
-                        pf.locked
-                          ? `<div class="p-6 sm:p-8 rounded-lg border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-[#0B1120] text-center space-y-2">
-                              <p class="font-semibold text-sm text-slate-900 dark:text-white break-words">${esc(pf.originalName)} (${formatBytes(pf.sizeBytes)})</p>
-                              <p class="text-xs text-slate-500 dark:text-slate-400">Protected PDF — purchase required to view or download.</p>
-                            </div>`
-                          : `<div class="space-y-3">
-                              <div class="overflow-auto rounded-lg border border-slate-200 dark:border-slate-800 bg-slate-100 dark:bg-slate-950 h-[380px] sm:h-[520px] lg:h-[600px]">
-                                <iframe id="pdf-viewer-frame" src="${esc(withAuthParam(pf.accessUrl))}#toolbar=1" class="w-full h-full transition-transform origin-top-left" title="${esc(pf.originalName)}"></iframe>
-                              </div>
-                              <div class="flex flex-wrap items-center justify-between gap-2 text-xs text-slate-500 dark:text-slate-400">
-                                <span class="truncate">${esc(pf.originalName)} · ${formatBytes(pf.sizeBytes)}</span>
-                                <a href="${esc(withAuthParam(`${pf.accessUrl}?download=1`))}" class="font-semibold text-[#0F2547] dark:text-sky-400 hover:underline whitespace-nowrap shrink-0">Download PDF</a>
-                              </div>
-                            </div>`
-                      )
-                      .join('')}
-                  </section>`
-                : ''
-            }
+                    <button type="button" id="rd-open-content-btn" class="w-full sm:w-auto min-h-[44px] px-6 py-3 text-sm font-semibold rounded-lg bg-[#0F2547] hover:bg-[#1B3B6F] dark:bg-sky-500 dark:hover:bg-sky-400 text-white dark:text-slate-950 transition-colors whitespace-nowrap shrink-0">
+                      Open Full Content
+                    </button>
+                  </section>
 
-            <!-- Main Reading Body OR Locked Paywall Preview -->
-            <section class="bg-white dark:bg-[#111A2E] border border-slate-200 dark:border-slate-800 rounded-xl p-5 sm:p-10">
-              ${
-                c.hasAccess
-                  ? `<div class="reading-prose">${processedBody || '<p>No inline text content attached; see media or PDF files above.</p>'}</div>`
-                  : `<div>
-                      <div class="text-xs font-semibold text-slate-500 dark:text-slate-400 mb-4">Preview Excerpt</div>
-                      <div class="reading-prose relative">
-                        ${c.previewHtml || `<p>${esc(c.shortDescription)}</p>`}
-                      </div>
-                      <div class="mt-8 p-6 sm:p-8 rounded-xl bg-slate-50 dark:bg-[#0B1120] border border-slate-200 dark:border-slate-800 flex flex-col sm:flex-row sm:items-center justify-between gap-6">
-                        <div>
-                          <div class="text-xs font-semibold text-[#1B3B6F] dark:text-sky-400 mb-1">Premium Resource</div>
-                          <h3 class="font-display text-2xl font-semibold text-slate-900 dark:text-white mb-1">Unlock Full Access for ${formatInr(c.priceInr)}</h3>
-                          <p class="text-sm text-slate-600 dark:text-slate-400">
-                            Instant lifetime access in your personal library, protected downloads, and verified-purchase review eligibility.
-                          </p>
-                        </div>
-                        <button type="button" id="rd-unlock-btn" class="px-6 py-3 text-sm font-semibold rounded-lg bg-[#0F2547] hover:bg-[#1B3B6F] dark:bg-sky-500 dark:hover:bg-sky-400 text-white dark:text-slate-950 transition-colors whitespace-nowrap shrink-0">
-                          Purchase &amp; Unlock
-                        </button>
-                      </div>
-                    </div>`
-              }
+                  <div id="rd-unlocked-content" class="hidden space-y-6 sm:space-y-8">
+                    <!-- Video Lecture Player -->
+                    ${
+                      videoFiles.length
+                        ? `<section class="bg-white dark:bg-[#111A2E] border border-slate-200 dark:border-slate-800 rounded-xl p-4 sm:p-6">
+                            <h2 class="font-display text-xl font-semibold text-slate-900 dark:text-white mb-4">Video Lecture</h2>
+                            ${videoFiles
+                              .map((vf) =>
+                                vf.externalVideoUrl
+                                  ? `<div class="space-y-2">
+                                      <div class="aspect-video w-full rounded-lg overflow-hidden bg-black">
+                                        <iframe src="${esc(vf.externalVideoUrl)}" class="w-full h-full" allowfullscreen></iframe>
+                                      </div>
+                                      <p class="text-xs text-slate-500">${esc(vf.originalName)}</p>
+                                    </div>`
+                                  : `<div class="space-y-2">
+                                      <video controls controlsList="nodownload" class="w-full rounded-lg bg-black max-h-[480px]" src="${esc(withAuthParam(vf.accessUrl))}"></video>
+                                      <p class="text-xs text-slate-500">${esc(vf.originalName)} · ${formatBytes(vf.sizeBytes)}</p>
+                                    </div>`
+                              )
+                              .join('')}
+                          </section>`
+                        : ''
+                    }
 
-              ${
-                docFiles.length
-                  ? `<div class="mt-8 pt-6 border-t border-slate-200 dark:border-slate-800">
-                      <h3 class="text-sm font-semibold text-slate-900 dark:text-white mb-3">Attached Study Files</h3>
+                    <!-- In-Browser PDF Document Viewer -->
+                    ${
+                      pdfFiles.length
+                        ? `<section class="bg-white dark:bg-[#111A2E] border border-slate-200 dark:border-slate-800 rounded-xl p-4 sm:p-6">
+                            <div class="flex flex-wrap items-center justify-between gap-3 mb-4">
+                              <h2 class="font-display text-lg sm:text-xl font-semibold text-slate-900 dark:text-white">PDF Document Reader</h2>
+                              <div class="flex items-center gap-2 text-xs">
+                                <button type="button" id="pdf-zoom-out" class="min-w-[34px] min-h-[34px] px-2.5 py-1 rounded border border-slate-200 dark:border-slate-700 hover:bg-slate-100 dark:hover:bg-slate-800">−</button>
+                                <span id="pdf-zoom-label" class="font-mono tabular-nums w-12 text-center">100%</span>
+                                <button type="button" id="pdf-zoom-in" class="min-w-[34px] min-h-[34px] px-2.5 py-1 rounded border border-slate-200 dark:border-slate-700 hover:bg-slate-100 dark:hover:bg-slate-800">+</button>
+                              </div>
+                            </div>
+                            ${pdfFiles
+                              .map(
+                                (pf) => `<div class="space-y-3">
+                                  <div class="overflow-auto rounded-lg border border-slate-200 dark:border-slate-800 bg-slate-100 dark:bg-slate-950 h-[380px] sm:h-[520px] lg:h-[600px]">
+                                    <iframe id="pdf-viewer-frame" src="${esc(withAuthParam(pf.accessUrl))}#toolbar=1" class="w-full h-full transition-transform origin-top-left" title="${esc(pf.originalName)}"></iframe>
+                                  </div>
+                                  <div class="flex flex-wrap items-center justify-between gap-2 text-xs text-slate-500 dark:text-slate-400">
+                                    <span class="truncate">${esc(pf.originalName)} · ${formatBytes(pf.sizeBytes)}</span>
+                                    <a href="${esc(withAuthParam(`${pf.accessUrl}?download=1`))}" class="font-semibold text-[#0F2547] dark:text-sky-400 hover:underline whitespace-nowrap shrink-0">Download PDF</a>
+                                  </div>
+                                </div>`
+                              )
+                              .join('')}
+                          </section>`
+                        : ''
+                    }
+
+                    <!-- Unlocked Main Body -->
+                    <section class="bg-white dark:bg-[#111A2E] border border-slate-200 dark:border-slate-800 rounded-xl p-5 sm:p-10">
+                      <div class="reading-prose">${processedBody || '<p>No inline text content attached; see media or PDF files above.</p>'}</div>
+
+                      ${
+                        docFiles.length
+                          ? `<div class="mt-8 pt-6 border-t border-slate-200 dark:border-slate-800">
+                              <h3 class="text-sm font-semibold text-slate-900 dark:text-white mb-3">Attached Study Files</h3>
+                              <div class="space-y-2">
+                                ${docFiles
+                                  .map(
+                                    (df) => `
+                                  <div class="flex items-center justify-between p-3 rounded-lg border border-slate-200 dark:border-slate-800 text-xs">
+                                    <span>${esc(df.originalName)} (${formatBytes(df.sizeBytes)})</span>
+                                    <a href="${esc(withAuthParam(`${df.accessUrl}?download=1`))}" class="font-semibold text-[#0F2547] dark:text-sky-400 hover:underline">Download</a>
+                                  </div>
+                                `
+                                  )
+                                  .join('')}
+                              </div>
+                            </div>`
+                          : ''
+                      }
+
+                      ${
+                        c.tags?.length
+                          ? `<div class="mt-8 pt-5 border-t border-slate-100 dark:border-slate-800 flex items-center flex-wrap gap-x-3 gap-y-1 text-xs text-slate-500 dark:text-slate-400">
+                              <span class="font-semibold text-slate-700 dark:text-slate-300">Tags:</span>
+                              ${c.tags.map((t) => `<a href="#/explore?q=${encodeURIComponent(t)}" class="hover:text-[#0F2547] dark:hover:text-sky-400">#${esc(t)}</a>`).join('<span aria-hidden="true">·</span>')}
+                            </div>`
+                          : ''
+                      }
+                    </section>
+                  </div>
+                `
+                : `
+                  <!-- Locked Content Gate: Cover & Details only; full content & files strictly hidden until payment / sign-in -->
+                  <section class="bg-white dark:bg-[#111A2E] border border-slate-200 dark:border-slate-800 rounded-xl p-5 sm:p-8 space-y-6">
+                    <div class="p-6 sm:p-8 rounded-xl bg-slate-50 dark:bg-[#0B1120] border border-slate-200 dark:border-slate-800 flex flex-col sm:flex-row sm:items-center justify-between gap-6">
                       <div class="space-y-2">
-                        ${docFiles
-                          .map(
-                            (df) => `
-                          <div class="flex items-center justify-between p-3 rounded-lg border border-slate-200 dark:border-slate-800 text-xs">
-                            <span>${esc(df.originalName)} (${formatBytes(df.sizeBytes)})</span>
-                            ${
-                              df.locked
-                                ? `<span class="text-slate-400">Locked</span>`
-                                : `<a href="${esc(withAuthParam(`${df.accessUrl}?download=1`))}" class="font-semibold text-[#0F2547] dark:text-sky-400 hover:underline">Download</a>`
-                            }
-                          </div>
-                        `
-                          )
-                          .join('')}
+                        <div class="inline-flex items-center gap-1.5 text-xs font-semibold ${c.isFree ? 'text-emerald-700 dark:text-emerald-400' : 'text-[#1B3B6F] dark:text-sky-400'}">
+                          <svg class="w-4 h-4 shrink-0" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><rect x="3" y="11" width="18" height="11" rx="2" ry="2"></rect><path d="M7 11V7a5 5 0 0110 0v4"></path></svg>
+                          <span>${c.isFree ? 'Free Publication · Content Locked for Guests' : 'Paid Publication · Content Locked'}</span>
+                        </div>
+                        <h3 class="font-display text-2xl font-semibold text-slate-900 dark:text-white">
+                          ${c.isFree ? 'Sign In to Read Full Content (Free)' : `Pay ${formatInr(c.priceInr)} to Unlock Full Content`}
+                        </h3>
+                        <p class="text-sm text-slate-600 dark:text-slate-400 leading-relaxed">
+                          ${
+                            c.isFree
+                              ? 'The full text, diagrams, and attached study files are hidden until you sign in. Create a free account or sign in to access immediately.'
+                              : 'Only the cover page and publication details are visible before purchase. Complete secure INR payment to instantly unlock the complete notes, images, PDFs, and lifetime library access.'
+                          }
+                        </p>
+                        ${
+                          files.length
+                            ? `<p class="text-xs text-slate-500 dark:text-slate-400 font-mono">Includes ${files.length} protected attachment${files.length > 1 ? 's' : ''} (${pdfFiles.length ? `${pdfFiles.length} PDF` : ''}${videoFiles.length ? ` ${videoFiles.length} Video` : ''}${docFiles.length ? ` ${docFiles.length} File` : ''})</p>`
+                            : ''
+                        }
                       </div>
-                    </div>`
-                  : ''
-              }
+                      <button type="button" id="rd-unlock-btn" class="w-full sm:w-auto min-h-[46px] px-6 py-3 text-sm font-semibold rounded-lg bg-[#0F2547] hover:bg-[#1B3B6F] dark:bg-sky-500 dark:hover:bg-sky-400 text-white dark:text-slate-950 transition-colors whitespace-nowrap shrink-0">
+                        ${c.isFree ? 'Sign In & Read Free' : `Pay ${formatInr(c.priceInr)} & Unlock`}
+                      </button>
+                    </div>
 
-              ${
-                c.tags?.length
-                  ? `<div class="mt-8 pt-5 border-t border-slate-100 dark:border-slate-800 flex items-center flex-wrap gap-x-3 gap-y-1 text-xs text-slate-500 dark:text-slate-400">
-                      <span class="font-semibold text-slate-700 dark:text-slate-300">Tags:</span>
-                      ${c.tags.map((t) => `<a href="#/explore?q=${encodeURIComponent(t)}" class="hover:text-[#0F2547] dark:hover:text-sky-400">#${esc(t)}</a>`).join('<span aria-hidden="true">·</span>')}
-                    </div>`
-                  : ''
-              }
-            </section>
+                    ${
+                      c.tags?.length
+                        ? `<div class="pt-2 flex items-center flex-wrap gap-x-3 gap-y-1 text-xs text-slate-500 dark:text-slate-400">
+                            <span class="font-semibold text-slate-700 dark:text-slate-300">Tags:</span>
+                            ${c.tags.map((t) => `<a href="#/explore?q=${encodeURIComponent(t)}" class="hover:text-[#0F2547] dark:hover:text-sky-400">#${esc(t)}</a>`).join('<span aria-hidden="true">·</span>')}
+                          </div>`
+                        : ''
+                    }
+                  </section>
+                `
+            }
 
             <!-- Verified Ratings & Reviews -->
             <section class="bg-white dark:bg-[#111A2E] border border-slate-200 dark:border-slate-800 rounded-xl p-4 sm:p-8">
@@ -372,11 +401,14 @@ export async function renderContentDetailPage(container, slug) {
               </div>
               ${
                 c.hasAccess
-                  ? `<div class="p-3 rounded-lg bg-emerald-50 dark:bg-emerald-950/40 border border-emerald-200 dark:border-emerald-900 text-xs font-medium text-emerald-800 dark:text-emerald-300 mb-4">
+                  ? `<div class="p-3 rounded-lg bg-emerald-50 dark:bg-emerald-950/40 border border-emerald-200 dark:border-emerald-900 text-xs font-medium text-emerald-800 dark:text-emerald-300 mb-3">
                       ${c.hasPurchased ? 'Purchased &amp; unlocked in your library.' : c.isFree ? 'Open-access free publication.' : 'Full preview access (Creator / Admin).'}
-                    </div>`
+                    </div>
+                    <button type="button" id="sidebar-open-content-btn" class="w-full py-2.5 px-4 text-sm font-semibold rounded-lg bg-[#0F2547] hover:bg-[#1B3B6F] dark:bg-sky-500 dark:hover:bg-sky-400 text-white dark:text-slate-950 transition-colors mb-4">
+                      Open Full Content
+                    </button>`
                   : `<button type="button" id="sidebar-buy-btn" class="w-full py-3 px-4 text-sm font-semibold rounded-lg bg-[#0F2547] hover:bg-[#1B3B6F] dark:bg-sky-500 dark:hover:bg-sky-400 text-white dark:text-slate-950 transition-colors mb-4">
-                      Purchase Now · ${formatInr(c.priceInr)}
+                      ${c.isFree ? 'Sign In & Read Free' : `Pay ${formatInr(c.priceInr)} & Unlock`}
                     </button>`
               }
               <dl class="space-y-2.5 text-xs pt-3 border-t border-slate-100 dark:border-slate-800">
@@ -474,21 +506,72 @@ export async function renderContentDetailPage(container, slug) {
       applyZoom();
     });
 
-    // Wire Purchase / Checkout Modal
-    const startCheckout = async () => {
+    // Wire Open Full Content toggle (keeps Cover + Details first until reader opens content)
+    const revealUnlockedContent = (autoScroll = true) => {
+      const gate = document.getElementById('rd-content-gate');
+      const bodyWrap = document.getElementById('rd-unlocked-content');
+      const sideOpenBtn = document.getElementById('sidebar-open-content-btn');
+      if (gate) gate.classList.add('hidden');
+      if (bodyWrap) {
+        bodyWrap.classList.remove('hidden');
+        if (autoScroll) bodyWrap.scrollIntoView({ behavior: 'smooth', block: 'start' });
+      }
+      if (sideOpenBtn) sideOpenBtn.classList.add('hidden');
+    };
+    document.getElementById('rd-open-content-btn')?.addEventListener('click', () => revealUnlockedContent(true));
+    document.getElementById('sidebar-open-content-btn')?.addEventListener('click', () => revealUnlockedContent(true));
+
+    // If just returned from a completed purchase, immediately reveal the newly unlocked content
+    try {
+      const justUnlocked = sessionStorage.getItem('sp_just_unlocked_slug');
+      if (justUnlocked === slug && c.hasAccess) {
+        sessionStorage.removeItem('sp_just_unlocked_slug');
+        revealUnlockedContent(false);
+      }
+    } catch {}
+
+    // Wire Purchase / Sign-In Gate Action
+    const startCheckout = async (evt) => {
       if (!store.user) {
-        showToast('Please sign in to purchase paid resources.', 'info');
+        try {
+          sessionStorage.setItem('sp_post_login_redirect', `#/content/${slug}`);
+        } catch {}
+        showToast(
+          c.isFree ? 'Please sign in to read this free publication.' : 'Please sign in to pay and unlock this publication.',
+          'info'
+        );
         window.location.hash = '#/login';
         return;
+      }
+      if (c.isFree) {
+        revealUnlockedContent(true);
+        return;
+      }
+
+      const clickedBtn = evt?.currentTarget;
+      const origText = clickedBtn?.textContent;
+      if (clickedBtn) {
+        clickedBtn.disabled = true;
+        clickedBtn.textContent = 'Opening Checkout...';
       }
       try {
         const order = await apiFetch('/api/payments/create-order', {
           method: 'POST',
           body: { contentId: c.id },
         });
-        openCheckoutModal(order, () => renderContentDetailPage(container, slug));
+        openCheckoutModal(order, () => {
+          try {
+            sessionStorage.setItem('sp_just_unlocked_slug', slug);
+          } catch {}
+          renderContentDetailPage(container, slug);
+        });
       } catch (err) {
-        showToast(err.message, 'error');
+        showToast(err.message || 'Unable to start checkout.', 'error');
+      } finally {
+        if (clickedBtn && origText) {
+          clickedBtn.disabled = false;
+          clickedBtn.textContent = origText;
+        }
       }
     };
     document.getElementById('rd-unlock-btn')?.addEventListener('click', startCheckout);
@@ -759,7 +842,7 @@ function openCheckoutModal(order, onSuccess) {
   const creatorNet = Number((order.amountInr - commissionCut).toFixed(2));
 
   openModal({
-    title: 'Secure INR Checkout (Razorpay Architecture)',
+    title: 'Secure INR Payment Checkout',
     bodyHtml: `
       <div class="space-y-5">
         <div class="p-4 rounded-xl bg-slate-50 dark:bg-[#0B1120] border border-slate-200 dark:border-slate-800 space-y-2 text-sm">
@@ -781,35 +864,50 @@ function openCheckoutModal(order, onSuccess) {
           </div>
         </div>
 
-        <div class="text-xs text-slate-500 dark:text-slate-400 space-y-1">
-          <p>Transparent Revenue Split: Creator receives <strong class="font-mono text-slate-800 dark:text-slate-200">${formatInr(creatorNet)}</strong> · Platform commission (${order.commissionRate}%) is <strong class="font-mono text-slate-800 dark:text-slate-200">${formatInr(commissionCut)}</strong>.</p>
-          <p>No raw card details are stored by ScholarPress. All settlements verify cryptographic HMAC-SHA256 signatures on the server.</p>
-        </div>
-
         ${
           order.mode === 'sandbox'
-            ? `<div class="p-4 rounded-lg bg-amber-50 dark:bg-amber-950/30 border border-amber-200 dark:border-amber-900 text-xs text-amber-900 dark:text-amber-200">
-                <strong>Sandbox / Test Mode:</strong> Live Razorpay keys are not configured in environment variables yet. You can verify the end-to-end backend signature check, entitlement unlock, commission split, and wallet ledger below—or test a failed payment.
-              </div>
-              <div class="flex flex-col sm:flex-row gap-2.5 pt-1">
-                <button type="button" id="chk-sandbox-pay" class="flex-1 py-2.5 px-4 text-sm font-semibold rounded-lg bg-[#0F2547] hover:bg-[#1B3B6F] dark:bg-sky-500 dark:hover:bg-sky-400 text-white dark:text-slate-950">
-                  Complete Test Payment (${formatInr(order.amountInr)})
+            ? `<div class="space-y-3">
+                <div class="text-xs font-semibold text-slate-700 dark:text-slate-300">Select Payment Method (Instant Sandbox Checkout)</div>
+                <div class="grid grid-cols-3 gap-2 text-xs">
+                  <button type="button" data-pm="upi" class="chk-pm-btn py-2.5 px-2 rounded-lg border-2 border-[#0F2547] dark:border-sky-400 bg-slate-50 dark:bg-[#0B1120] font-semibold text-slate-900 dark:text-white">UPI / QR</button>
+                  <button type="button" data-pm="card" class="chk-pm-btn py-2.5 px-2 rounded-lg border border-slate-200 dark:border-slate-700 text-slate-600 dark:text-slate-300 font-medium">Card</button>
+                  <button type="button" data-pm="netbanking" class="chk-pm-btn py-2.5 px-2 rounded-lg border border-slate-200 dark:border-slate-700 text-slate-600 dark:text-slate-300 font-medium">NetBanking</button>
+                </div>
+                <button type="button" id="chk-sandbox-pay" class="w-full min-h-[46px] py-3 px-4 text-sm font-semibold rounded-lg bg-[#0F2547] hover:bg-[#1B3B6F] dark:bg-sky-500 dark:hover:bg-sky-400 text-white dark:text-slate-950 transition-colors">
+                  Pay ${formatInr(order.amountInr)} &amp; Unlock Content
                 </button>
-                <button type="button" id="chk-sandbox-fail" class="py-2.5 px-4 text-xs font-semibold rounded-lg border border-red-300 dark:border-red-900 text-red-700 dark:text-red-400 hover:bg-red-50 dark:hover:bg-red-950/40">
-                  Simulate Failure
-                </button>
+                <div class="flex items-center justify-between gap-2 text-[11px] text-slate-500 dark:text-slate-400 pt-1">
+                  <span>Sandbox Mode (Add Razorpay keys in env for real money)</span>
+                  <button type="button" id="chk-sandbox-fail" class="text-red-600 dark:text-red-400 hover:underline font-medium shrink-0">Test Failure</button>
+                </div>
               </div>`
-            : `<button type="button" id="chk-razorpay-live" class="w-full py-3 px-4 text-sm font-semibold rounded-lg bg-[#0F2547] text-white">
-                Pay with Razorpay (${formatInr(order.amountInr)})
+            : `<button type="button" id="chk-razorpay-live" class="w-full min-h-[46px] py-3 px-4 text-sm font-semibold rounded-lg bg-[#0F2547] hover:bg-[#1B3B6F] dark:bg-sky-500 dark:text-slate-950 text-white">
+                Pay ${formatInr(order.amountInr)} via Razorpay (UPI / Card / NetBanking)
               </button>`
         }
+
+        <div class="text-[11px] text-slate-500 dark:text-slate-400 pt-2 border-t border-slate-100 dark:border-slate-800 space-y-1">
+          <p>Creator receives <strong class="font-mono text-slate-800 dark:text-slate-200">${formatInr(creatorNet)}</strong> · Platform fee (${order.commissionRate}%): <strong class="font-mono text-slate-800 dark:text-slate-200">${formatInr(commissionCut)}</strong>.</p>
+          <p>Instant lifetime access &amp; verified server-side HMAC-SHA256 settlement.</p>
+        </div>
       </div>
     `,
     onMount: (close) => {
+      document.querySelectorAll('.chk-pm-btn').forEach((pmBtn) => {
+        pmBtn.addEventListener('click', () => {
+          document.querySelectorAll('.chk-pm-btn').forEach((b) => {
+            const active = b === pmBtn;
+            b.className = active
+              ? 'chk-pm-btn py-2.5 px-2 rounded-lg border-2 border-[#0F2547] dark:border-sky-400 bg-slate-50 dark:bg-[#0B1120] font-semibold text-slate-900 dark:text-white'
+              : 'chk-pm-btn py-2.5 px-2 rounded-lg border border-slate-200 dark:border-slate-700 text-slate-600 dark:text-slate-300 font-medium';
+          });
+        });
+      });
+
       document.getElementById('chk-sandbox-pay')?.addEventListener('click', async (e) => {
         const btn = e.currentTarget;
         btn.disabled = true;
-        btn.textContent = 'Verifying signature...';
+        btn.textContent = 'Processing & verifying payment...';
         try {
           const res = await apiFetch('/api/payments/verify', {
             method: 'POST',
@@ -825,7 +923,7 @@ function openCheckoutModal(order, onSuccess) {
         } catch (err) {
           showToast(err.message, 'error');
           btn.disabled = false;
-          btn.textContent = `Complete Test Payment (${formatInr(order.amountInr)})`;
+          btn.textContent = `Pay ${formatInr(order.amountInr)} & Unlock Content`;
         }
       });
 

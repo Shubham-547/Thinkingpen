@@ -19,6 +19,7 @@ import {
 } from '../lib/security.ts';
 import {
   isOwnerAdminEmail,
+  isSuperAdminEmail,
   requireAuth,
   type AuthRequest,
 } from '../middleware/auth.ts';
@@ -52,17 +53,13 @@ async function buildUserEnvelope(userId: number) {
     .from(notifications)
     .where(and(eq(notifications.userId, userId), eq(notifications.isRead, false)));
 
-  const [adminCountRow] = await db
-    .select({ value: count() })
-    .from(users)
-    .where(eq(users.role, 'admin'));
-
   return {
     id: user.id,
     uid: user.uid,
     email: user.email,
     name: user.name,
     role: user.role,
+    isSuperAdmin: isSuperAdminEmail(user.email),
     status: user.status,
     emailVerified: user.emailVerified,
     avatarUrl: user.avatarUrl,
@@ -72,9 +69,7 @@ async function buildUserEnvelope(userId: number) {
     creatorProfile: creatorProfile || null,
     wallet: wallet || null,
     unreadNotifications: Number(unreadRow?.value || 0),
-    canBootstrapAdmin:
-      user.role !== 'admin' &&
-      (Number(adminCountRow?.value || 0) === 0 || isOwnerAdminEmail(user.email)),
+    canBootstrapAdmin: user.role !== 'admin' && isSuperAdminEmail(user.email),
   };
 }
 
@@ -471,24 +466,18 @@ router.post('/become-creator', requireAuth, async (req: AuthRequest, res) => {
   }
 });
 
-// POST /api/auth/bootstrap-admin (Secure dev setup: only when zero admins exist or email matches owner)
+// POST /api/auth/bootstrap-admin (Strictly locked to the single Primary Super Admin email)
 router.post('/bootstrap-admin', requireAuth, async (req: AuthRequest, res) => {
   try {
-    const [adminCountRow] = await db
-      .select({ value: count() })
-      .from(users)
-      .where(eq(users.role, 'admin'));
-
-    const hasAdmins = Number(adminCountRow?.value || 0) > 0;
-    if (hasAdmins && !isOwnerAdminEmail(req.user!.email)) {
+    if (!isSuperAdminEmail(req.user!.email)) {
       return res.status(403).json({
-        error: 'An administrator account already exists. Ask an existing admin to grant access.',
+        error: 'Only the Primary Super Admin can grant Administrator access.',
       });
     }
 
     await db
       .update(users)
-      .set({ role: 'admin', updatedAt: new Date() })
+      .set({ role: 'admin', status: 'active', updatedAt: new Date() })
       .where(eq(users.id, req.user!.id));
 
     await db

@@ -412,7 +412,7 @@ router.get('/contents/:slugOrId', optionalAuth, async (req: AuthRequest, res) =>
       hasPurchased = Boolean(purchase);
     }
 
-    const hasAccess = item.isFree || isOwner || isAdmin || hasPurchased;
+    const hasAccess = (item.isFree && Boolean(req.user)) || isOwner || isAdmin || hasPurchased;
 
     // Fetch creator profile
     const [creatorProfile] = await db
@@ -537,7 +537,7 @@ router.get('/contents/:slugOrId', optionalAuth, async (req: AuthRequest, res) =>
         slug: item.slug,
         shortDescription: item.shortDescription,
         bodyHtml: hasAccess ? item.bodyHtml : null,
-        previewHtml: item.previewHtml,
+        previewHtml: null,
         coverImageUrl: item.coverImageUrl,
         categoryId: item.categoryId,
         categoryName: row.categoryName,
@@ -619,7 +619,13 @@ router.get('/files/:fileId', optionalAuth, async (req: AuthRequest, res) => {
 
     const isOwner = req.user?.id === content.creatorId;
     const isAdmin = req.user?.role === 'admin';
-    let hasAccess = content.isFree || file.isPreview || isOwner || isAdmin;
+    const isCoverFile = file.fileType === 'cover';
+    let hasAccess =
+      isCoverFile ||
+      (content.isFree && Boolean(req.user)) ||
+      (file.isPreview && Boolean(req.user)) ||
+      isOwner ||
+      isAdmin;
 
     if (!hasAccess && req.user) {
       const [purchase] = await db

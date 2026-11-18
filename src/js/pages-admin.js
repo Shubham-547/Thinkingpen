@@ -184,9 +184,21 @@ export async function renderAdminDashboardPage(container, activeTab = 'overview'
       `;
     } else if (activeTab === 'users') {
       const data = await apiFetch('/api/admin/users');
+      const canManageAdmins = Boolean(data.actorIsSuperAdmin);
       bodyHtml = `
         <div class="space-y-6">
-          <h1 class="font-display text-2xl font-semibold text-slate-900 dark:text-white">User Management (${data.users.length})</h1>
+          <div class="flex flex-wrap items-center justify-between gap-3">
+            <div>
+              <h1 class="font-display text-2xl font-semibold text-slate-900 dark:text-white">User Management (${data.users.length})</h1>
+              <p class="text-xs text-slate-500 dark:text-slate-400 mt-1">
+                ${
+                  canManageAdmins
+                    ? 'Primary Super Admin authority active: only you can promote or remove other Administrators.'
+                    : 'Delegated Admin view: only the Primary Super Admin can grant or revoke Administrator roles.'
+                }
+              </p>
+            </div>
+          </div>
           <div class="bg-white dark:bg-[#111A2E] border border-slate-200 dark:border-slate-800 rounded-xl overflow-x-auto touch-scroll-x">
             <table class="w-full min-w-[680px] text-left text-sm">
               <thead class="text-xs text-slate-500 border-b border-slate-200 dark:border-slate-800">
@@ -200,28 +212,44 @@ export async function renderAdminDashboardPage(container, activeTab = 'overview'
               </thead>
               <tbody class="divide-y divide-slate-100 dark:divide-slate-800">
                 ${data.users
-                  .map(
-                    (u) => `
+                  .map((u) => {
+                    const isPrimary = Boolean(u.isSuperAdmin);
+                    const lockedForActor = isPrimary || (u.role === 'admin' && !canManageAdmins);
+                    const allowedRoles = canManageAdmins ? ['user', 'creator', 'admin'] : ['user', 'creator'];
+                    return `
                   <tr>
                     <td class="px-4 py-3">
-                      <div class="font-medium text-slate-900 dark:text-white">${esc(u.name)}</div>
+                      <div class="flex items-center gap-2">
+                        <span class="font-medium text-slate-900 dark:text-white">${esc(u.name)}</span>
+                        ${isPrimary ? '<span class="text-[11px] font-semibold text-amber-700 dark:text-amber-400">· Primary Super Admin</span>' : ''}
+                      </div>
                       <div class="text-xs text-slate-500">${esc(u.email)}</div>
                     </td>
                     <td class="px-4 py-3">
-                      <select data-user-id="${u.id}" class="adm-user-role text-xs px-2 py-1 rounded border border-slate-300 dark:border-slate-700 bg-slate-50 dark:bg-[#0B1120]">
-                        ${['user', 'creator', 'admin'].map((r) => `<option value="${r}" ${u.role === r ? 'selected' : ''}>${r}</option>`).join('')}
-                      </select>
+                      ${
+                        lockedForActor
+                          ? `<span class="text-xs font-semibold text-slate-700 dark:text-slate-200">${isPrimary ? 'Super Admin (Locked)' : 'Admin (Locked)'}</span>`
+                          : `<select data-user-id="${u.id}" class="adm-user-role text-xs px-2 py-1 rounded border border-slate-300 dark:border-slate-700 bg-slate-50 dark:bg-[#0B1120]">
+                              ${allowedRoles.map((r) => `<option value="${r}" ${u.role === r ? 'selected' : ''}>${r}</option>`).join('')}
+                            </select>`
+                      }
                     </td>
                     <td class="px-4 py-3">${renderStatusLabel(u.status)}</td>
                     <td class="px-4 py-3 text-xs text-slate-500">${formatDate(u.createdAt)}</td>
                     <td class="px-4 py-3 text-right whitespace-nowrap space-x-2 text-xs font-semibold">
-                      ${u.status !== 'active' ? `<button type="button" data-uid="${u.id}" data-status="active" class="adm-user-status text-emerald-700 dark:text-emerald-400 hover:underline">Activate</button>` : ''}
-                      ${u.status !== 'suspended' ? `<button type="button" data-uid="${u.id}" data-status="suspended" class="adm-user-status text-amber-700 dark:text-amber-400 hover:underline">Suspend</button>` : ''}
-                      ${u.status !== 'blocked' ? `<button type="button" data-uid="${u.id}" data-status="blocked" class="adm-user-status text-red-700 dark:text-red-400 hover:underline">Block</button>` : ''}
+                      ${
+                        lockedForActor
+                          ? `<span class="text-slate-400 font-normal">Protected</span>`
+                          : `
+                            ${u.status !== 'active' ? `<button type="button" data-uid="${u.id}" data-status="active" class="adm-user-status text-emerald-700 dark:text-emerald-400 hover:underline">Activate</button>` : ''}
+                            ${u.status !== 'suspended' ? `<button type="button" data-uid="${u.id}" data-status="suspended" class="adm-user-status text-amber-700 dark:text-amber-400 hover:underline">Suspend</button>` : ''}
+                            ${u.status !== 'blocked' ? `<button type="button" data-uid="${u.id}" data-status="blocked" class="adm-user-status text-red-700 dark:text-red-400 hover:underline">Block</button>` : ''}
+                          `
+                      }
                     </td>
                   </tr>
-                `
-                  )
+                `;
+                  })
                   .join('')}
               </tbody>
             </table>
