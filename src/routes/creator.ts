@@ -65,6 +65,43 @@ const upload = multer({
   },
 });
 
+const INLINE_IMAGE_MIMES = new Set(['image/jpeg', 'image/png', 'image/webp', 'image/gif']);
+
+const inlineImageUpload = multer({
+  storage: multer.memoryStorage(),
+  limits: {
+    fileSize: 5 * 1024 * 1024, // 5 MB max per inline editor photo
+  },
+  fileFilter: (_req, file, cb) => {
+    if (!INLINE_IMAGE_MIMES.has(file.mimetype)) {
+      cb(new Error('Only JPG, PNG, WebP, and GIF images are allowed in the editor.'));
+      return;
+    }
+    cb(null, true);
+  },
+});
+
+function hasValidImageSignature(buf: Buffer, mime: string): boolean {
+  if (buf.length < 12) return false;
+  if (mime === 'image/jpeg') {
+    return buf[0] === 0xff && buf[1] === 0xd8 && buf[2] === 0xff;
+  }
+  if (mime === 'image/png') {
+    return buf[0] === 0x89 && buf[1] === 0x50 && buf[2] === 0x4e && buf[3] === 0x47;
+  }
+  if (mime === 'image/gif') {
+    const header = buf.subarray(0, 6).toString('ascii');
+    return header === 'GIF87a' || header === 'GIF89a';
+  }
+  if (mime === 'image/webp') {
+    return (
+      buf.subarray(0, 4).toString('ascii') === 'RIFF' &&
+      buf.subarray(8, 12).toString('ascii') === 'WEBP'
+    );
+  }
+  return false;
+}
+
 const SUPPORTED_CONTENT_TYPES = [
   'Notes',
   'PDF / Documents',
@@ -599,6 +636,42 @@ router.post(
     } catch (error) {
       console.error('File upload error:', error);
       return res.status(500).json({ error: 'File upload failed.' });
+    }
+  }
+);
+
+// POST /api/creator/editor-image (Inline photo upload for Rich-Text Editor, persistent across restarts)
+router.post(
+  '/editor-image',
+  requireAuth,
+  requireCreator,
+  inlineImageUpload.single('image'),
+  async (req: AuthRequest, res) => {
+    try {
+      if (!req.file) {
+        return res.status(400).json({ error: 'Please select an image file to upload.' });
+      }
+      const { mimetype, buffer, originalname, size } = req.file;
+      if (!INLINE_IMAGE_MIMES.has(mimetype) || !hasValidImageSignature(buffer, mimetype)) {
+        return res.status(400).json({
+          error: 'Invalid image file. Please upload a valid JPG, PNG, WebP, or GIF photo.',
+        });
+      }
+      const base64 = buffer.toString('base64');
+      const alt = path
+        .basename(originalname, path.extname(originalname))
+        .replace(/[^a-zA-Z0-9 _-]/g, ' ')
+        .trim()
+        .slice(0, 80) || 'Illustration';
+
+      return res.status(201).json({
+        url: `data:${mimetype};base64,${base64}`,
+        alt,
+        sizeBytes: size,
+      });
+    } catch (error) {
+      console.error('Editor inline image upload error:', error);
+      return res.status(500).json({ error: 'Failed to process uploaded photo.' });
     }
   }
 );

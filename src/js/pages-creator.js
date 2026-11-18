@@ -667,9 +667,16 @@ function renderContentEditorHtml(editPayload, commRate) {
               <button type="button" data-cmd="insertOrderedList" class="rte-btn min-h-[34px] px-2.5 py-1 text-xs rounded hover:bg-slate-200 dark:hover:bg-slate-800 whitespace-nowrap shrink-0">1. List</button>
               <button type="button" data-cmd="formatBlock" data-val="BLOCKQUOTE" class="rte-btn min-h-[34px] px-2.5 py-1 text-xs rounded hover:bg-slate-200 dark:hover:bg-slate-800 whitespace-nowrap shrink-0">Quote</button>
               <button type="button" id="rte-insert-code" class="min-h-[34px] px-2.5 py-1 text-xs font-mono rounded hover:bg-slate-200 dark:hover:bg-slate-800 whitespace-nowrap shrink-0">Code</button>
+              <span class="h-4 w-px bg-slate-300 dark:bg-slate-700 mx-0.5 shrink-0"></span>
+              <button type="button" id="rte-upload-image" class="inline-flex items-center gap-1.5 min-h-[34px] px-2.5 py-1 text-xs font-semibold rounded bg-[#0F2547] text-white hover:bg-[#1B3B6F] dark:bg-sky-500 dark:text-slate-950 dark:hover:bg-sky-400 whitespace-nowrap shrink-0 transition-colors">
+                <svg class="w-3.5 h-3.5 shrink-0" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><rect x="3" y="3" width="18" height="18" rx="2" ry="2"></rect><circle cx="8.5" cy="8.5" r="1.5"></circle><polyline points="21 15 16 10 5 21"></polyline></svg>
+                <span>Upload Photo</span>
+              </button>
+              <input type="file" id="rte-image-file-input" accept="image/jpeg,image/png,image/webp,image/gif" class="hidden" />
             </div>
-            <div id="ed-rte" contenteditable="true" data-placeholder="Write your notes, article, poem, story, or lecture transcript here. Use H2 headings to auto-generate a Table of Contents..." class="sp-rte-editor reading-prose p-4 sm:p-5 max-w-none">${item?.bodyHtml || ''}</div>
+            <div id="ed-rte" contenteditable="true" data-placeholder="Write your notes, article, poem, story, or lecture transcript here. Use H2 headings to auto-generate a Table of Contents, or click Upload Photo to insert diagrams and images..." class="sp-rte-editor reading-prose p-4 sm:p-5 max-w-none">${item?.bodyHtml || ''}</div>
           </div>
+          <p class="text-[11px] text-slate-500 dark:text-slate-400">Tip: Click <strong>Upload Photo</strong> to insert JPG, PNG, WebP, or GIF images from your phone or computer (you can also paste or drag &amp; drop photos directly into the editor).</p>
         </div>
 
         <!-- Authorized Video URL (optional) -->
@@ -842,6 +849,187 @@ function wireContentEditor(container, editPayload, commRate) {
     const rte = document.getElementById('ed-rte');
     rte?.focus();
     document.execCommand('insertHTML', false, '<pre><code>// Formula or code block\n</code></pre><p></p>');
+  });
+
+  // Rich Text Editor Inline Photo Upload (button + clipboard paste + drag & drop)
+  const rteEl = document.getElementById('ed-rte');
+  const rteImageBtn = document.getElementById('rte-upload-image');
+  const rteImageInput = document.getElementById('rte-image-file-input');
+  let savedRteRange = null;
+
+  const saveRteSelection = () => {
+    const sel = window.getSelection();
+    if (!sel || sel.rangeCount === 0 || !rteEl) return;
+    const range = sel.getRangeAt(0);
+    if (rteEl.contains(range.commonAncestorContainer)) {
+      savedRteRange = range.cloneRange();
+    }
+  };
+
+  rteEl?.addEventListener('keyup', saveRteSelection);
+  rteEl?.addEventListener('mouseup', saveRteSelection);
+  rteEl?.addEventListener('blur', saveRteSelection);
+
+  const optimizeEditorImage = (file) =>
+    new Promise((resolve) => {
+      // Preserve GIF animations and already-small images untouched
+      if (file.type === 'image/gif' || file.size <= 350 * 1024) {
+        resolve(file);
+        return;
+      }
+      const reader = new FileReader();
+      reader.onload = () => {
+        const img = new Image();
+        img.onload = () => {
+          const maxDim = 1280;
+          let { width, height } = img;
+          if (width > maxDim || height > maxDim) {
+            const ratio = Math.min(maxDim / width, maxDim / height);
+            width = Math.round(width * ratio);
+            height = Math.round(height * ratio);
+          }
+          const canvas = document.createElement('canvas');
+          canvas.width = width;
+          canvas.height = height;
+          const ctx = canvas.getContext('2d');
+          if (!ctx) {
+            resolve(file);
+            return;
+          }
+          ctx.drawImage(img, 0, 0, width, height);
+          const targetMime = file.type === 'image/png' ? 'image/png' : 'image/jpeg';
+          canvas.toBlob(
+            (blob) => {
+              if (!blob || blob.size >= file.size) {
+                resolve(file);
+                return;
+              }
+              const baseName = file.name.replace(/\.[^.]+$/, '') || 'photo';
+              const ext = targetMime === 'image/png' ? '.png' : '.jpg';
+              resolve(new File([blob], `${baseName}${ext}`, { type: targetMime }));
+            },
+            targetMime,
+            0.82
+          );
+        };
+        img.onerror = () => resolve(file);
+        img.src = reader.result;
+      };
+      reader.onerror = () => resolve(file);
+      reader.readAsDataURL(file);
+    });
+
+  const insertUploadedImageIntoRte = async (rawFile) => {
+    if (!rawFile || !rteEl) return;
+    if (!/^image\/(jpeg|png|webp|gif)$/i.test(rawFile.type)) {
+      showToast('Please choose a JPG, PNG, WebP, or GIF photo.', 'error');
+      return;
+    }
+    if (rawFile.size > 15 * 1024 * 1024) {
+      showToast('Photo is too large. Please select an image under 15 MB.', 'error');
+      return;
+    }
+
+    const originalBtnHtml = rteImageBtn?.innerHTML;
+    if (rteImageBtn) {
+      rteImageBtn.disabled = true;
+      rteImageBtn.innerHTML = '<span>Uploading...</span>';
+    }
+
+    try {
+      const preparedFile = await optimizeEditorImage(rawFile);
+      if (preparedFile.size > 5 * 1024 * 1024) {
+        showToast('Compressed image still exceeds 5 MB. Please use a smaller photo.', 'error');
+        return;
+      }
+
+      const fd = new FormData();
+      fd.append('image', preparedFile);
+      const res = await apiFetch('/api/creator/editor-image', { method: 'POST', body: fd });
+
+      const figure = document.createElement('figure');
+      figure.className = 'my-4';
+      const img = document.createElement('img');
+      img.src = res.url;
+      img.alt = res.alt || 'Inserted photo';
+      img.className = 'w-full max-w-2xl rounded-lg border border-slate-200 dark:border-slate-800';
+      figure.appendChild(img);
+
+      const spacer = document.createElement('p');
+      spacer.innerHTML = '<br>';
+
+      rteEl.focus();
+      const sel = window.getSelection();
+      if (savedRteRange && rteEl.contains(savedRteRange.commonAncestorContainer)) {
+        sel.removeAllRanges();
+        sel.addRange(savedRteRange);
+        savedRteRange.deleteContents();
+        savedRteRange.insertNode(spacer);
+        savedRteRange.insertNode(figure);
+        const afterRange = document.createRange();
+        afterRange.setStart(spacer, 0);
+        afterRange.collapse(true);
+        sel.removeAllRanges();
+        sel.addRange(afterRange);
+        savedRteRange = afterRange.cloneRange();
+      } else {
+        rteEl.appendChild(figure);
+        rteEl.appendChild(spacer);
+      }
+
+      showToast('Photo inserted into content.', 'success');
+    } catch (err) {
+      showToast(err.message || 'Could not upload photo.', 'error');
+    } finally {
+      if (rteImageBtn && originalBtnHtml) {
+        rteImageBtn.disabled = false;
+        rteImageBtn.innerHTML = originalBtnHtml;
+      }
+      if (rteImageInput) rteImageInput.value = '';
+    }
+  };
+
+  rteImageBtn?.addEventListener('click', () => {
+    saveRteSelection();
+    rteImageInput?.click();
+  });
+
+  rteImageInput?.addEventListener('change', (e) => {
+    const file = e.target.files?.[0];
+    if (file) insertUploadedImageIntoRte(file);
+  });
+
+  rteEl?.addEventListener('paste', (e) => {
+    const items = Array.from(e.clipboardData?.items || []);
+    const imgItem = items.find((it) => it.type && it.type.startsWith('image/'));
+    if (imgItem) {
+      e.preventDefault();
+      saveRteSelection();
+      const file = imgItem.getAsFile();
+      if (file) insertUploadedImageIntoRte(file);
+    }
+  });
+
+  rteEl?.addEventListener('dragover', (e) => {
+    if (e.dataTransfer?.types?.includes('Files')) {
+      e.preventDefault();
+      rteEl.classList.add('ring-2', 'ring-sky-400');
+    }
+  });
+
+  rteEl?.addEventListener('dragleave', () => {
+    rteEl.classList.remove('ring-2', 'ring-sky-400');
+  });
+
+  rteEl?.addEventListener('drop', (e) => {
+    rteEl.classList.remove('ring-2', 'ring-sky-400');
+    const files = Array.from(e.dataTransfer?.files || []);
+    const imgFile = files.find((f) => f.type && f.type.startsWith('image/'));
+    if (imgFile) {
+      e.preventDefault();
+      saveRteSelection();
+      insertUploadedImageIntoRte(imgFile);
+    }
   });
 
   // Live Preview Modal

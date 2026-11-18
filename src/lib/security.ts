@@ -100,8 +100,19 @@ export function sanitizeHtml(raw: string | null | undefined): string {
   clean = clean.replace(/<\s*(script|iframe|object|embed|style|form|input|button|meta|link|base|svg|math)[^>]*\/?>/gi, '');
   // Remove inline event handlers (onclick=, onerror=, etc.) and dangerous attributes
   clean = clean.replace(/\s+(?:on[a-z]+|srcdoc|formaction)\s*=\s*(?:"[^"]*"|'[^']*'|[^\s>]+)/gi, '');
-  // Neutralize javascript:, vbscript:, and data: URIs
-  clean = clean.replace(/(href|src)\s*=\s*(["'])\s*(?:javascript|vbscript|data)\s*:[^"']*\2/gi, '$1="#"');
+  // Neutralize javascript:, vbscript:, and non-raster data: URIs (strictly block data: on href and non-raster data: on src)
+  clean = clean.replace(/href\s*=\s*(["'])\s*(?:javascript|vbscript|data)\s*:[^"']*\1/gi, 'href="#"');
+  clean = clean.replace(/src\s*=\s*(["'])\s*(?:javascript|vbscript)\s*:[^"']*\1/gi, 'src="#"');
+  clean = clean.replace(
+    /src\s*=\s*(["'])\s*data\s*:([^"']*)\1/gi,
+    (match, quote: string, payload: string) => {
+      const trimmed = payload.trim();
+      if (/^image\/(?:png|jpeg|jpg|webp|gif);base64,[A-Za-z0-9+/=\s]+$/i.test(trimmed)) {
+        return `src=${quote}data:${trimmed}${quote}`;
+      }
+      return `src=${quote}#${quote}`;
+    }
+  );
   return clean.trim();
 }
 

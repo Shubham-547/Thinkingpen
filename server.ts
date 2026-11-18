@@ -44,13 +44,13 @@ async function startServer() {
   // Capture raw body for Razorpay webhook HMAC verification
   app.use(
     express.json({
-      limit: '5mb',
+      limit: '15mb',
       verify: (req, _res, buf) => {
         (req as unknown as { rawBody?: string }).rawBody = buf.toString('utf8');
       },
     })
   );
-  app.use(express.urlencoded({ extended: true, limit: '5mb' }));
+  app.use(express.urlencoded({ extended: true, limit: '15mb' }));
 
   // Strict brute-force protection on sensitive auth actions (login/register/password reset)
   const strictAuthLimiter = rateLimit({
