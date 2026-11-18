@@ -9,6 +9,7 @@ import communityRoutes from './src/routes/community.ts';
 import creatorRoutes from './src/routes/creator.ts';
 import paymentRoutes from './src/routes/payments.ts';
 import adminRoutes from './src/routes/admin.ts';
+import { ensureBaselineCatalog } from './src/db/bootstrap.ts';
 
 dotenv.config();
 
@@ -140,6 +141,8 @@ async function startServer() {
       res.sendFile(path.join(distDir, 'index.html'));
     });
   }
+
+  await ensureBaselineCatalog();
 
   app.listen(PORT, '0.0.0.0', () => {
     console.log(`ScholarPress server listening on http://0.0.0.0:${PORT}`);
