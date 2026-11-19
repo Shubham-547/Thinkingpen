@@ -25,6 +25,7 @@ import {
   createAutoPreview,
   estimateReadingTime,
   getStorageRoot,
+  normalizeExternalVideoUrl,
   sanitizeHtml,
   sanitizeSafeUrl,
   slugify,
@@ -296,7 +297,15 @@ router.post('/contents', requireAuth, requireCreator, async (req: AuthRequest, r
     const rawPrice = Number(req.body?.priceInr || 0);
     const ownershipConfirmed = Boolean(req.body?.ownershipConfirmed);
     const submitAction = req.body?.action === 'submit' ? 'submit' : 'draft';
-    const externalVideoUrl = sanitizeSafeUrl(req.body?.externalVideoUrl, false) || '';
+    const rawExternalVideoUrl = String(req.body?.externalVideoUrl || '').trim();
+    const externalVideoUrl = rawExternalVideoUrl
+      ? normalizeExternalVideoUrl(rawExternalVideoUrl) || ''
+      : '';
+    if (rawExternalVideoUrl && !externalVideoUrl) {
+      return res.status(400).json({
+        error: 'Please enter a valid YouTube share link (youtu.be/... or youtube.com/watch?v=...), Vimeo link, or HTTPS video embed URL.',
+      });
+    }
     const tagsInput: string[] = Array.isArray(req.body?.tags)
       ? req.body.tags
       : String(req.body?.tags || '')
@@ -530,6 +539,56 @@ router.put('/contents/:id', requireAuth, requireCreator, async (req: AuthRequest
           new Set(tagsInput.map((t) => t.toLowerCase().slice(0, 40)))
         ).slice(0, 10);
         await db.insert(contentTags).values(uniqueTags.map((tag) => ({ contentId: id, tag })));
+      }
+    }
+
+    if (req.body?.externalVideoUrl !== undefined) {
+      const rawExternalVideoUrl = String(req.body.externalVideoUrl || '').trim();
+      const normalizedVideoUrl = rawExternalVideoUrl
+        ? normalizeExternalVideoUrl(rawExternalVideoUrl) || ''
+        : '';
+      if (rawExternalVideoUrl && !normalizedVideoUrl) {
+        return res.status(400).json({
+          error: 'Please enter a valid YouTube share link (youtu.be/... or youtube.com/watch?v=...), Vimeo link, or HTTPS video embed URL.',
+        });
+      }
+
+      const existingExternalVideos = await db
+        .select()
+        .from(contentFiles)
+        .where(
+          and(
+            eq(contentFiles.contentId, id),
+            eq(contentFiles.fileType, 'video'),
+            eq(contentFiles.storagePath, 'external')
+          )
+        );
+
+      if (normalizedVideoUrl) {
+        if (existingExternalVideos.length > 0) {
+          await db
+            .update(contentFiles)
+            .set({
+              externalVideoUrl: normalizedVideoUrl,
+              originalName: `${title} - Video Lecture`,
+            })
+            .where(eq(contentFiles.id, existingExternalVideos[0].id));
+        } else {
+          await db.insert(contentFiles).values({
+            contentId: id,
+            fileType: 'video',
+            originalName: `${title} - Video Lecture`,
+            storagePath: 'external',
+            mimeType: 'video/external',
+            sizeBytes: 0,
+            isPreview: false,
+            externalVideoUrl: normalizedVideoUrl,
+          });
+        }
+      } else if (existingExternalVideos.length > 0) {
+        for (const ev of existingExternalVideos) {
+          await db.delete(contentFiles).where(eq(contentFiles.id, ev.id));
+        }
       }
     }
 

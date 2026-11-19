@@ -9,6 +9,7 @@ import {
   contents,
   creatorProfiles,
   creatorWallets,
+  deletedAccountLogs,
   followers,
   notifications,
   payments,
@@ -22,6 +23,12 @@ import {
   users,
   withdrawals,
 } from '../db/schema.ts';
+import { adminAuth } from '../lib/firebase-admin.ts';
+import {
+  isMailerConfigured,
+  sendAccountBlockedEmail,
+  sendAccountDeletedEmail,
+} from '../lib/mailer.ts';
 import { clampCommission, refundCapturedPayment } from '../lib/payments.ts';
 import { slugify } from '../lib/security.ts';
 import { isSuperAdminEmail, requireAdmin, requireAuth, type AuthRequest } from '../middleware/auth.ts';
@@ -94,6 +101,15 @@ router.get('/overview', async (req: AuthRequest, res) => {
       .select({ value: count() })
       .from(reports)
       .where(eq(reports.status, 'open'));
+
+    const [blockedUsersRow] = await db
+      .select({ value: count() })
+      .from(users)
+      .where(inArray(users.status, ['blocked', 'suspended']));
+
+    const [deletedAccountsRow] = await db
+      .select({ value: count() })
+      .from(deletedAccountLogs);
 
     const [purchasesRow] = await db
       .select({ value: count() })
@@ -209,6 +225,8 @@ router.get('/overview', async (req: AuthRequest, res) => {
       metrics: {
         totalUsers: Number(totalUsersRow?.value || 0),
         activeUsers: Number(activeUsersRow?.value || 0),
+        blockedUsers: Number(blockedUsersRow?.value || 0),
+        deletedAccountsCount: Number(deletedAccountsRow?.value || 0),
         totalCreators: Number(totalCreatorsRow?.value || 0),
         publishedContent: Number(publishedContentRow?.value || 0),
         freeContent: Number(freeContentRow?.value || 0),
@@ -222,6 +240,7 @@ router.get('/overview', async (req: AuthRequest, res) => {
         pendingWithdrawalsCount: pendingWithdrawalsList.length,
         pendingWithdrawalsAmount: Number(pendingWithdrawalsAmount.toFixed(2)),
       },
+      mailerConfigured: isMailerConfigured(),
       monthlyRevenue,
       popularCategories,
       topContent,
@@ -236,6 +255,24 @@ router.get('/overview', async (req: AuthRequest, res) => {
 // GET /api/admin/users
 router.get('/users', async (req: AuthRequest, res) => {
   try {
+    // Automatically unlock any timed blocks that have already expired
+    await db
+      .update(users)
+      .set({
+        status: 'active',
+        blockedReason: null,
+        blockedUntil: null,
+        blockedAt: null,
+        blockedBy: null,
+        updatedAt: new Date(),
+      })
+      .where(
+        and(
+          inArray(users.status, ['blocked', 'suspended']),
+          lte(users.blockedUntil, new Date())
+        )
+      );
+
     const rows = await db
       .select({
         id: users.id,
@@ -245,6 +282,9 @@ router.get('/users', async (req: AuthRequest, res) => {
         name: users.name,
         role: users.role,
         status: users.status,
+        blockedReason: users.blockedReason,
+        blockedUntil: users.blockedUntil,
+        blockedAt: users.blockedAt,
         emailVerified: users.emailVerified,
         createdAt: users.createdAt,
         state: userProfiles.state,
@@ -266,6 +306,7 @@ router.get('/users', async (req: AuthRequest, res) => {
 
     return res.json({
       actorIsSuperAdmin: isSuperAdminEmail(req.user!.email),
+      mailerConfigured: isMailerConfigured(),
       users: rows.map((u) => {
         const isPrimary = isSuperAdminEmail(u.email);
         return {
@@ -276,6 +317,9 @@ router.get('/users', async (req: AuthRequest, res) => {
           state: isPrimary ? null : u.state,
           country: isPrimary ? null : u.country,
           occupationRole: isPrimary ? null : u.occupationRole,
+          blockedReason: isPrimary ? null : u.blockedReason,
+          blockedUntil: isPrimary ? null : u.blockedUntil,
+          blockedAt: isPrimary ? null : u.blockedAt,
           isSuperAdmin: isPrimary,
         };
       }),
@@ -692,6 +736,9 @@ router.get('/users/:identifier/dossier', async (req: AuthRequest, res) => {
         email: targetUser.email,
         role: targetUser.role,
         status: targetUser.status,
+        blockedReason: targetUser.blockedReason,
+        blockedUntil: targetUser.blockedUntil,
+        blockedAt: targetUser.blockedAt,
         emailVerified: targetUser.emailVerified,
         avatarUrl: targetUser.avatarUrl,
         bio: targetUser.bio,
@@ -744,7 +791,7 @@ router.get('/users/:identifier/dossier', async (req: AuthRequest, res) => {
   }
 });
 
-// PATCH /api/admin/users/:id
+// PATCH /api/admin/users/:id (Role change, timed block/suspend with reason, unblock, creator settings)
 router.patch('/users/:id', async (req: AuthRequest, res) => {
   try {
     const targetId = Number(req.params.id);
@@ -758,14 +805,16 @@ router.patch('/users/:id', async (req: AuthRequest, res) => {
     const actorIsSuperAdmin = isSuperAdminEmail(req.user!.email);
     const targetIsSuperAdmin = isSuperAdminEmail(targetUser.email);
     const updates: Record<string, unknown> = { updatedAt: new Date() };
+    let blockEmailResult: { sent: boolean; note: string } | null = null;
 
     if (req.body?.status && ['active', 'suspended', 'blocked'].includes(req.body.status)) {
-      if (targetIsSuperAdmin && req.body.status !== 'active') {
+      const nextStatus = req.body.status as 'active' | 'suspended' | 'blocked';
+      if (targetIsSuperAdmin && nextStatus !== 'active') {
         return res.status(403).json({
           error: 'Primary Super Admin cannot be suspended or blocked.',
         });
       }
-      if (targetId === req.user!.id && req.body.status !== 'active') {
+      if (targetId === req.user!.id && nextStatus !== 'active') {
         return res.status(400).json({ error: 'You cannot suspend or block your own admin account.' });
       }
       if (targetUser.role === 'admin' && !actorIsSuperAdmin) {
@@ -773,7 +822,61 @@ router.patch('/users/:id', async (req: AuthRequest, res) => {
           error: 'Only the Primary Super Admin can suspend or block another Administrator.',
         });
       }
-      updates.status = req.body.status;
+
+      updates.status = nextStatus;
+
+      if (nextStatus === 'active') {
+        updates.blockedReason = null;
+        updates.blockedUntil = null;
+        updates.blockedAt = null;
+        updates.blockedBy = null;
+      } else {
+        const reason = String(req.body?.blockedReason || req.body?.reason || '').trim().slice(0, 1000);
+        if (reason.length < 3) {
+          return res.status(400).json({
+            error: 'Please provide a clear reason (at least 3 characters) that will be shown to the user.',
+          });
+        }
+
+        let blockedUntilDate: Date | null = null;
+        const isPermanent = Boolean(req.body?.permanent);
+
+        if (!isPermanent) {
+          if (req.body?.blockedUntil) {
+            const parsed = new Date(String(req.body.blockedUntil));
+            if (Number.isNaN(parsed.getTime()) || parsed.getTime() <= Date.now()) {
+              return res.status(400).json({
+                error: 'Custom unblock date & time must be in the future.',
+              });
+            }
+            blockedUntilDate = parsed;
+          } else if (req.body?.durationHours !== undefined && req.body?.durationHours !== null && req.body?.durationHours !== '') {
+            const hrs = Number(req.body.durationHours);
+            if (!Number.isFinite(hrs) || hrs <= 0 || hrs > 87600) {
+              return res.status(400).json({
+                error: 'Block duration must be between 1 hour and 10 years, or select Permanent.',
+              });
+            }
+            blockedUntilDate = new Date(Date.now() + hrs * 60 * 60 * 1000);
+          }
+        }
+
+        updates.blockedReason = reason;
+        updates.blockedUntil = blockedUntilDate;
+        updates.blockedAt = new Date();
+        updates.blockedBy = req.user!.id;
+
+        if (req.body?.sendEmail !== false) {
+          const mailRes = await sendAccountBlockedEmail({
+            toEmail: targetUser.email,
+            userName: targetUser.name,
+            status: nextStatus,
+            reason,
+            blockedUntil: blockedUntilDate,
+          });
+          blockEmailResult = { sent: mailRes.sent, note: mailRes.note };
+        }
+      }
     }
 
     if (req.body?.role && ['user', 'creator', 'admin'].includes(req.body.role)) {
@@ -843,11 +946,168 @@ router.patch('/users/:id', async (req: AuthRequest, res) => {
         .where(eq(creatorProfiles.userId, targetId));
     }
 
-    await logAudit(req.user!.id, 'update_user', 'user', targetId, req.body || {}, req.ip);
-    return res.json({ user: updatedUser, message: 'User account updated.' });
+    await logAudit(
+      req.user!.id,
+      req.body?.status === 'blocked' || req.body?.status === 'suspended'
+        ? `user_${req.body.status}`
+        : req.body?.status === 'active'
+        ? 'user_unblocked'
+        : 'update_user',
+      'user',
+      targetId,
+      {
+        status: updatedUser.status,
+        role: updatedUser.role,
+        blockedReason: updatedUser.blockedReason,
+        blockedUntil: updatedUser.blockedUntil,
+      },
+      req.ip
+    );
+
+    return res.json({
+      user: updatedUser,
+      emailSent: blockEmailResult?.sent ?? false,
+      emailNote: blockEmailResult?.note ?? null,
+      message:
+        updatedUser.status === 'active'
+          ? 'User account updated and active.'
+          : `Account ${updatedUser.status}. The user will see your reason when signing in.`,
+    });
   } catch (error) {
     console.error('Admin patch user error:', error);
     return res.status(500).json({ error: 'Unable to update user.' });
+  }
+});
+
+// DELETE /api/admin/users/:id (Permanent DB + Firebase wipe & Gmail reason notification)
+router.delete('/users/:id', async (req: AuthRequest, res) => {
+  try {
+    const targetId = Number(req.params.id);
+    if (!Number.isInteger(targetId)) {
+      return res.status(400).json({ error: 'Invalid user ID.' });
+    }
+
+    const reason = String(req.body?.reason || '').trim().slice(0, 1000);
+    if (reason.length < 5) {
+      return res.status(400).json({
+        error: 'A clear deletion reason (at least 5 characters) is mandatory and will be emailed to the user.',
+      });
+    }
+
+    const [targetUser] = await db.select().from(users).where(eq(users.id, targetId)).limit(1);
+    if (!targetUser) return res.status(404).json({ error: 'User not found.' });
+
+    const actorIsSuperAdmin = isSuperAdminEmail(req.user!.email);
+    const targetIsSuperAdmin = isSuperAdminEmail(targetUser.email);
+
+    if (targetIsSuperAdmin) {
+      return res.status(403).json({
+        error: 'Primary Super Admin account is permanently locked and cannot be deleted.',
+      });
+    }
+    if (targetId === req.user!.id) {
+      return res.status(400).json({ error: 'You cannot permanently delete your own active admin account.' });
+    }
+    if (targetUser.role === 'admin' && !actorIsSuperAdmin) {
+      return res.status(403).json({
+        error: 'Only the Primary Super Admin can delete another Administrator account.',
+      });
+    }
+
+    const deletedAt = new Date();
+
+    // 1. Dispatch deletion reason to user's Gmail/email via configured SMTP
+    const mailResult = await sendAccountDeletedEmail({
+      toEmail: targetUser.email,
+      userName: targetUser.name,
+      publicUid: targetUser.publicUid,
+      reason,
+      deletedAt,
+    });
+
+    // 2. Record permanent deletion log (used for admin audit & shown on future login attempts)
+    await db.insert(deletedAccountLogs).values({
+      deletedUserEmail: targetUser.email,
+      deletedUserName: targetUser.name,
+      deletedPublicUid: targetUser.publicUid,
+      deletedUsername: targetUser.username,
+      deletedRole: targetUser.role,
+      reason,
+      deletedBy: req.user!.id,
+      emailSent: mailResult.sent,
+      emailStatusNote: mailResult.note,
+      deletedAt,
+    });
+
+    // 3. Permanently wipe user and all cascaded child records from PostgreSQL
+    await db.delete(users).where(eq(users.id, targetId));
+
+    // 4. Also remove Firebase Auth identity if account used Google Sign-In
+    if (targetUser.uid && !targetUser.uid.startsWith('local-')) {
+      await adminAuth.deleteUser(targetUser.uid).catch((err) => {
+        console.warn('Firebase Auth deleteUser skipped/failed:', (err as Error).message);
+      });
+    }
+
+    await logAudit(
+      req.user!.id,
+      'delete_user_permanent',
+      'user',
+      targetId,
+      {
+        email: targetUser.email,
+        publicUid: targetUser.publicUid,
+        reason,
+        emailSent: mailResult.sent,
+      },
+      req.ip
+    );
+
+    return res.json({
+      deleted: true,
+      emailSent: mailResult.sent,
+      emailConfigured: mailResult.configured,
+      emailNote: mailResult.note,
+      message: mailResult.sent
+        ? `Account (${targetUser.email}) permanently erased from database and deletion reason sent to their Gmail.`
+        : `Account (${targetUser.email}) permanently erased from database. (${mailResult.note})`,
+    });
+  } catch (error) {
+    console.error('Admin delete user error:', error);
+    return res.status(500).json({ error: 'Unable to permanently delete user account.' });
+  }
+});
+
+// GET /api/admin/deleted-accounts (Permanent account deletion audit ledger)
+router.get('/deleted-accounts', async (_req, res) => {
+  try {
+    const rows = await db
+      .select({
+        id: deletedAccountLogs.id,
+        deletedUserEmail: deletedAccountLogs.deletedUserEmail,
+        deletedUserName: deletedAccountLogs.deletedUserName,
+        deletedPublicUid: deletedAccountLogs.deletedPublicUid,
+        deletedUsername: deletedAccountLogs.deletedUsername,
+        deletedRole: deletedAccountLogs.deletedRole,
+        reason: deletedAccountLogs.reason,
+        emailSent: deletedAccountLogs.emailSent,
+        emailStatusNote: deletedAccountLogs.emailStatusNote,
+        deletedAt: deletedAccountLogs.deletedAt,
+        actorName: users.name,
+        actorEmail: users.email,
+      })
+      .from(deletedAccountLogs)
+      .leftJoin(users, eq(deletedAccountLogs.deletedBy, users.id))
+      .orderBy(desc(deletedAccountLogs.deletedAt))
+      .limit(200);
+
+    return res.json({
+      mailerConfigured: isMailerConfigured(),
+      logs: rows,
+    });
+  } catch (error) {
+    console.error('Deleted accounts log error:', error);
+    return res.status(500).json({ error: 'Unable to load deleted account records.' });
   }
 });
 
@@ -1438,7 +1698,13 @@ router.get('/settings', async (_req, res) => {
     const rows = await db.select().from(adminSettings).orderBy(asc(adminSettings.key));
     const map: Record<string, string> = {};
     for (const r of rows) map[r.key] = r.value;
-    return res.json({ settings: map, rows });
+    return res.json({
+      settings: map,
+      rows,
+      mailerConfigured: isMailerConfigured(),
+      smtpHost: process.env.SMTP_HOST?.trim() || 'smtp.gmail.com',
+      smtpUser: process.env.SMTP_USER?.trim() || null,
+    });
   } catch (error) {
     console.error('Get admin settings error:', error);
     return res.status(500).json({ error: 'Unable to load settings.' });

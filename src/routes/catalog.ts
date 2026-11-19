@@ -20,7 +20,7 @@ import {
   subjects,
   users,
 } from '../db/schema.ts';
-import { getStorageRoot } from '../lib/security.ts';
+import { getStorageRoot, normalizeExternalVideoUrl } from '../lib/security.ts';
 import { optionalAuth, type AuthRequest } from '../middleware/auth.ts';
 
 const router = Router();
@@ -441,7 +441,10 @@ router.get('/contents/:slugOrId', optionalAuth, async (req: AuthRequest, res) =>
       sizeBytes: f.sizeBytes,
       isPreview: f.isPreview,
       locked: !hasAccess && !f.isPreview,
-      externalVideoUrl: hasAccess || f.isPreview ? f.externalVideoUrl : null,
+      externalVideoUrl:
+        hasAccess || f.isPreview
+          ? normalizeExternalVideoUrl(f.externalVideoUrl) || f.externalVideoUrl
+          : null,
       accessUrl: hasAccess || f.isPreview ? `/api/catalog/files/${f.id}` : null,
     }));
 

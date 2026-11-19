@@ -13,7 +13,93 @@ import {
   showToast,
   store,
 } from './api.js';
-import { signInWithGoogle } from './firebase.js';
+import { signInWithGoogle, signOutFirebase } from './firebase.js';
+
+function formatRemainingDuration(untilIso) {
+  if (!untilIso) return null;
+  const diffMs = new Date(untilIso).getTime() - Date.now();
+  if (diffMs <= 0) return 'Unlocking momentarily — please try again';
+  const totalMins = Math.ceil(diffMs / 60000);
+  const days = Math.floor(totalMins / (60 * 24));
+  const hours = Math.floor((totalMins % (60 * 24)) / 60);
+  const mins = totalMins % 60;
+  const parts = [];
+  if (days > 0) parts.push(`${days}d`);
+  if (hours > 0) parts.push(`${hours}h`);
+  if (mins > 0 && days === 0) parts.push(`${mins}m`);
+  return `${parts.join(' ') || '< 1m'} remaining`;
+}
+
+function renderAccountRestrictionBanner(bannerEl, data) {
+  if (!bannerEl || !data) return;
+
+  if (data.accountBlocked) {
+    const isSuspended = data.status === 'suspended';
+    const untilDate = data.blockedUntil
+      ? new Date(data.blockedUntil).toLocaleString('en-IN', {
+          dateStyle: 'medium',
+          timeStyle: 'short',
+        })
+      : null;
+    const remaining = formatRemainingDuration(data.blockedUntil);
+
+    bannerEl.innerHTML = `
+      <div class="rounded-xl border border-red-200 dark:border-red-900/80 bg-red-50/90 dark:bg-red-950/35 p-4 space-y-2.5 text-left">
+        <div class="flex items-center justify-between gap-2">
+          <div class="text-xs font-bold uppercase tracking-wider text-red-800 dark:text-red-300">
+            Account ${isSuspended ? 'Suspended' : 'Blocked'} by Administrator
+          </div>
+          <span class="font-mono text-[11px] font-semibold text-red-700 dark:text-red-400">
+            ${untilDate ? esc(remaining || 'Timed') : 'Permanent'}
+          </span>
+        </div>
+        <div class="text-xs text-slate-800 dark:text-slate-200 leading-relaxed">
+          <div class="text-[11px] font-semibold uppercase tracking-wide text-red-700/80 dark:text-red-400/90 mb-0.5">Reason</div>
+          <p class="font-medium">${esc(data.blockedReason || 'Policy violation or administrative restriction.')}</p>
+        </div>
+        <div class="pt-2 border-t border-red-200/80 dark:border-red-900/60 text-[11px] text-red-900/80 dark:text-red-200/80 space-y-0.5">
+          ${
+            untilDate
+              ? `<div><strong>Scheduled Unlock:</strong> <span class="font-mono">${esc(untilDate)}</span></div>
+                 <div>Your account will unlock automatically once this period ends.</div>`
+              : `<div><strong>Duration:</strong> Permanent restriction until reviewed by the administration.</div>`
+          }
+        </div>
+      </div>
+    `;
+    bannerEl.classList.remove('hidden');
+    return;
+  }
+
+  if (data.accountDeleted) {
+    const deletedDate = data.deletedAt
+      ? new Date(data.deletedAt).toLocaleString('en-IN', {
+          dateStyle: 'medium',
+          timeStyle: 'short',
+        })
+      : null;
+
+    bannerEl.innerHTML = `
+      <div class="rounded-xl border border-red-200 dark:border-red-900/80 bg-red-50/90 dark:bg-red-950/35 p-4 space-y-2.5 text-left">
+        <div class="text-xs font-bold uppercase tracking-wider text-red-800 dark:text-red-300">
+          Account Permanently Deleted
+        </div>
+        <p class="text-xs text-slate-700 dark:text-slate-300 leading-relaxed">
+          This account and all of its stored data have been permanently erased from the database by an administrator.
+        </p>
+        <div class="text-xs text-slate-800 dark:text-slate-200 leading-relaxed">
+          <div class="text-[11px] font-semibold uppercase tracking-wide text-red-700/80 dark:text-red-400/90 mb-0.5">Deletion Reason</div>
+          <p class="font-medium">${esc(data.deletedReason || 'Administrative removal.')}</p>
+        </div>
+        <div class="pt-2 border-t border-red-200/80 dark:border-red-900/60 flex flex-wrap items-center justify-between gap-2 text-[11px] text-red-900/80 dark:text-red-200/80">
+          <span>${deletedDate ? `Deleted on <span class="font-mono">${esc(deletedDate)}</span>` : 'Removed from database'}</span>
+          <a href="#/signup" class="font-semibold text-[#0F2547] dark:text-sky-400 underline">Create New Account →</a>
+        </div>
+      </div>
+    `;
+    bannerEl.classList.remove('hidden');
+  }
+}
 
 const OCCUPATION_ROLES = [
   'School Student',
@@ -194,6 +280,8 @@ export function renderAuthPage(container, mode = 'login') {
           }
         </p>
 
+        <div id="auth-restriction-banner" class="hidden mb-5"></div>
+
         <!-- Primary Google Sign-In (Firebase Auth) -->
         <button type="button" id="google-signin-btn" class="w-full py-2.5 px-4 text-sm font-semibold rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-[#0B1120] hover:bg-slate-50 dark:hover:bg-slate-900 text-slate-900 dark:text-white flex items-center justify-center gap-2.5 transition-colors mb-5">
           <svg class="w-4 h-4" viewBox="0 0 24 24"><path fill="#4285F4" d="M23.745 12.27c0-.79-.07-1.54-.19-2.27h-11.3v4.51h6.47c-.29 1.48-1.14 2.73-2.4 3.58v3h3.86c2.26-2.09 3.56-5.17 3.56-8.82z"/><path fill="#34A853" d="M12.255 24c3.24 0 5.95-1.08 7.93-2.91l-3.86-3c-1.08.72-2.45 1.16-4.07 1.16-3.13 0-5.78-2.11-6.73-4.96h-3.98v3.09C3.515 21.3 7.565 24 12.255 24z"/><path fill="#FBBC05" d="M5.525 14.29c-.25-.72-.38-1.49-.38-2.29s.14-1.57.38-2.29V6.62h-3.98a11.86 11.86 0 000 10.76l3.98-3.09z"/><path fill="#EA4335" d="M12.255 4.75c1.77 0 3.35.61 4.6 1.8l3.42-3.42C18.205 1.19 15.495 0 12.255 0c-4.69 0-8.74 2.7-10.71 6.62l3.98 3.09c.95-2.85 3.6-4.96 6.73-4.96z"/></svg>
@@ -319,7 +407,19 @@ export function renderAuthPage(container, mode = 'login') {
     return fallbackHash;
   };
 
+  const restrictionBanner = document.getElementById('auth-restriction-banner');
+  if (!isSignup && restrictionBanner) {
+    try {
+      const savedNotice = sessionStorage.getItem('sp_last_block_notice');
+      if (savedNotice) {
+        sessionStorage.removeItem('sp_last_block_notice');
+        renderAccountRestrictionBanner(restrictionBanner, JSON.parse(savedNotice));
+      }
+    } catch {}
+  }
+
   document.getElementById('google-signin-btn')?.addEventListener('click', async () => {
+    restrictionBanner?.classList.add('hidden');
     try {
       const { idToken } = await signInWithGoogle();
       setSessionToken(null); // Use Firebase ID token
@@ -338,12 +438,17 @@ export function renderAuthPage(container, mode = 'login') {
       const defaultDest = res.user.role === 'admin' ? '#/admin' : '#/dashboard';
       window.location.hash = consumePostLoginRedirect(defaultDest);
     } catch (err) {
+      if (err?.data?.accountBlocked || err?.data?.accountDeleted) {
+        await signOutFirebase();
+        renderAccountRestrictionBanner(restrictionBanner, err.data);
+      }
       showToast(err.message || 'Google Sign-In was cancelled or failed.', 'error');
     }
   });
 
   document.getElementById('auth-email-form')?.addEventListener('submit', async (e) => {
     e.preventDefault();
+    restrictionBanner?.classList.add('hidden');
     const fd = new FormData(e.target);
     try {
       const endpoint = isSignup ? '/api/auth/register' : '/api/auth/login';
@@ -390,6 +495,9 @@ export function renderAuthPage(container, mode = 'login') {
         window.location.hash = defaultDest;
       }
     } catch (err) {
+      if (err?.data?.accountBlocked || err?.data?.accountDeleted) {
+        renderAccountRestrictionBanner(restrictionBanner, err.data);
+      }
       showToast(err.message, 'error');
     }
   });

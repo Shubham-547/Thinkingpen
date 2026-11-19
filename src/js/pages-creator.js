@@ -10,6 +10,7 @@ import {
   openModal,
   PRESET_COVERS,
   renderStatusLabel,
+  resolveVideoEmbed,
   showToast,
   store,
 } from './api.js';
@@ -577,6 +578,8 @@ function renderCreatorContentTable(list, showNotes = false) {
 function renderContentEditorHtml(editPayload, commRate) {
   const item = editPayload?.content || null;
   const files = editPayload?.files || [];
+  const existingExternalVideoUrl =
+    files.find((f) => f.fileType === 'video' && f.externalVideoUrl)?.externalVideoUrl || '';
   const isPaid = item ? !item.isFree : false;
   const currentPrice = item ? Number(item.priceInr) : 49;
 
@@ -721,10 +724,22 @@ function renderContentEditorHtml(editPayload, commRate) {
           </div>
         </div>
 
-        <!-- Authorized Video URL (optional) -->
-        <div>
-          <label class="block text-xs font-semibold text-slate-600 dark:text-slate-300 mb-1">Authorized Video Embed URL (optional, for Video Lectures / Tutorials)</label>
-          <input name="externalVideoUrl" id="ed-video-url" placeholder="https://www.youtube.com/embed/... or authorized video embed link" class="w-full px-3.5 py-2 text-sm rounded-lg border border-slate-300 dark:border-slate-700 bg-slate-50 dark:bg-[#0B1120]" />
+        <!-- YouTube Share Link / Authorized Video URL (optional) -->
+        <div class="space-y-2.5">
+          <div>
+            <label for="ed-video-url" class="block text-xs font-semibold text-slate-600 dark:text-slate-300 mb-1">YouTube Share Link or Video Lecture URL (optional, for Video Lectures / Tutorials)</label>
+            <input name="externalVideoUrl" id="ed-video-url" value="${esc(existingExternalVideoUrl)}" placeholder="Paste any YouTube share link (https://youtu.be/..., youtube.com/watch?v=..., Shorts, Live) or Vimeo link" class="w-full px-3.5 py-2.5 text-sm rounded-lg border border-slate-300 dark:border-slate-700 bg-slate-50 dark:bg-[#0B1120]" />
+            <p class="text-[11px] text-slate-500 dark:text-slate-400 mt-1">Direct YouTube Share links (<code>youtu.be/...</code>, <code>youtube.com/watch?v=...</code>, Shorts, Live) are automatically converted into a playable lecture player.</p>
+          </div>
+          <div id="ed-video-preview-wrap" class="hidden rounded-xl border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-[#0B1120] p-3 space-y-2">
+            <div class="flex items-center justify-between gap-2 text-xs">
+              <span id="ed-video-preview-status" class="font-semibold text-emerald-700 dark:text-emerald-400"></span>
+              <a id="ed-video-preview-ext" href="#" target="_blank" rel="noopener noreferrer" class="text-[#0F2547] dark:text-sky-400 hover:underline font-medium">Open link ↗</a>
+            </div>
+            <div class="aspect-video w-full max-w-xl rounded-lg overflow-hidden bg-black">
+              <iframe id="ed-video-preview-frame" src="" title="Video lecture preview" class="w-full h-full border-0" allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share" referrerpolicy="strict-origin-when-cross-origin" allowfullscreen></iframe>
+            </div>
+          </div>
         </div>
 
         <!-- Free vs Paid Monetization Configuration -->
@@ -1181,6 +1196,53 @@ function wireContentEditor(container, editPayload, commRate) {
     }
   });
 
+  // Live YouTube / Video Embed Detection & Preview
+  const videoUrlInput = document.getElementById('ed-video-url');
+  const videoPreviewWrap = document.getElementById('ed-video-preview-wrap');
+  const videoPreviewStatus = document.getElementById('ed-video-preview-status');
+  const videoPreviewFrame = document.getElementById('ed-video-preview-frame');
+  const videoPreviewExt = document.getElementById('ed-video-preview-ext');
+  const updateVideoPreview = () => {
+    const raw = videoUrlInput?.value.trim() || '';
+    if (!raw) {
+      if (videoPreviewWrap) videoPreviewWrap.classList.add('hidden');
+      if (videoPreviewFrame) videoPreviewFrame.src = '';
+      return;
+    }
+    const resolved = resolveVideoEmbed(raw);
+    if (!resolved) {
+      if (videoPreviewWrap) videoPreviewWrap.classList.remove('hidden');
+      if (videoPreviewStatus) {
+        videoPreviewStatus.textContent = 'Invalid link — paste a full YouTube share link (https://youtu.be/... or youtube.com/watch?v=...)';
+        videoPreviewStatus.className = 'font-semibold text-amber-700 dark:text-amber-400';
+      }
+      if (videoPreviewFrame) {
+        videoPreviewFrame.src = '';
+        videoPreviewFrame.parentElement?.classList.add('hidden');
+      }
+      if (videoPreviewExt) videoPreviewExt.classList.add('hidden');
+      return;
+    }
+    if (videoPreviewWrap) videoPreviewWrap.classList.remove('hidden');
+    if (videoPreviewStatus) {
+      videoPreviewStatus.textContent = `${resolved.provider} lecture detected — ready to play on publication page`;
+      videoPreviewStatus.className = 'font-semibold text-emerald-700 dark:text-emerald-400';
+    }
+    if (videoPreviewFrame) {
+      videoPreviewFrame.parentElement?.classList.remove('hidden');
+      if (videoPreviewFrame.src !== resolved.embedUrl) {
+        videoPreviewFrame.src = resolved.embedUrl;
+      }
+    }
+    if (videoPreviewExt) {
+      videoPreviewExt.href = resolved.watchUrl;
+      videoPreviewExt.classList.remove('hidden');
+    }
+  };
+  videoUrlInput?.addEventListener('input', updateVideoPreview);
+  videoUrlInput?.addEventListener('paste', () => setTimeout(updateVideoPreview, 0));
+  updateVideoPreview();
+
   // Live Preview Modal
   document.getElementById('ed-preview-btn')?.addEventListener('click', () => {
     const title = document.getElementById('ed-title')?.value || 'Untitled Publication';
@@ -1189,6 +1251,7 @@ function wireContentEditor(container, editPayload, commRate) {
     const ctype = document.getElementById('ed-type')?.value || '';
     const lang = document.getElementById('ed-language')?.value || 'English';
     const price = isFree ? 'Free' : formatInr(document.getElementById('ed-price')?.value || 0);
+    const resolvedVideo = resolveVideoEmbed(document.getElementById('ed-video-url')?.value.trim() || '');
     openModal({
       title: 'Publication Preview',
       widthClass: 'max-w-3xl',
@@ -1197,6 +1260,13 @@ function wireContentEditor(container, editPayload, commRate) {
           <div class="text-xs text-slate-500">${esc(ctype)} · ${esc(lang)} · <strong class="font-mono text-slate-900 dark:text-white">${esc(price)}</strong></div>
           <h2 class="font-display text-2xl font-semibold text-slate-900 dark:text-white">${esc(title)}</h2>
           <p class="text-sm text-slate-600 dark:text-slate-300">${esc(desc)}</p>
+          ${
+            resolvedVideo
+              ? `<div class="aspect-video w-full rounded-lg overflow-hidden bg-black">
+                   <iframe src="${esc(resolvedVideo.embedUrl)}" title="${esc(title)}" class="w-full h-full border-0" allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share" referrerpolicy="strict-origin-when-cross-origin" allowfullscreen></iframe>
+                 </div>`
+              : ''
+          }
           <hr class="border-slate-200 dark:border-slate-800" />
           <div class="reading-prose">${html || '<p class="text-slate-400">No body text entered yet.</p>'}</div>
         </div>

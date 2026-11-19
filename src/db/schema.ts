@@ -25,6 +25,10 @@ export const users = pgTable(
     name: text('name').notNull(),
     role: text('role').notNull().default('user'), // 'user' | 'creator' | 'admin'
     status: text('status').notNull().default('active'), // 'active' | 'suspended' | 'blocked'
+    blockedReason: text('blocked_reason'),
+    blockedUntil: timestamp('blocked_until'), // null = permanent block; timestamp = timed block auto-expires
+    blockedAt: timestamp('blocked_at'),
+    blockedBy: integer('blocked_by'),
     emailVerified: boolean('email_verified').notNull().default(false),
     avatarUrl: text('avatar_url'),
     bio: text('bio'),
@@ -570,6 +574,28 @@ export const userDailyVisits = pgTable(
   (table) => [
     uniqueIndex('uq_user_daily_visit').on(table.userId, table.visitDate),
     index('idx_daily_visits_user_ym').on(table.userId, table.visitYear, table.visitMonth),
+  ]
+);
+
+// 28. Permanently Deleted Accounts Audit & Email Dispatch Log
+export const deletedAccountLogs = pgTable(
+  'deleted_account_logs',
+  {
+    id: serial('id').primaryKey(),
+    deletedUserEmail: text('deleted_user_email').notNull(),
+    deletedUserName: text('deleted_user_name').notNull(),
+    deletedPublicUid: text('deleted_public_uid'),
+    deletedUsername: text('deleted_username'),
+    deletedRole: text('deleted_role'),
+    reason: text('reason').notNull(),
+    deletedBy: integer('deleted_by').references(() => users.id, { onDelete: 'set null' }),
+    emailSent: boolean('email_sent').notNull().default(false),
+    emailStatusNote: text('email_status_note'),
+    deletedAt: timestamp('deleted_at').defaultNow().notNull(),
+  },
+  (table) => [
+    index('idx_deleted_accounts_email').on(table.deletedUserEmail),
+    index('idx_deleted_accounts_date').on(table.deletedAt),
   ]
 );
 

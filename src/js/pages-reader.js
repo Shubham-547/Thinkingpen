@@ -8,6 +8,7 @@ import {
   openModal,
   renderContentCard,
   renderCoverImage,
+  resolveVideoEmbed,
   showToast,
   store,
 } from './api.js';
@@ -160,12 +161,12 @@ export async function renderContentDetailPage(container, slug) {
                 : ''
             }
 
-            <!-- Full Content & Protected Media Container (Hidden behind Cover + Details gate until unlocked/opened) -->
+            <!-- Full Content & Protected Media Container -->
             ${
               c.hasAccess
                 ? `
-                  <!-- Gate Banner: Cover & Details shown first; 1-click Reveal Content -->
-                  <section id="rd-content-gate" class="bg-white dark:bg-[#111A2E] border border-slate-200 dark:border-slate-800 rounded-xl p-5 sm:p-8 flex flex-col sm:flex-row sm:items-center justify-between gap-5">
+                  <!-- Gate Banner: Cover & Details shown first for reading items; Video Lectures open immediately when unlocked -->
+                  <section id="rd-content-gate" class="${videoFiles.length > 0 ? 'hidden ' : ''}bg-white dark:bg-[#111A2E] border border-slate-200 dark:border-slate-800 rounded-xl p-5 sm:p-8 flex flex-col sm:flex-row sm:items-center justify-between gap-5">
                     <div class="space-y-1.5">
                       <div class="text-xs font-semibold text-emerald-700 dark:text-emerald-400">
                         ${c.hasPurchased ? 'Payment Verified · Unlocked in Your Library' : c.isFree ? 'Free Access Unlocked' : 'Full Access (Creator / Admin)'}
@@ -180,26 +181,47 @@ export async function renderContentDetailPage(container, slug) {
                     </button>
                   </section>
 
-                  <div id="rd-unlocked-content" class="hidden space-y-6 sm:space-y-8">
+                  <div id="rd-unlocked-content" class="${videoFiles.length > 0 ? '' : 'hidden '}space-y-6 sm:space-y-8">
                     <!-- Video Lecture Player -->
                     ${
                       videoFiles.length
                         ? `<section class="bg-white dark:bg-[#111A2E] border border-slate-200 dark:border-slate-800 rounded-xl p-4 sm:p-6">
-                            <h2 class="font-display text-xl font-semibold text-slate-900 dark:text-white mb-4">Video Lecture</h2>
+                            <div class="flex flex-wrap items-center justify-between gap-2 mb-4">
+                              <h2 class="font-display text-xl font-semibold text-slate-900 dark:text-white">Video Lecture</h2>
+                              <span class="text-xs font-medium text-emerald-700 dark:text-emerald-400">Ready to Watch</span>
+                            </div>
                             ${videoFiles
-                              .map((vf) =>
-                                vf.externalVideoUrl
-                                  ? `<div class="space-y-2">
-                                      <div class="aspect-video w-full rounded-lg overflow-hidden bg-black">
-                                        <iframe src="${esc(vf.externalVideoUrl)}" class="w-full h-full" allowfullscreen></iframe>
+                              .map((vf) => {
+                                if (vf.externalVideoUrl) {
+                                  const resolved = resolveVideoEmbed(vf.externalVideoUrl);
+                                  const embedSrc = resolved ? resolved.embedUrl : vf.externalVideoUrl;
+                                  const watchHref = resolved ? resolved.watchUrl : vf.externalVideoUrl;
+                                  const providerLabel = resolved ? resolved.provider : 'Video';
+                                  return `<div class="space-y-2.5">
+                                      <div class="aspect-video w-full rounded-xl overflow-hidden bg-black border border-slate-200 dark:border-slate-800 shadow-sm">
+                                        <iframe
+                                          src="${esc(embedSrc)}"
+                                          title="${esc(vf.originalName || c.title)}"
+                                          class="w-full h-full border-0"
+                                          loading="lazy"
+                                          allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share"
+                                          referrerpolicy="strict-origin-when-cross-origin"
+                                          allowfullscreen
+                                        ></iframe>
                                       </div>
-                                      <p class="text-xs text-slate-500">${esc(vf.originalName)}</p>
-                                    </div>`
-                                  : `<div class="space-y-2">
-                                      <video controls controlsList="nodownload" class="w-full rounded-lg bg-black max-h-[480px]" src="${esc(withAuthParam(vf.accessUrl))}"></video>
-                                      <p class="text-xs text-slate-500">${esc(vf.originalName)} · ${formatBytes(vf.sizeBytes)}</p>
-                                    </div>`
-                              )
+                                      <div class="flex flex-wrap items-center justify-between gap-2 text-xs text-slate-500 dark:text-slate-400">
+                                        <span class="truncate">${esc(vf.originalName || c.title)}</span>
+                                        <a href="${esc(watchHref)}" target="_blank" rel="noopener noreferrer" class="font-semibold text-[#5a1fd8] dark:text-sky-400 hover:underline whitespace-nowrap shrink-0">
+                                          Open on ${esc(providerLabel)} ↗
+                                        </a>
+                                      </div>
+                                    </div>`;
+                                }
+                                return `<div class="space-y-2">
+                                    <video controls controlsList="nodownload" class="w-full rounded-lg bg-black max-h-[480px]" src="${esc(withAuthParam(vf.accessUrl))}"></video>
+                                    <p class="text-xs text-slate-500">${esc(vf.originalName)} · ${formatBytes(vf.sizeBytes)}</p>
+                                  </div>`;
+                              })
                               .join('')}
                           </section>`
                         : ''
@@ -408,9 +430,13 @@ export async function renderContentDetailPage(container, slug) {
                   ? `<div class="p-3 rounded-lg bg-emerald-50 dark:bg-emerald-950/40 border border-emerald-200 dark:border-emerald-900 text-xs font-medium text-emerald-800 dark:text-emerald-300 mb-3">
                       ${c.hasPurchased ? 'Purchased &amp; unlocked in your library.' : c.isFree ? 'Open-access free publication.' : 'Full preview access (Creator / Admin).'}
                     </div>
-                    <button type="button" id="sidebar-open-content-btn" class="w-full py-2.5 px-4 text-sm font-semibold rounded-lg bg-[#0F2547] hover:bg-[#1B3B6F] dark:bg-sky-500 dark:hover:bg-sky-400 text-white dark:text-slate-950 transition-colors mb-4">
+                    ${
+                      videoFiles.length
+                        ? ''
+                        : `<button type="button" id="sidebar-open-content-btn" class="w-full py-2.5 px-4 text-sm font-semibold rounded-lg bg-[#0F2547] hover:bg-[#1B3B6F] dark:bg-sky-500 dark:hover:bg-sky-400 text-white dark:text-slate-950 transition-colors mb-4">
                       Open Full Content
                     </button>`
+                    }`
                   : `<button type="button" id="sidebar-buy-btn" class="w-full py-3 px-4 text-sm font-semibold rounded-lg bg-[#0F2547] hover:bg-[#1B3B6F] dark:bg-sky-500 dark:hover:bg-sky-400 text-white dark:text-slate-950 transition-colors mb-4">
                       ${c.isFree ? 'Sign In & Read Free' : `Pay ${formatInr(c.priceInr)} & Unlock`}
                     </button>`

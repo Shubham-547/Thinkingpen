@@ -23,6 +23,7 @@ export const PRESET_COVERS = [
 ];
 
 export const HERO_LIBRARY_IMAGE = '/src/assets/images/hero_scholar_library_1794993004508.jpg';
+export const HOME_HERO_BANNER = '/assets/aistudio/file_00000000e70c82119d34732233aebda4_28236e72.png';
 
 // In-memory state (Firebase ID tokens are NEVER stored in localStorage)
 export const store = {
@@ -331,4 +332,103 @@ export function renderStatusLabel(status) {
   const cls = map[status] || 'text-slate-600 dark:text-slate-300';
   const label = String(status || '').replace(/_/g, ' ');
   return `<span class="text-xs font-semibold capitalize ${cls}">${esc(label)}</span>`;
+}
+
+function parseStartSeconds(raw) {
+  if (!raw) return 0;
+  const s = String(raw).trim().toLowerCase();
+  if (/^\d+$/.test(s)) return Math.min(86400, Number(s));
+  const m = s.match(/^(?:(\d+)h)?(?:(\d+)m)?(?:(\d+)s?)?$/);
+  if (!m) return 0;
+  return Math.min(86400, Number(m[1] || 0) * 3600 + Number(m[2] || 0) * 60 + Number(m[3] || 0));
+}
+
+export function resolveVideoEmbed(raw) {
+  let text = String(raw || '').trim();
+  if (!text) return null;
+
+  const iframeMatch = text.match(/<iframe[^>]+src=["']([^"']+)["']/i);
+  if (iframeMatch?.[1]) {
+    text = iframeMatch[1].trim();
+  } else {
+    const urlMatch = text.match(/https?:\/\/[^\s<>"']+/i);
+    if (urlMatch?.[0]) {
+      text = urlMatch[0].trim();
+    } else if (/^(?:www\.)?(?:youtu\.be|youtube\.com|m\.youtube\.com|vimeo\.com|player\.vimeo\.com|drive\.google\.com)\//i.test(text)) {
+      text = `https://${text}`;
+    }
+  }
+  text = text.replace(/[),.;]+$/, '');
+
+  let parsed;
+  try {
+    parsed = new URL(text);
+  } catch {
+    return null;
+  }
+  if (parsed.protocol !== 'https:' && parsed.protocol !== 'http:') return null;
+
+  const host = parsed.hostname.toLowerCase().replace(/^www\./, '');
+  const parts = parsed.pathname.split('/').filter(Boolean);
+
+  if (
+    host === 'youtu.be' ||
+    host === 'youtube.com' ||
+    host === 'm.youtube.com' ||
+    host === 'music.youtube.com' ||
+    host === 'youtube-nocookie.com'
+  ) {
+    let videoId = null;
+    if (host === 'youtu.be' && parts[0]) {
+      videoId = parts[0];
+    } else if (parsed.pathname === '/watch' || parsed.pathname === '/watch/') {
+      videoId = parsed.searchParams.get('v');
+    } else if (parts.length >= 2 && ['embed', 'shorts', 'live', 'v'].includes(parts[0].toLowerCase())) {
+      videoId = parts[1];
+    }
+    if (videoId && /^[a-zA-Z0-9_-]{6,20}$/.test(videoId)) {
+      const startSec = parseStartSeconds(parsed.searchParams.get('start') || parsed.searchParams.get('t'));
+      const embed = new URL(`https://www.youtube.com/embed/${videoId}`);
+      embed.searchParams.set('rel', '0');
+      if (startSec > 0) embed.searchParams.set('start', String(startSec));
+      return {
+        embedUrl: embed.toString(),
+        watchUrl: `https://www.youtube.com/watch?v=${videoId}${startSec > 0 ? `&t=${startSec}s` : ''}`,
+        provider: 'YouTube',
+        videoId,
+      };
+    }
+  }
+
+  if (host === 'vimeo.com' || host === 'player.vimeo.com') {
+    const idMatch = parsed.pathname.match(/\/(?:video\/)?(\d{5,15})/);
+    if (idMatch?.[1]) {
+      return {
+        embedUrl: `https://player.vimeo.com/video/${idMatch[1]}`,
+        watchUrl: `https://vimeo.com/${idMatch[1]}`,
+        provider: 'Vimeo',
+        videoId: idMatch[1],
+      };
+    }
+  }
+
+  if (host === 'drive.google.com') {
+    const fileMatch = parsed.pathname.match(/\/file\/d\/([a-zA-Z0-9_-]+)/);
+    const driveId = fileMatch?.[1] || parsed.searchParams.get('id');
+    if (driveId) {
+      return {
+        embedUrl: `https://drive.google.com/file/d/${driveId}/preview`,
+        watchUrl: `https://drive.google.com/file/d/${driveId}/view`,
+        provider: 'Google Drive',
+        videoId: driveId,
+      };
+    }
+  }
+
+  return {
+    embedUrl: parsed.toString(),
+    watchUrl: parsed.toString(),
+    provider: 'Video Stream',
+    videoId: null,
+  };
 }

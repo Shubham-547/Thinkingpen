@@ -143,6 +143,106 @@ export function sanitizeSafeUrl(
   }
 }
 
+function parseVideoStartSeconds(raw: string | null): number {
+  if (!raw) return 0;
+  const trimmed = raw.trim().toLowerCase();
+  if (/^\d+$/.test(trimmed)) return Math.min(86400, Number(trimmed));
+  const match = trimmed.match(/^(?:(\d+)h)?(?:(\d+)m)?(?:(\d+)s?)?$/);
+  if (!match) return 0;
+  const h = Number(match[1] || 0);
+  const m = Number(match[2] || 0);
+  const s = Number(match[3] || 0);
+  return Math.min(86400, h * 3600 + m * 60 + s);
+}
+
+/**
+ * Converts pasted YouTube share links (youtu.be, watch?v=, shorts, live, mobile, embed,
+ * or pasted <iframe> HTML), Vimeo links, and Google Drive video links into clean,
+ * iframe-embeddable HTTPS URLs.
+ */
+export function normalizeExternalVideoUrl(raw: string | null | undefined): string | null {
+  let text = String(raw || '').trim();
+  if (!text) return null;
+
+  // If the creator pasted a full <iframe ... src="..."> snippet, extract src
+  const iframeSrcMatch = text.match(/<iframe[^>]+src=["']([^"']+)["']/i);
+  if (iframeSrcMatch?.[1]) {
+    text = iframeSrcMatch[1].trim();
+  } else {
+    // If pasted from YouTube mobile Share sheet with title text before/after URL, extract URL
+    const embeddedUrlMatch = text.match(/https?:\/\/[^\s<>"']+/i);
+    if (embeddedUrlMatch?.[0]) {
+      text = embeddedUrlMatch[0].trim();
+    } else if (/^(?:www\.)?(?:youtu\.be|youtube\.com|m\.youtube\.com|vimeo\.com|player\.vimeo\.com|drive\.google\.com)\//i.test(text)) {
+      text = `https://${text}`;
+    }
+  }
+
+  // Strip trailing punctuation sometimes copied from sentences
+  text = text.replace(/[),.;]+$/, '');
+
+  const safe = sanitizeSafeUrl(text, false, false);
+  if (!safe) return null;
+
+  try {
+    const parsed = new URL(safe);
+    const host = parsed.hostname.toLowerCase().replace(/^www\./, '');
+    const pathParts = parsed.pathname.split('/').filter(Boolean);
+
+    // YouTube formats
+    if (
+      host === 'youtu.be' ||
+      host === 'youtube.com' ||
+      host === 'm.youtube.com' ||
+      host === 'music.youtube.com' ||
+      host === 'youtube-nocookie.com'
+    ) {
+      let videoId: string | null = null;
+      if (host === 'youtu.be' && pathParts[0]) {
+        videoId = pathParts[0];
+      } else if (parsed.pathname === '/watch' || parsed.pathname === '/watch/') {
+        videoId = parsed.searchParams.get('v');
+      } else if (
+        pathParts.length >= 2 &&
+        ['embed', 'shorts', 'live', 'v'].includes(pathParts[0].toLowerCase())
+      ) {
+        videoId = pathParts[1];
+      }
+
+      if (videoId && /^[a-zA-Z0-9_-]{6,20}$/.test(videoId)) {
+        const startSec = parseVideoStartSeconds(
+          parsed.searchParams.get('start') || parsed.searchParams.get('t')
+        );
+        const embedUrl = new URL(`https://www.youtube.com/embed/${videoId}`);
+        embedUrl.searchParams.set('rel', '0');
+        if (startSec > 0) embedUrl.searchParams.set('start', String(startSec));
+        return embedUrl.toString();
+      }
+    }
+
+    // Vimeo formats
+    if (host === 'vimeo.com' || host === 'player.vimeo.com') {
+      const idMatch = parsed.pathname.match(/\/(?:video\/)?(\d{5,15})/);
+      if (idMatch?.[1]) {
+        return `https://player.vimeo.com/video/${idMatch[1]}`;
+      }
+    }
+
+    // Google Drive video preview link
+    if (host === 'drive.google.com') {
+      const fileMatch = parsed.pathname.match(/\/file\/d\/([a-zA-Z0-9_-]+)/);
+      const driveId = fileMatch?.[1] || parsed.searchParams.get('id');
+      if (driveId) {
+        return `https://drive.google.com/file/d/${driveId}/preview`;
+      }
+    }
+
+    return safe;
+  } catch {
+    return null;
+  }
+}
+
 export function estimateReadingTime(html: string): number {
   const text = html.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim();
   const words = text ? text.split(' ').length : 0;

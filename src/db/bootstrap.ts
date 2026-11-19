@@ -1,6 +1,6 @@
-import { count } from 'drizzle-orm';
+import { count, eq, sql } from 'drizzle-orm';
 import { db } from './index.ts';
-import { adminSettings, categories } from './schema.ts';
+import { adminSettings, categories, users } from './schema.ts';
 import { backfillMissingPublicUids } from '../lib/identity.ts';
 
 const DEFAULT_SETTINGS = [
@@ -26,7 +26,8 @@ const DEFAULT_CATEGORIES = [
 ];
 
 /**
- * Idempotently populates baseline settings, categories, and missing 10-digit user UIDs.
+ * Idempotently populates baseline settings, categories, missing 10-digit user UIDs,
+ * and one-time governance migrations.
  */
 export async function ensureBaselineCatalog(): Promise<void> {
   try {
@@ -43,6 +44,29 @@ export async function ensureBaselineCatalog(): Promise<void> {
     const backfilled = await backfillMissingPublicUids();
     if (backfilled > 0) {
       console.log(`Assigned 10-digit unique UID to ${backfilled} existing user(s).`);
+    }
+
+    // One-time governance migration: ensure ishivanibharti@gmail.com is removed from admin role
+    const migrationKey = 'migrated_revoke_shivani_admin_v1';
+    const [alreadyMigrated] = await db
+      .select({ key: adminSettings.key })
+      .from(adminSettings)
+      .where(eq(adminSettings.key, migrationKey))
+      .limit(1);
+
+    if (!alreadyMigrated) {
+      const revoked = await db
+        .update(users)
+        .set({ role: 'user', updatedAt: new Date() })
+        .where(sql`LOWER(${users.email}) = 'ishivanibharti@gmail.com' AND ${users.role} = 'admin'`)
+        .returning({ id: users.id });
+      await db
+        .insert(adminSettings)
+        .values({ key: migrationKey, value: new Date().toISOString() })
+        .onConflictDoNothing();
+      if (revoked.length > 0) {
+        console.log('Revoked legacy admin privileges for ishivanibharti@gmail.com.');
+      }
     }
   } catch (err) {
     console.warn('Baseline catalog bootstrap skipped:', (err as Error).message);

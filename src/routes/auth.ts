@@ -7,6 +7,7 @@ import {
   contents,
   creatorProfiles,
   creatorWallets,
+  deletedAccountLogs,
   notifications,
   userActivitySessions,
   userDailyVisits,
@@ -27,6 +28,8 @@ import {
   verifyPassword,
 } from '../lib/security.ts';
 import {
+  autoUnblockIfExpired,
+  buildBlockedPayload,
   isOwnerAdminEmail,
   isSuperAdminEmail,
   optionalAuth,
@@ -265,15 +268,34 @@ router.post('/login', async (req, res) => {
       return res.status(400).json({ error: 'Email and password are required.' });
     }
 
-    const [user] = await db.select().from(users).where(eq(users.email, email)).limit(1);
-    if (!user || !user.passwordHash || !verifyPassword(password, user.passwordHash)) {
+    const [rawUser] = await db.select().from(users).where(eq(users.email, email)).limit(1);
+    if (!rawUser) {
+      const [delLog] = await db
+        .select()
+        .from(deletedAccountLogs)
+        .where(sql`LOWER(${deletedAccountLogs.deletedUserEmail}) = ${email}`)
+        .orderBy(desc(deletedAccountLogs.deletedAt))
+        .limit(1);
+      if (delLog) {
+        return res.status(403).json({
+          accountDeleted: true,
+          deletedReason: delLog.reason,
+          deletedAt: delLog.deletedAt,
+          deletedEmail: delLog.deletedUserEmail,
+          error: `Your account was permanently deleted by an administrator. Reason: ${delLog.reason}`,
+        });
+      }
       return res.status(401).json({ error: 'Invalid email or password.' });
     }
 
+    if (!rawUser.passwordHash || !verifyPassword(password, rawUser.passwordHash)) {
+      return res.status(401).json({ error: 'Invalid email or password.' });
+    }
+
+    const user = await autoUnblockIfExpired(rawUser);
+
     if (user.status !== 'active') {
-      return res
-        .status(403)
-        .json({ error: `Account is currently ${user.status}. Please contact support.` });
+      return res.status(403).json(buildBlockedPayload(user));
     }
 
     const token = createSessionToken({

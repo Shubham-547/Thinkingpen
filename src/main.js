@@ -11,7 +11,7 @@ import {
   store,
   subscribeStore,
 } from './js/api.js';
-import { subscribeFirebaseAuth } from './js/firebase.js';
+import { signOutFirebase, subscribeFirebaseAuth } from './js/firebase.js';
 import {
   renderCategoriesPage,
   renderCreatorPublicProfilePage,
@@ -451,8 +451,16 @@ async function bootstrap() {
         });
         store.user = res.user;
         notifyStore();
-      } catch {
-        // Ignore transient sync error
+      } catch (err) {
+        if (err?.data?.accountBlocked) {
+          try {
+            sessionStorage.setItem('sp_last_block_notice', JSON.stringify(err.data));
+          } catch {}
+          await signOutFirebase();
+          store.user = null;
+          notifyStore();
+          window.location.hash = '#/login';
+        }
       }
     }
     await finishInitialRoute();

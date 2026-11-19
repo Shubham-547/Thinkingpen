@@ -24,6 +24,66 @@ export function isOwnerAdminEmail(email: string | null | undefined): boolean {
 }
 
 /**
+ * Automatically restores a blocked/suspended account once its timed block expires.
+ */
+export async function autoUnblockIfExpired(user: DbUser): Promise<DbUser> {
+  if (
+    (user.status === 'blocked' || user.status === 'suspended') &&
+    user.blockedUntil &&
+    new Date(user.blockedUntil).getTime() <= Date.now()
+  ) {
+    const [restored] = await db
+      .update(users)
+      .set({
+        status: 'active',
+        blockedReason: null,
+        blockedUntil: null,
+        blockedAt: null,
+        blockedBy: null,
+        updatedAt: new Date(),
+      })
+      .where(eq(users.id, user.id))
+      .returning();
+    return restored || {
+      ...user,
+      status: 'active',
+      blockedReason: null,
+      blockedUntil: null,
+      blockedAt: null,
+      blockedBy: null,
+    };
+  }
+  return user;
+}
+
+/**
+ * Builds a structured 403 JSON response detailing why and how long a user is blocked/suspended.
+ */
+export function buildBlockedPayload(user: DbUser) {
+  const statusLabel = user.status === 'suspended' ? 'suspended' : 'blocked';
+  const reason =
+    user.blockedReason?.trim() ||
+    'Your account has been restricted by an administrator due to a policy violation.';
+  const untilIso = user.blockedUntil ? new Date(user.blockedUntil).toISOString() : null;
+  const untilLabel = user.blockedUntil
+    ? `until ${new Date(user.blockedUntil).toLocaleString('en-IN', {
+        timeZone: 'Asia/Kolkata',
+        dateStyle: 'medium',
+        timeStyle: 'short',
+      })} IST`
+    : 'permanently';
+
+  return {
+    accountBlocked: true,
+    status: statusLabel,
+    blockedReason: reason,
+    blockedUntil: untilIso,
+    blockedAt: user.blockedAt ? new Date(user.blockedAt).toISOString() : null,
+    error: `Your account is ${statusLabel} ${untilLabel}. Reason: ${reason}`,
+  };
+}
+
+/**
  * Concurrency-safe user upsert for Firebase Auth Google Sign-In.
  */
 export async function getOrCreateFirebaseUser(params: {
@@ -45,22 +105,26 @@ export async function getOrCreateFirebaseUser(params: {
       .limit(1);
 
     if (byEmail) {
+      const checked = await autoUnblockIfExpired(byEmail);
       const isPrimary = isSuperAdminEmail(cleanEmail);
-      const nextRole = isPrimary ? 'admin' : byEmail.role;
-      const nextStatus = isPrimary ? 'active' : byEmail.status;
-      const nextPublicUid = byEmail.publicUid || (await generateUnique10DigitUid());
+      const nextRole = isPrimary ? 'admin' : checked.role;
+      const nextStatus = isPrimary ? 'active' : checked.status;
+      const nextPublicUid = checked.publicUid || (await generateUnique10DigitUid());
       const [updated] = await db
         .update(users)
         .set({
           uid: params.uid,
           publicUid: nextPublicUid,
           emailVerified: true,
-          avatarUrl: byEmail.avatarUrl || params.picture || null,
+          avatarUrl: checked.avatarUrl || params.picture || null,
           role: nextRole,
           status: nextStatus,
+          ...(isPrimary
+            ? { blockedReason: null, blockedUntil: null, blockedAt: null, blockedBy: null }
+            : {}),
           updatedAt: new Date(),
         })
-        .where(eq(users.id, byEmail.id))
+        .where(eq(users.id, checked.id))
         .returning();
       return updated;
     }
@@ -101,12 +165,14 @@ async function resolveUserFromToken(token: string): Promise<DbUser | null> {
     const payload = verifySessionToken(token);
     if (!payload) return null;
     try {
-      const [user] = await db
+      const [rawUser] = await db
         .select()
         .from(users)
         .where(eq(users.id, payload.userId))
         .limit(1);
-      if (!user) return null;
+      if (!rawUser) return null;
+
+      const user = await autoUnblockIfExpired(rawUser);
 
       const needsHeal =
         (isSuperAdminEmail(user.email) && (user.role !== 'admin' || user.status !== 'active')) ||
@@ -121,6 +187,9 @@ async function resolveUserFromToken(token: string): Promise<DbUser | null> {
             publicUid: nextPublicUid,
             role: isPrimary ? 'admin' : user.role,
             status: isPrimary ? 'active' : user.status,
+            ...(isPrimary
+              ? { blockedReason: null, blockedUntil: null, blockedAt: null, blockedBy: null }
+              : {}),
             updatedAt: new Date(),
           })
           .where(eq(users.id, user.id))
@@ -182,9 +251,7 @@ export const requireAuth = async (req: AuthRequest, res: Response, next: NextFun
     return res.status(401).json({ error: 'Session invalid or expired. Please sign in again.' });
   }
   if (user.status === 'blocked' || user.status === 'suspended') {
-    return res
-      .status(403)
-      .json({ error: `Your account is currently ${user.status}. Please contact support.` });
+    return res.status(403).json(buildBlockedPayload(user));
   }
   req.user = user;
   return next();
