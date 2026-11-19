@@ -1006,6 +1006,7 @@ router.post(
           .update(contents)
           .set({ coverImageUrl: `/api/catalog/files/${savedFile.id}`, updatedAt: new Date() })
           .where(eq(contents.id, contentId));
+        invalidateCatalogCache();
       }
 
       return res.status(201).json({

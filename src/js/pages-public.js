@@ -43,7 +43,7 @@ function renderHomeTrendingCard(item) {
   return `
     <article class="group shrink-0 w-[195px] sm:w-[225px] lg:w-auto snap-start bg-white dark:bg-[#0D1629] border border-indigo-100/90 dark:border-slate-800 rounded-2xl overflow-hidden flex flex-col shadow-[0_4px_14px_rgba(70,80,160,0.06)] dark:shadow-none hover:border-indigo-300 dark:hover:border-violet-500/60 hover:shadow-md transition-all">
       <a href="#/content/${esc(item.slug)}" class="block aspect-[16/10] bg-slate-100 dark:bg-slate-900 overflow-hidden relative">
-        ${renderCoverImage(item.coverUrl, item.title, 'aspect-[16/10]')}
+        ${renderCoverImage(item.coverImageUrl, item.title, 'aspect-[16/10]')}
         ${
           isVideo
             ? `<div class="absolute inset-0 flex items-center justify-center bg-slate-950/15 group-hover:bg-slate-950/25 transition-colors">

@@ -660,7 +660,7 @@ router.get('/files/:fileId', optionalAuth, async (req: AuthRequest, res) => {
     res.setHeader('Content-Type', file.mimeType);
     res.setHeader('X-Content-Type-Options', 'nosniff');
     res.setHeader('Referrer-Policy', 'no-referrer');
-    res.setHeader('Cache-Control', content.isFree ? 'public, max-age=3600' : 'private, no-store');
+    res.setHeader('Cache-Control', content.isFree || isCoverFile ? 'public, max-age=3600' : 'private, no-store');
     const disposition = req.query.download === '1' ? 'attachment' : 'inline';
     res.setHeader(
       'Content-Disposition',
