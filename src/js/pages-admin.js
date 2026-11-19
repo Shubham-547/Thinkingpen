@@ -3,6 +3,7 @@ import {
   esc,
   formatDate,
   formatInr,
+  formatRelativeAge,
   loadGlobalCatalogMeta,
   openModal,
   renderStatusLabel,
@@ -88,6 +89,7 @@ const NAV_GROUPS = [
   {
     group: 'Governance & System',
     items: [
+      { id: 'history', label: 'Admin History' },
       { id: 'reports', label: 'Reported Content', countKey: 'openReports', countTone: 'danger' },
       { id: 'notifications', label: 'Broadcast Notices' },
       { id: 'settings', label: 'Platform Settings & Audit' },
@@ -1685,8 +1687,9 @@ export async function renderAdminDashboardPage(container, activeTab = 'overview'
 
           <!-- Administrator Audit Trail -->
           <div class="bg-white dark:bg-[#111A2E] border border-slate-200 dark:border-slate-800 rounded-xl overflow-hidden">
-            <div class="px-5 py-4 border-b border-slate-100 dark:border-slate-800">
+            <div class="px-5 py-4 border-b border-slate-100 dark:border-slate-800 flex items-center justify-between gap-2">
               <h2 class="text-sm font-semibold text-slate-900 dark:text-white">Administrator Audit Trail</h2>
+              <a href="#/admin/history" class="text-xs font-semibold text-[#0F2547] dark:text-sky-400 hover:underline">Open Full Admin History →</a>
             </div>
             <div class="overflow-x-auto touch-scroll-x">
               <table class="w-full min-w-[600px] text-left text-xs">
@@ -1714,6 +1717,124 @@ export async function renderAdminDashboardPage(container, activeTab = 'overview'
                 </tbody>
               </table>
             </div>
+          </div>
+        </div>
+      `;
+    } else if (activeTab === 'history') {
+      const qs = window.location.hash.includes('?')
+        ? new URLSearchParams(window.location.hash.split('?')[1])
+        : new URLSearchParams();
+      const activeCategory = qs.get('category') || 'all';
+      const searchQ = qs.get('q') || '';
+      const apiQs = new URLSearchParams();
+      if (activeCategory && activeCategory !== 'all') apiQs.set('category', activeCategory);
+      if (searchQ) apiQs.set('q', searchQ);
+
+      const histRes = await apiFetch(`/api/admin/history${apiQs.toString() ? `?${apiQs}` : ''}`);
+      const rows = histRes.history || [];
+      const counts = histRes.counts || {};
+
+      const filterDefs = [
+        { id: 'all', label: 'All Actions', count: counts.all || 0 },
+        { id: 'blocks', label: 'Blocks & Suspensions', count: counts.blocks || 0 },
+        { id: 'deletions', label: 'Permanent Deletes', count: counts.deletions || 0 },
+        { id: 'users', label: 'Role & User Changes', count: counts.users || 0 },
+        { id: 'content', label: 'Content & Reports', count: counts.content || 0 },
+        { id: 'finance', label: 'Finance & Payouts', count: counts.finance || 0 },
+        { id: 'system', label: 'Broadcasts & Settings', count: counts.system || 0 },
+      ];
+
+      const actionTone = (action) => {
+        if (action === 'delete_user_permanent' || action === 'user_blocked') return 'text-red-700 dark:text-red-400';
+        if (action === 'user_suspended' || action === 'refund_payment') return 'text-amber-700 dark:text-amber-400';
+        if (action === 'user_unblocked' || action === 'withdrawal_paid') return 'text-emerald-700 dark:text-emerald-400';
+        return 'text-[#0F2547] dark:text-sky-400';
+      };
+
+      topRightAction = `<a href="#/admin/users" class="px-3.5 py-2 text-xs font-semibold rounded-lg border border-slate-300 dark:border-slate-700 hover:bg-slate-100 dark:hover:bg-slate-800 whitespace-nowrap">User Directory</a>`;
+
+      bodyHtml = `
+        <div class="space-y-5">
+          <div>
+            <h1 class="font-display text-2xl font-semibold text-slate-900 dark:text-white tracking-tight">Admin Console History</h1>
+            <p class="text-xs text-slate-500 dark:text-slate-400 mt-1">
+              Complete chronological record of every suspension, block, permanent account deletion, role change, content moderation, payout, and settings update. Click <strong>Details</strong> on any entry to view full changes and the complete history of that entity.
+            </p>
+          </div>
+
+          <!-- Category Filter Tabs + Search -->
+          <div class="bg-white dark:bg-[#111A2E] border border-slate-200 dark:border-slate-800 rounded-xl p-3.5 space-y-3">
+            <div class="flex flex-wrap gap-1.5">
+              ${filterDefs
+                .map(
+                  (f) => `
+                <a href="#/admin/history?category=${encodeURIComponent(f.id)}${searchQ ? `&q=${encodeURIComponent(searchQ)}` : ''}" class="px-3 py-1.5 rounded-lg text-xs font-semibold transition-colors ${
+                    activeCategory === f.id
+                      ? 'bg-[#0F2547] text-white dark:bg-sky-500 dark:text-slate-950'
+                      : 'bg-slate-100 dark:bg-[#0B1120] text-slate-600 dark:text-slate-300 hover:bg-slate-200 dark:hover:bg-slate-800'
+                  }">
+                  ${esc(f.label)} <span class="font-mono opacity-80">(${f.count})</span>
+                </a>
+              `
+                )
+                .join('')}
+            </div>
+
+            <form id="adm-history-search-form" class="flex flex-wrap items-center gap-2">
+              <input type="hidden" name="category" value="${esc(activeCategory)}" />
+              <input name="q" type="search" value="${esc(searchQ)}" placeholder="Search by user name, email, UID, admin actor, reason, or action..." class="flex-1 min-w-[220px] px-3.5 py-2 text-xs rounded-lg border border-slate-300 dark:border-slate-700 bg-slate-50 dark:bg-[#0B1120]" />
+              <button type="submit" class="px-4 py-2 text-xs font-semibold rounded-lg bg-[#0F2547] dark:bg-sky-500 text-white dark:text-slate-950">Filter</button>
+              ${searchQ ? `<a href="#/admin/history?category=${encodeURIComponent(activeCategory)}" class="text-xs text-slate-500 hover:underline px-2">Clear</a>` : ''}
+            </form>
+          </div>
+
+          <!-- Admin History Ledger Table -->
+          <div class="bg-white dark:bg-[#111A2E] border border-slate-200 dark:border-slate-800 rounded-xl overflow-x-auto touch-scroll-x">
+            <table class="w-full min-w-[880px] text-left text-xs">
+              <thead class="text-[11px] uppercase tracking-wider text-slate-500 border-b border-slate-200 dark:border-slate-800 bg-slate-50/70 dark:bg-[#0B1120]/60">
+                <tr>
+                  <th class="px-4 py-3 font-semibold">Action</th>
+                  <th class="px-4 py-3 font-semibold">Target &amp; Summary of Change</th>
+                  <th class="px-4 py-3 font-semibold">Performed By</th>
+                  <th class="px-4 py-3 font-semibold">Date, Time &amp; Age</th>
+                  <th class="px-4 py-3 font-semibold text-right">Inspect</th>
+                </tr>
+              </thead>
+              <tbody class="divide-y divide-slate-100 dark:divide-slate-800">
+                ${
+                  rows.length
+                    ? rows
+                        .map(
+                          (row) => `
+                      <tr class="hover:bg-slate-50/70 dark:hover:bg-slate-900/40">
+                        <td class="px-4 py-3 whitespace-nowrap">
+                          <div class="font-semibold ${actionTone(row.action)}">${esc(row.actionLabel)}</div>
+                          <div class="text-[10px] font-mono text-slate-400 uppercase">${esc(row.entityType)}${row.entityId ? ` #${esc(row.entityId)}` : ''}</div>
+                        </td>
+                        <td class="px-4 py-3 max-w-[360px]">
+                          <div class="text-slate-800 dark:text-slate-200 leading-relaxed">${esc(row.summary)}</div>
+                        </td>
+                        <td class="px-4 py-3 whitespace-nowrap">
+                          <div class="font-medium text-slate-900 dark:text-white">${esc(row.actorName || 'System')}</div>
+                          ${row.actorEmail ? `<div class="text-[11px] text-slate-500">${esc(row.actorEmail)}</div>` : ''}
+                        </td>
+                        <td class="px-4 py-3 whitespace-nowrap">
+                          <div class="font-medium text-slate-800 dark:text-slate-200">${esc(formatRelativeAge(row.createdAt))}</div>
+                          <div class="text-[11px] font-mono text-slate-500">${esc(formatDateTime(row.createdAt))}</div>
+                        </td>
+                        <td class="px-4 py-3 text-right whitespace-nowrap">
+                          <button type="button" data-adm-hist-id="${row.id}" class="adm-hist-detail-btn px-3 py-1.5 rounded-lg border border-slate-300 dark:border-slate-700 hover:bg-slate-100 dark:hover:bg-slate-800 font-semibold text-[#0F2547] dark:text-sky-400">
+                            Details
+                          </button>
+                        </td>
+                      </tr>
+                    `
+                        )
+                        .join('')
+                    : `<tr><td colspan="5" class="px-4 py-10 text-center text-slate-500">No admin actions matched this filter yet.</td></tr>`
+                }
+              </tbody>
+            </table>
           </div>
         </div>
       `;
@@ -2394,6 +2515,143 @@ function wireAdminHandlers(container, activeTab, subParam = null) {
     } catch (err) {
       showToast(err.message, 'error');
     }
+  });
+
+  // Admin History search & Details modal (shows full diff + chronological Entity History)
+  document.getElementById('adm-history-search-form')?.addEventListener('submit', (e) => {
+    e.preventDefault();
+    const fd = new FormData(e.target);
+    const cat = String(fd.get('category') || 'all');
+    const q = String(fd.get('q') || '').trim();
+    const qs = new URLSearchParams();
+    if (cat && cat !== 'all') qs.set('category', cat);
+    if (q) qs.set('q', q);
+    window.location.hash = `#/admin/history${qs.toString() ? `?${qs}` : ''}`;
+  });
+
+  container.querySelectorAll('.adm-hist-detail-btn').forEach((btn) => {
+    btn.addEventListener('click', async () => {
+      const histId = btn.dataset.admHistId;
+      btn.disabled = true;
+      btn.textContent = 'Loading...';
+      try {
+        const res = await apiFetch(`/api/admin/history/${histId}`);
+        const entry = res.entry;
+        const snap = res.entitySnapshot;
+        const entityTimeline = res.entityHistory || [];
+        const detailEntries = Object.entries(entry.details || {}).filter(
+          ([, v]) => v !== null && v !== undefined && v !== ''
+        );
+
+        const formatDetailVal = (k, v) => {
+          if (typeof v === 'boolean') return v ? 'Yes' : 'No';
+          if (
+            (k.toLowerCase().includes('until') || k.toLowerCase().includes('at')) &&
+            typeof v === 'string' &&
+            !Number.isNaN(new Date(v).getTime())
+          ) {
+            return formatDateTime(v);
+          }
+          if (typeof v === 'object') return JSON.stringify(v);
+          return String(v);
+        };
+
+        openModal({
+          title: `Action History Detail — ${entry.actionLabel}`,
+          widthClass: 'max-w-2xl',
+          bodyHtml: `
+            <div class="space-y-5 text-xs">
+              <div class="p-4 rounded-xl bg-slate-50 dark:bg-[#0B1120] border border-slate-200 dark:border-slate-800 space-y-1.5">
+                <div class="flex flex-wrap items-center justify-between gap-2">
+                  <span class="font-semibold text-sm text-slate-900 dark:text-white">${esc(entry.actionLabel)}</span>
+                  <span class="font-mono text-[11px] text-slate-500">#${entry.id} · ${esc(entry.entityType)}${entry.entityId ? ` #${esc(entry.entityId)}` : ''}</span>
+                </div>
+                <p class="text-slate-700 dark:text-slate-300 leading-relaxed">${esc(entry.summary)}</p>
+                <div class="flex flex-wrap gap-x-4 gap-y-1 text-[11px] text-slate-500 pt-1">
+                  <span>By: <strong class="text-slate-800 dark:text-slate-200">${esc(entry.actorName || 'System')}</strong>${entry.actorEmail ? ` (${esc(entry.actorEmail)})` : ''}</span>
+                  <span>When: <strong class="text-slate-800 dark:text-slate-200">${esc(formatRelativeAge(entry.createdAt))}</strong> (${esc(formatDateTime(entry.createdAt))})</span>
+                  ${entry.ipAddress ? `<span class="font-mono">IP: ${esc(entry.ipAddress)}</span>` : ''}
+                </div>
+              </div>
+
+              ${
+                snap
+                  ? `<div class="p-3.5 rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-[#111A2E]">
+                      <div class="text-[11px] font-semibold uppercase tracking-wider text-slate-400 mb-2">Current Entity Status</div>
+                      ${
+                        snap.exists
+                          ? `<div class="flex flex-wrap items-center justify-between gap-2">
+                              <div>
+                                <div class="font-semibold text-slate-900 dark:text-white">${esc(snap.name || snap.title || '')}</div>
+                                <div class="text-slate-500 font-mono text-[11px]">${esc(snap.email || snap.slug || '')}${snap.publicUid ? ` · UID: ${esc(snap.publicUid)}` : ''}</div>
+                              </div>
+                              <div>${renderStatusLabel(snap.status)}</div>
+                            </div>`
+                          : `<div class="text-red-700 dark:text-red-400 font-medium">${esc(snap.note || 'Entity no longer exists.')}</div>`
+                      }
+                    </div>`
+                  : ''
+              }
+
+              <!-- Structured Change Details -->
+              <div>
+                <h3 class="text-[11px] font-semibold uppercase tracking-wider text-slate-400 mb-2">Recorded Changes &amp; Metadata</h3>
+                ${
+                  detailEntries.length
+                    ? `<dl class="divide-y divide-slate-100 dark:divide-slate-800 border border-slate-200 dark:border-slate-800 rounded-xl px-4">
+                        ${detailEntries
+                          .map(
+                            ([k, v]) => `
+                          <div class="py-2.5 flex items-start justify-between gap-4">
+                            <dt class="text-slate-500 capitalize shrink-0">${esc(k.replace(/([A-Z])/g, ' $1').replace(/_/g, ' '))}</dt>
+                            <dd class="font-mono text-slate-900 dark:text-slate-100 text-right break-words max-w-[65%]">${esc(formatDetailVal(k, v))}</dd>
+                          </div>
+                        `
+                          )
+                          .join('')}
+                      </dl>`
+                    : `<p class="text-slate-500">No extra detail fields were attached to this action.</p>`
+                }
+              </div>
+
+              <!-- Complete Entity History Timeline -->
+              ${
+                entityTimeline.length > 0
+                  ? `<div>
+                      <h3 class="text-[11px] font-semibold uppercase tracking-wider text-slate-400 mb-2">Complete History for This ${esc(entry.entityType)} (${entityTimeline.length} event${entityTimeline.length > 1 ? 's' : ''})</h3>
+                      <div class="space-y-2 max-h-64 overflow-y-auto pr-1">
+                        ${entityTimeline
+                          .map(
+                            (ev) => `
+                          <div class="p-3 rounded-lg border ${
+                            ev.id === entry.id
+                              ? 'border-[#0F2547] dark:border-sky-400 bg-slate-50 dark:bg-[#0B1120]'
+                              : 'border-slate-200 dark:border-slate-800'
+                          }">
+                            <div class="flex flex-wrap items-center justify-between gap-2">
+                              <span class="font-semibold text-slate-900 dark:text-white">${esc(ev.actionLabel)}${ev.id === entry.id ? ' (Current)' : ''}</span>
+                              <span class="font-mono text-[11px] text-slate-500">${esc(formatRelativeAge(ev.createdAt))} · ${esc(formatDateTime(ev.createdAt))}</span>
+                            </div>
+                            <div class="text-slate-600 dark:text-slate-300 mt-1">${esc(ev.summary)}</div>
+                            <div class="text-[11px] text-slate-400 mt-1">Actor: ${esc(ev.actorName || 'System')}</div>
+                          </div>
+                        `
+                          )
+                          .join('')}
+                      </div>
+                    </div>`
+                  : ''
+              }
+            </div>
+          `,
+        });
+      } catch (err) {
+        showToast(err.message || 'Unable to load history details.', 'error');
+      } finally {
+        btn.disabled = false;
+        btn.textContent = 'Details';
+      }
+    });
   });
 
   // Website settings

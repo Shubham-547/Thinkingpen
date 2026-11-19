@@ -419,10 +419,34 @@ async function bootstrap() {
   renderShell();
   loadStoredSessionToken();
   startActivityTracker();
-  await loadGlobalCatalogMeta();
 
+  subscribeStore(() => {
+    renderHeaderAndFooter();
+  });
+
+  window.addEventListener('hashchange', () => {
+    routeCurrentView();
+  });
+
+  // Load global categories & payment config concurrently (never blocks Home/Reader first paint)
+  const metaPromise = loadGlobalCatalogMeta();
+
+  const initialPath = getRoutePath();
+  const needsAuthBeforeRender =
+    initialPath.startsWith('/admin') ||
+    initialPath.startsWith('/creator') ||
+    initialPath.startsWith('/dashboard') ||
+    initialPath.startsWith('/complete-profile');
+
+  // Render public routes IMMEDIATELY (0ms startup delay instead of 900ms+ waterfall)
   let initialRouted = false;
-  const finishInitialRoute = async () => {
+  if (!needsAuthBeforeRender) {
+    initialRouted = true;
+    store.authReady = true;
+    routeCurrentView();
+  }
+
+  const finishAuthProtectedRoute = async () => {
     if (initialRouted) return;
     initialRouted = true;
     store.authReady = true;
@@ -430,18 +454,24 @@ async function bootstrap() {
     await routeCurrentView();
   };
 
-  subscribeStore(() => {
-    renderHeaderAndFooter();
-  });
-
-  // If user has an active email/password session token, restore immediately
+  // Restore active email/password session token immediately in parallel
   if (store.sessionToken) {
+    const prevUserId = store.user?.id || null;
     await refreshCurrentUser();
-    await finishInitialRoute();
+    if (!initialRouted) {
+      await finishAuthProtectedRoute();
+    } else if (store.user?.id !== prevUserId) {
+      renderHeaderAndFooter();
+      const currPath = getRoutePath();
+      if (currPath.startsWith('/content/') || currPath === '/login' || currPath === '/signup') {
+        routeCurrentView();
+      }
+    }
   }
 
   // Subscribe to Firebase Auth state (Google Sign-In persistence)
   subscribeFirebaseAuth(async (firebaseUser) => {
+    const prevUserId = store.user?.id || null;
     if (firebaseUser && !store.sessionToken) {
       try {
         const idToken = await firebaseUser.getIdToken();
@@ -463,15 +493,30 @@ async function bootstrap() {
         }
       }
     }
-    await finishInitialRoute();
+    if (!initialRouted) {
+      await finishAuthProtectedRoute();
+    } else if (store.user?.id !== prevUserId) {
+      renderHeaderAndFooter();
+      const currPath = getRoutePath();
+      if (
+        currPath.startsWith('/content/') ||
+        currPath.startsWith('/creator') ||
+        currPath.startsWith('/admin') ||
+        currPath.startsWith('/dashboard') ||
+        currPath === '/login' ||
+        currPath === '/signup'
+      ) {
+        routeCurrentView();
+      }
+    }
   });
 
-  // Fallback timeout in case Firebase auth init is slow
-  setTimeout(finishInitialRoute, 900);
+  // Safety fallback for auth-protected routes only if Firebase is slow
+  if (needsAuthBeforeRender) {
+    setTimeout(finishAuthProtectedRoute, 650);
+  }
 
-  window.addEventListener('hashchange', () => {
-    routeCurrentView();
-  });
+  await metaPromise;
 }
 
 bootstrap();

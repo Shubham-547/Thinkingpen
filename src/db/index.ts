@@ -15,16 +15,20 @@ export const createPool = () => {
           ssl: process.env.DATABASE_URL?.includes('localhost')
             ? undefined
             : { rejectUnauthorized: false },
-          max: 10,
+          max: 20,
+          idleTimeoutMillis: 30000,
           connectionTimeoutMillis: 15000,
+          keepAlive: true,
         }
       : {
           host: process.env.SQL_HOST,
           user: process.env.SQL_USER,
           password: process.env.SQL_PASSWORD,
           database: process.env.SQL_DB_NAME,
-          max: 10,
+          max: 20,
+          idleTimeoutMillis: 30000,
           connectionTimeoutMillis: 15000,
+          keepAlive: true,
         };
 
     global._postgresPool = new Pool(poolConfig);

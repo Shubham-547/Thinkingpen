@@ -257,13 +257,18 @@ export function createAutoPreview(html: string): string {
   return plain ? `<p>${plain}${plain.length >= 260 ? '...' : ''}</p>` : '';
 }
 
-export const ALLOWED_UPLOAD_MIMES: Record<string, { fileType: 'pdf' | 'video' | 'document' | 'cover'; maxBytes: number }> = {
+export const ALLOWED_UPLOAD_MIMES: Record<
+  string,
+  { fileType: 'pdf' | 'video' | 'document' | 'cover' | 'image'; maxBytes: number }
+> = {
   'application/pdf': { fileType: 'pdf', maxBytes: 25 * 1024 * 1024 },
   'video/mp4': { fileType: 'video', maxBytes: 50 * 1024 * 1024 },
   'video/webm': { fileType: 'video', maxBytes: 50 * 1024 * 1024 },
-  'image/jpeg': { fileType: 'cover', maxBytes: 5 * 1024 * 1024 },
-  'image/png': { fileType: 'cover', maxBytes: 5 * 1024 * 1024 },
-  'image/webp': { fileType: 'cover', maxBytes: 5 * 1024 * 1024 },
+  'video/quicktime': { fileType: 'video', maxBytes: 50 * 1024 * 1024 },
+  'image/jpeg': { fileType: 'image', maxBytes: 10 * 1024 * 1024 },
+  'image/png': { fileType: 'image', maxBytes: 10 * 1024 * 1024 },
+  'image/webp': { fileType: 'image', maxBytes: 10 * 1024 * 1024 },
+  'image/gif': { fileType: 'image', maxBytes: 10 * 1024 * 1024 },
   'text/plain': { fileType: 'document', maxBytes: 5 * 1024 * 1024 },
   'text/markdown': { fileType: 'document', maxBytes: 5 * 1024 * 1024 },
   'application/vnd.openxmlformats-officedocument.wordprocessingml.document': {

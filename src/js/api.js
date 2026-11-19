@@ -73,40 +73,85 @@ export async function logoutAll() {
   notifyStore();
 }
 
+// Fast in-memory client GET cache for instant repeat navigation (auto-invalidated on mutations)
+const clientGetCache = new Map();
+const inflightGetRequests = new Map();
+
+function getClientCacheTtlMs(url) {
+  if (url === '/api/catalog/home') return 25_000;
+  if (url === '/api/catalog/categories' || url === '/api/payments/config') return 60_000;
+  if (url.startsWith('/api/catalog/contents?')) return 15_000;
+  if (url === '/api/catalog/creators') return 30_000;
+  return 0;
+}
+
+export function invalidateClientCache() {
+  clientGetCache.clear();
+}
+
 export async function apiFetch(url, options = {}) {
-  const token = await getAuthToken();
-  const headers = new Headers(options.headers || {});
-  if (token && !headers.has('Authorization')) {
-    headers.set('Authorization', `Bearer ${token}`);
-  }
-  const isFormData = options.body instanceof FormData;
-  if (!isFormData && options.body && !headers.has('Content-Type')) {
-    headers.set('Content-Type', 'application/json');
+  const method = String(options.method || 'GET').toUpperCase();
+  const ttlMs = method === 'GET' && !options.noCache ? getClientCacheTtlMs(url) : 0;
+
+  if (ttlMs > 0) {
+    const cached = clientGetCache.get(url);
+    if (cached && cached.expiresAt > Date.now()) {
+      return cached.data;
+    }
+    if (inflightGetRequests.has(url)) {
+      return inflightGetRequests.get(url);
+    }
   }
 
-  const res = await fetch(url, {
-    ...options,
-    headers,
-    body: !isFormData && options.body && typeof options.body !== 'string'
-      ? JSON.stringify(options.body)
-      : options.body,
-  });
+  const runFetch = async () => {
+    const token = await getAuthToken();
+    const headers = new Headers(options.headers || {});
+    if (token && !headers.has('Authorization')) {
+      headers.set('Authorization', `Bearer ${token}`);
+    }
+    const isFormData = options.body instanceof FormData;
+    if (!isFormData && options.body && !headers.has('Content-Type')) {
+      headers.set('Content-Type', 'application/json');
+    }
 
-  const text = await res.text();
-  let data = {};
-  try {
-    data = text ? JSON.parse(text) : {};
-  } catch {
-    data = { raw: text };
-  }
+    const res = await fetch(url, {
+      ...options,
+      headers,
+      body:
+        !isFormData && options.body && typeof options.body !== 'string'
+          ? JSON.stringify(options.body)
+          : options.body,
+    });
 
-  if (!res.ok) {
-    const err = new Error(data.error || `Request failed (${res.status})`);
-    err.status = res.status;
-    err.data = data;
-    throw err;
+    const text = await res.text();
+    let data = {};
+    try {
+      data = text ? JSON.parse(text) : {};
+    } catch {
+      data = { raw: text };
+    }
+
+    if (!res.ok) {
+      const err = new Error(data.error || `Request failed (${res.status})`);
+      err.status = res.status;
+      err.data = data;
+      throw err;
+    }
+
+    if (ttlMs > 0) {
+      clientGetCache.set(url, { data, expiresAt: Date.now() + ttlMs });
+    } else if (method !== 'GET' && !url.startsWith('/api/auth/activity/')) {
+      clientGetCache.clear();
+    }
+    return data;
+  };
+
+  if (ttlMs > 0) {
+    const promise = runFetch().finally(() => inflightGetRequests.delete(url));
+    inflightGetRequests.set(url, promise);
+    return promise;
   }
-  return data;
+  return runFetch();
 }
 
 export async function refreshCurrentUser() {
@@ -166,6 +211,36 @@ export function formatDate(dateStr) {
   const d = new Date(dateStr);
   if (Number.isNaN(d.getTime())) return '—';
   return d.toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric' });
+}
+
+export function formatDateTime(dateStr) {
+  if (!dateStr) return '—';
+  const d = new Date(dateStr);
+  if (Number.isNaN(d.getTime())) return '—';
+  return d.toLocaleString('en-IN', {
+    day: 'numeric',
+    month: 'short',
+    year: 'numeric',
+    hour: '2-digit',
+    minute: '2-digit',
+  });
+}
+
+export function formatRelativeAge(dateStr) {
+  if (!dateStr) return '—';
+  const d = new Date(dateStr);
+  if (Number.isNaN(d.getTime())) return '—';
+  const timeStr = d.toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' });
+  const diffMs = Date.now() - d.getTime();
+  const diffMins = Math.max(0, Math.floor(diffMs / 60_000));
+  const diffHours = Math.floor(diffMins / 60);
+  const diffDays = Math.floor(diffHours / 24);
+
+  if (diffMins < 1) return `Just now · ${timeStr}`;
+  if (diffMins < 60) return `${diffMins} min ago · ${timeStr}`;
+  if (diffHours < 24) return `${diffHours} hr ago · ${timeStr}`;
+  if (diffDays === 1) return `1 day ago · ${timeStr}`;
+  return `${diffDays} days ago · ${timeStr}`;
 }
 
 export function formatBytes(bytes) {
@@ -328,6 +403,8 @@ export function renderStatusLabel(status) {
     reversed: 'text-red-700 dark:text-red-400',
     suspended: 'text-amber-700 dark:text-amber-400',
     blocked: 'text-red-700 dark:text-red-400',
+    deleted: 'text-red-700 dark:text-red-400',
+    recovered: 'text-emerald-700 dark:text-emerald-400',
   };
   const cls = map[status] || 'text-slate-600 dark:text-slate-300';
   const label = String(status || '').replace(/_/g, ' ');

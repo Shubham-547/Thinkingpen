@@ -1,7 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { Router } from 'express';
-import { and, asc, count, desc, eq, ilike, inArray, or, sql } from 'drizzle-orm';
+import { and, asc, count, desc, eq, ilike, inArray, isNull, or, sql } from 'drizzle-orm';
 import { db } from '../db/index.ts';
 import {
   adminSettings,
@@ -20,46 +20,27 @@ import {
   subjects,
   users,
 } from '../db/schema.ts';
+import { getCache, setCache } from '../lib/cache.ts';
 import { getStorageRoot, normalizeExternalVideoUrl } from '../lib/security.ts';
 import { optionalAuth, type AuthRequest } from '../middleware/auth.ts';
 
 const router = Router();
 
-// GET /api/catalog/home
+// GET /api/catalog/home (Parallelized + 30s TTL cache for instant response)
 router.get('/home', async (_req, res) => {
   try {
-    const settingsRows = await db.select().from(adminSettings);
-    const settings: Record<string, string> = {};
-    for (const row of settingsRows) settings[row.key] = row.value;
-
-    const categoryRows = await db
-      .select()
-      .from(categories)
-      .orderBy(asc(categories.displayOrder), asc(categories.name));
-
-    const approvedCounts = await db
-      .select({
-        categoryId: contents.categoryId,
-        total: count(),
-      })
-      .from(contents)
-      .where(eq(contents.status, 'approved'))
-      .groupBy(contents.categoryId);
-
-    const countByCat = new Map<number, number>();
-    for (const r of approvedCounts) {
-      if (r.categoryId) countByCat.set(r.categoryId, Number(r.total));
+    const cached = getCache<Record<string, unknown>>('catalog:home');
+    if (cached) {
+      res.setHeader('Cache-Control', 'public, max-age=15, stale-while-revalidate=30');
+      return res.json(cached);
     }
-
-    const featuredCategories = categoryRows.map((c) => ({
-      ...c,
-      contentCount: countByCat.get(c.id) || 0,
-    }));
 
     const baseSelect = {
       id: contents.id,
       title: contents.title,
       slug: contents.slug,
+      authorName: contents.authorName,
+      publisherName: contents.publisherName,
       shortDescription: contents.shortDescription,
       coverImageUrl: contents.coverImageUrl,
       contentType: contents.contentType,
@@ -80,64 +61,93 @@ router.get('/home', async (_req, res) => {
       categorySlug: categories.slug,
       subjectName: subjects.name,
       creatorId: users.id,
-      creatorName: users.name,
+      creatorName: sql<string>`COALESCE(NULLIF(TRIM(${contents.authorName}), ''), ${users.name})`,
       creatorAvatar: users.avatarUrl,
     };
 
-    const trending = await db
-      .select(baseSelect)
-      .from(contents)
-      .innerJoin(users, eq(contents.creatorId, users.id))
-      .leftJoin(categories, eq(contents.categoryId, categories.id))
-      .leftJoin(subjects, eq(contents.subjectId, subjects.id))
-      .where(eq(contents.status, 'approved'))
-      .orderBy(desc(contents.isFeatured), desc(contents.viewsCount), desc(contents.likesCount))
-      .limit(6);
+    const activeApproved = and(eq(contents.status, 'approved'), isNull(contents.deletedAt));
 
-    const recent = await db
-      .select(baseSelect)
-      .from(contents)
-      .innerJoin(users, eq(contents.creatorId, users.id))
-      .leftJoin(categories, eq(contents.categoryId, categories.id))
-      .leftJoin(subjects, eq(contents.subjectId, subjects.id))
-      .where(eq(contents.status, 'approved'))
-      .orderBy(desc(contents.publishedAt), desc(contents.createdAt))
-      .limit(6);
+    const [
+      settingsRows,
+      categoryRows,
+      approvedCounts,
+      trending,
+      recent,
+      creatorsList,
+      creatorPubCounts,
+      totalContentRows,
+      totalCreatorsRows,
+      totalUsersRows,
+    ] = await Promise.all([
+      db.select().from(adminSettings),
+      db.select().from(categories).orderBy(asc(categories.displayOrder), asc(categories.name)),
+      db
+        .select({ categoryId: contents.categoryId, total: count() })
+        .from(contents)
+        .where(activeApproved)
+        .groupBy(contents.categoryId),
+      db
+        .select(baseSelect)
+        .from(contents)
+        .innerJoin(users, eq(contents.creatorId, users.id))
+        .leftJoin(categories, eq(contents.categoryId, categories.id))
+        .leftJoin(subjects, eq(contents.subjectId, subjects.id))
+        .where(activeApproved)
+        .orderBy(desc(contents.isFeatured), desc(contents.viewsCount), desc(contents.likesCount))
+        .limit(6),
+      db
+        .select(baseSelect)
+        .from(contents)
+        .innerJoin(users, eq(contents.creatorId, users.id))
+        .leftJoin(categories, eq(contents.categoryId, categories.id))
+        .leftJoin(subjects, eq(contents.subjectId, subjects.id))
+        .where(activeApproved)
+        .orderBy(desc(contents.publishedAt), desc(contents.createdAt))
+        .limit(6),
+      db
+        .select({
+          id: users.id,
+          name: users.name,
+          avatarUrl: users.avatarUrl,
+          bio: users.bio,
+          displayName: creatorProfiles.displayName,
+          tagline: creatorProfiles.tagline,
+          expertise: creatorProfiles.expertise,
+          verified: creatorProfiles.verified,
+          totalSales: creatorProfiles.totalSales,
+          followerCount: creatorProfiles.followerCount,
+        })
+        .from(creatorProfiles)
+        .innerJoin(users, eq(creatorProfiles.userId, users.id))
+        .where(eq(users.status, 'active'))
+        .orderBy(desc(creatorProfiles.followerCount), desc(creatorProfiles.totalSales))
+        .limit(4),
+      db
+        .select({ creatorId: contents.creatorId, total: count() })
+        .from(contents)
+        .where(activeApproved)
+        .groupBy(contents.creatorId),
+      db.select({ value: count() }).from(contents).where(activeApproved),
+      db.select({ value: count() }).from(creatorProfiles),
+      db.select({ value: count() }).from(users),
+    ]);
 
-    const creatorsList = await db
-      .select({
-        id: users.id,
-        name: users.name,
-        avatarUrl: users.avatarUrl,
-        bio: users.bio,
-        displayName: creatorProfiles.displayName,
-        tagline: creatorProfiles.tagline,
-        expertise: creatorProfiles.expertise,
-        verified: creatorProfiles.verified,
-        totalSales: creatorProfiles.totalSales,
-        followerCount: creatorProfiles.followerCount,
-      })
-      .from(creatorProfiles)
-      .innerJoin(users, eq(creatorProfiles.userId, users.id))
-      .where(eq(users.status, 'active'))
-      .orderBy(desc(creatorProfiles.followerCount), desc(creatorProfiles.totalSales))
-      .limit(4);
+    const settings: Record<string, string> = {};
+    for (const row of settingsRows) settings[row.key] = row.value;
 
-    const creatorPubCounts = await db
-      .select({ creatorId: contents.creatorId, total: count() })
-      .from(contents)
-      .where(eq(contents.status, 'approved'))
-      .groupBy(contents.creatorId);
+    const countByCat = new Map<number, number>();
+    for (const r of approvedCounts) {
+      if (r.categoryId) countByCat.set(r.categoryId, Number(r.total));
+    }
+
+    const featuredCategories = categoryRows.map((c) => ({
+      ...c,
+      contentCount: countByCat.get(c.id) || 0,
+    }));
+
     const pubMap = new Map(creatorPubCounts.map((r) => [r.creatorId, Number(r.total)]));
 
-    const [totalContentRow] = await db
-      .select({ value: count() })
-      .from(contents)
-      .where(eq(contents.status, 'approved'));
-    const [totalCreatorsRow] = await db.select({ value: count() }).from(creatorProfiles);
-    const [totalUsersRow] = await db.select({ value: count() }).from(users);
-
-    return res.json({
+    const payload = {
       settings,
       categories: featuredCategories,
       trending,
@@ -147,31 +157,40 @@ router.get('/home', async (_req, res) => {
         publishedCount: pubMap.get(cr.id) || 0,
       })),
       stats: {
-        publishedWorks: Number(totalContentRow?.value || 0),
-        activeCreators: Number(totalCreatorsRow?.value || 0),
-        registeredMembers: Number(totalUsersRow?.value || 0),
+        publishedWorks: Number(totalContentRows[0]?.value || 0),
+        activeCreators: Number(totalCreatorsRows[0]?.value || 0),
+        registeredMembers: Number(totalUsersRows[0]?.value || 0),
         defaultCommissionRate: Number(settings.default_commission_rate || 10),
       },
-    });
+    };
+
+    setCache('catalog:home', payload, 30_000);
+    res.setHeader('Cache-Control', 'public, max-age=15, stale-while-revalidate=30');
+    return res.json(payload);
   } catch (error) {
     console.error('Home catalog error:', error);
     return res.status(500).json({ error: 'Unable to load homepage catalog.' });
   }
 });
 
-// GET /api/catalog/categories
+// GET /api/catalog/categories (Parallelized + 60s TTL cache)
 router.get('/categories', async (_req, res) => {
   try {
-    const cats = await db
-      .select()
-      .from(categories)
-      .orderBy(asc(categories.displayOrder), asc(categories.name));
-    const subjs = await db.select().from(subjects).orderBy(asc(subjects.name));
-    const counts = await db
-      .select({ categoryId: contents.categoryId, total: count() })
-      .from(contents)
-      .where(eq(contents.status, 'approved'))
-      .groupBy(contents.categoryId);
+    const cached = getCache<Record<string, unknown>>('catalog:categories');
+    if (cached) {
+      res.setHeader('Cache-Control', 'public, max-age=30, stale-while-revalidate=60');
+      return res.json(cached);
+    }
+
+    const [cats, subjs, counts] = await Promise.all([
+      db.select().from(categories).orderBy(asc(categories.displayOrder), asc(categories.name)),
+      db.select().from(subjects).orderBy(asc(subjects.name)),
+      db
+        .select({ categoryId: contents.categoryId, total: count() })
+        .from(contents)
+        .where(and(eq(contents.status, 'approved'), isNull(contents.deletedAt)))
+        .groupBy(contents.categoryId),
+    ]);
 
     const countMap = new Map<number, number>();
     for (const row of counts) {
@@ -184,7 +203,10 @@ router.get('/categories', async (_req, res) => {
       subjects: subjs.filter((s) => s.categoryId === c.id),
     }));
 
-    return res.json({ categories: grouped, subjects: subjs });
+    const payload = { categories: grouped, subjects: subjs };
+    setCache('catalog:categories', payload, 60_000);
+    res.setHeader('Cache-Control', 'public, max-age=30, stale-while-revalidate=60');
+    return res.json(payload);
   } catch (error) {
     console.error('Categories error:', error);
     return res.status(500).json({ error: 'Unable to fetch categories.' });
@@ -205,7 +227,7 @@ router.get('/contents', async (req, res) => {
     const limit = Math.min(48, Math.max(1, Number(req.query.limit || 12)));
     const offset = (page - 1) * limit;
 
-    const conditions = [eq(contents.status, 'approved')];
+    const conditions = [eq(contents.status, 'approved'), isNull(contents.deletedAt)];
 
     if (categorySlug) {
       const [cat] = await db
@@ -264,6 +286,8 @@ router.get('/contents', async (req, res) => {
 
       const searchOr = [
         ilike(contents.title, pattern),
+        ilike(contents.authorName, pattern),
+        ilike(contents.publisherName, pattern),
         ilike(contents.shortDescription, pattern),
         ilike(contents.contentType, pattern),
         ilike(users.name, pattern),
@@ -297,49 +321,52 @@ router.get('/contents', async (req, res) => {
         break;
     }
 
-    const rows = await db
-      .select({
-        id: contents.id,
-        title: contents.title,
-        slug: contents.slug,
-        shortDescription: contents.shortDescription,
-        coverImageUrl: contents.coverImageUrl,
-        contentType: contents.contentType,
-        language: contents.language,
-        priceInr: contents.priceInr,
-        isFree: contents.isFree,
-        isFeatured: contents.isFeatured,
-        viewsCount: contents.viewsCount,
-        likesCount: contents.likesCount,
-        purchasesCount: contents.purchasesCount,
-        avgRating: contents.avgRating,
-        reviewsCount: contents.reviewsCount,
-        readingTimeMins: contents.readingTimeMins,
-        publishedAt: contents.publishedAt,
-        categoryName: categories.name,
-        categorySlug: categories.slug,
-        subjectName: subjects.name,
-        creatorId: users.id,
-        creatorName: users.name,
-      })
-      .from(contents)
-      .innerJoin(users, eq(contents.creatorId, users.id))
-      .leftJoin(categories, eq(contents.categoryId, categories.id))
-      .leftJoin(subjects, eq(contents.subjectId, subjects.id))
-      .where(whereClause)
-      .orderBy(...orderByClause)
-      .limit(limit)
-      .offset(offset);
+    const [rows, totalRows] = await Promise.all([
+      db
+        .select({
+          id: contents.id,
+          title: contents.title,
+          slug: contents.slug,
+          authorName: contents.authorName,
+          publisherName: contents.publisherName,
+          shortDescription: contents.shortDescription,
+          coverImageUrl: contents.coverImageUrl,
+          contentType: contents.contentType,
+          language: contents.language,
+          priceInr: contents.priceInr,
+          isFree: contents.isFree,
+          isFeatured: contents.isFeatured,
+          viewsCount: contents.viewsCount,
+          likesCount: contents.likesCount,
+          purchasesCount: contents.purchasesCount,
+          avgRating: contents.avgRating,
+          reviewsCount: contents.reviewsCount,
+          readingTimeMins: contents.readingTimeMins,
+          publishedAt: contents.publishedAt,
+          categoryName: categories.name,
+          categorySlug: categories.slug,
+          subjectName: subjects.name,
+          creatorId: users.id,
+          creatorName: sql<string>`COALESCE(NULLIF(TRIM(${contents.authorName}), ''), ${users.name})`,
+        })
+        .from(contents)
+        .innerJoin(users, eq(contents.creatorId, users.id))
+        .leftJoin(categories, eq(contents.categoryId, categories.id))
+        .leftJoin(subjects, eq(contents.subjectId, subjects.id))
+        .where(whereClause)
+        .orderBy(...orderByClause)
+        .limit(limit)
+        .offset(offset),
+      db
+        .select({ value: count() })
+        .from(contents)
+        .innerJoin(users, eq(contents.creatorId, users.id))
+        .leftJoin(categories, eq(contents.categoryId, categories.id))
+        .leftJoin(subjects, eq(contents.subjectId, subjects.id))
+        .where(whereClause),
+    ]);
 
-    const [totalRow] = await db
-      .select({ value: count() })
-      .from(contents)
-      .innerJoin(users, eq(contents.creatorId, users.id))
-      .leftJoin(categories, eq(contents.categoryId, categories.id))
-      .leftJoin(subjects, eq(contents.subjectId, subjects.id))
-      .where(whereClause);
-
-    const total = Number(totalRow?.value || 0);
+    const total = Number(totalRows[0]?.value || 0);
 
     return res.json({
       items: rows,
@@ -385,53 +412,125 @@ router.get('/contents/:slugOrId', optionalAuth, async (req: AuthRequest, res) =>
     const isOwner = req.user?.id === item.creatorId;
     const isAdmin = req.user?.role === 'admin';
 
-    if (item.status !== 'approved' && !isOwner && !isAdmin) {
+    if ((item.status !== 'approved' || item.deletedAt) && !isOwner && !isAdmin) {
       return res.status(404).json({ error: 'Publication is not currently available.' });
     }
 
-    // Increment views count
-    await db
-      .update(contents)
-      .set({ viewsCount: sql`${contents.viewsCount} + 1` })
-      .where(eq(contents.id, item.id));
-
-    // Check purchase entitlement
-    let hasPurchased = false;
-    if (req.user) {
-      const [purchase] = await db
-        .select()
-        .from(purchases)
+    // Run independent reads and view increment in parallel for instant reader load
+    const [
+      ,
+      purchaseRows,
+      creatorProfileRows,
+      tagsRows,
+      fileRows,
+      commentRows,
+      reviewRows,
+      related,
+      bookmarkRows,
+      likeRows,
+      followRows,
+    ] = await Promise.all([
+      db
+        .update(contents)
+        .set({ viewsCount: sql`${contents.viewsCount} + 1` })
+        .where(eq(contents.id, item.id)),
+      req.user
+        ? db
+            .select({ id: purchases.id })
+            .from(purchases)
+            .where(
+              and(
+                eq(purchases.userId, req.user.id),
+                eq(purchases.contentId, item.id),
+                eq(purchases.status, 'active')
+              )
+            )
+            .limit(1)
+        : Promise.resolve([]),
+      db.select().from(creatorProfiles).where(eq(creatorProfiles.userId, item.creatorId)).limit(1),
+      db.select({ tag: contentTags.tag }).from(contentTags).where(eq(contentTags.contentId, item.id)),
+      db.select().from(contentFiles).where(eq(contentFiles.contentId, item.id)),
+      db
+        .select({
+          id: comments.id,
+          parentId: comments.parentId,
+          body: comments.body,
+          createdAt: comments.createdAt,
+          userId: users.id,
+          userName: users.name,
+          userRole: users.role,
+        })
+        .from(comments)
+        .innerJoin(users, eq(comments.userId, users.id))
+        .where(and(eq(comments.contentId, item.id), eq(comments.isHidden, false)))
+        .orderBy(asc(comments.createdAt)),
+      db
+        .select({
+          id: reviews.id,
+          rating: reviews.rating,
+          title: reviews.title,
+          body: reviews.body,
+          isVerifiedPurchase: reviews.isVerifiedPurchase,
+          createdAt: reviews.createdAt,
+          userId: users.id,
+          userName: users.name,
+        })
+        .from(reviews)
+        .innerJoin(users, eq(reviews.userId, users.id))
+        .where(and(eq(reviews.contentId, item.id), eq(reviews.isHidden, false)))
+        .orderBy(desc(reviews.createdAt)),
+      db
+        .select({
+          id: contents.id,
+          title: contents.title,
+          slug: contents.slug,
+          authorName: contents.authorName,
+          publisherName: contents.publisherName,
+          coverImageUrl: contents.coverImageUrl,
+          contentType: contents.contentType,
+          priceInr: contents.priceInr,
+          isFree: contents.isFree,
+          avgRating: contents.avgRating,
+          creatorName: sql<string>`COALESCE(NULLIF(TRIM(${contents.authorName}), ''), ${users.name})`,
+        })
+        .from(contents)
+        .innerJoin(users, eq(contents.creatorId, users.id))
         .where(
           and(
-            eq(purchases.userId, req.user.id),
-            eq(purchases.contentId, item.id),
-            eq(purchases.status, 'active')
+            eq(contents.status, 'approved'),
+            isNull(contents.deletedAt),
+            item.categoryId ? eq(contents.categoryId, item.categoryId) : sql`true`,
+            sql`${contents.id} != ${item.id}`
           )
         )
-        .limit(1);
-      hasPurchased = Boolean(purchase);
-    }
+        .orderBy(desc(contents.viewsCount))
+        .limit(4),
+      req.user
+        ? db
+            .select({ id: bookmarks.id })
+            .from(bookmarks)
+            .where(and(eq(bookmarks.userId, req.user.id), eq(bookmarks.contentId, item.id)))
+            .limit(1)
+        : Promise.resolve([]),
+      req.user
+        ? db
+            .select({ id: likes.id })
+            .from(likes)
+            .where(and(eq(likes.userId, req.user.id), eq(likes.contentId, item.id)))
+            .limit(1)
+        : Promise.resolve([]),
+      req.user
+        ? db
+            .select({ id: followers.id })
+            .from(followers)
+            .where(and(eq(followers.followerId, req.user.id), eq(followers.creatorId, item.creatorId)))
+            .limit(1)
+        : Promise.resolve([]),
+    ]);
 
+    const hasPurchased = purchaseRows.length > 0;
     const hasAccess = (item.isFree && Boolean(req.user)) || isOwner || isAdmin || hasPurchased;
-
-    // Fetch creator profile
-    const [creatorProfile] = await db
-      .select()
-      .from(creatorProfiles)
-      .where(eq(creatorProfiles.userId, item.creatorId))
-      .limit(1);
-
-    // Fetch tags
-    const tagsRows = await db
-      .select({ tag: contentTags.tag })
-      .from(contentTags)
-      .where(eq(contentTags.contentId, item.id));
-
-    // Fetch files (protect non-preview files when locked!)
-    const fileRows = await db
-      .select()
-      .from(contentFiles)
-      .where(eq(contentFiles.contentId, item.id));
+    const creatorProfile = creatorProfileRows[0];
 
     const safeFiles = fileRows.map((f) => ({
       id: f.id,
@@ -448,96 +547,16 @@ router.get('/contents/:slugOrId', optionalAuth, async (req: AuthRequest, res) =>
       accessUrl: hasAccess || f.isPreview ? `/api/catalog/files/${f.id}` : null,
     }));
 
-    // Fetch comments
-    const commentRows = await db
-      .select({
-        id: comments.id,
-        parentId: comments.parentId,
-        body: comments.body,
-        createdAt: comments.createdAt,
-        userId: users.id,
-        userName: users.name,
-        userRole: users.role,
-      })
-      .from(comments)
-      .innerJoin(users, eq(comments.userId, users.id))
-      .where(and(eq(comments.contentId, item.id), eq(comments.isHidden, false)))
-      .orderBy(asc(comments.createdAt));
-
-    // Fetch reviews
-    const reviewRows = await db
-      .select({
-        id: reviews.id,
-        rating: reviews.rating,
-        title: reviews.title,
-        body: reviews.body,
-        isVerifiedPurchase: reviews.isVerifiedPurchase,
-        createdAt: reviews.createdAt,
-        userId: users.id,
-        userName: users.name,
-      })
-      .from(reviews)
-      .innerJoin(users, eq(reviews.userId, users.id))
-      .where(and(eq(reviews.contentId, item.id), eq(reviews.isHidden, false)))
-      .orderBy(desc(reviews.createdAt));
-
-    // Related content
-    const related = await db
-      .select({
-        id: contents.id,
-        title: contents.title,
-        slug: contents.slug,
-        coverImageUrl: contents.coverImageUrl,
-        contentType: contents.contentType,
-        priceInr: contents.priceInr,
-        isFree: contents.isFree,
-        avgRating: contents.avgRating,
-        creatorName: users.name,
-      })
-      .from(contents)
-      .innerJoin(users, eq(contents.creatorId, users.id))
-      .where(
-        and(
-          eq(contents.status, 'approved'),
-          item.categoryId ? eq(contents.categoryId, item.categoryId) : sql`true`,
-          sql`${contents.id} != ${item.id}`
-        )
-      )
-      .orderBy(desc(contents.viewsCount))
-      .limit(4);
-
-    // User state (bookmarked, liked, following)
-    let isBookmarked = false;
-    let isLiked = false;
-    let isFollowingCreator = false;
-    if (req.user) {
-      const [bm] = await db
-        .select({ id: bookmarks.id })
-        .from(bookmarks)
-        .where(and(eq(bookmarks.userId, req.user.id), eq(bookmarks.contentId, item.id)))
-        .limit(1);
-      isBookmarked = Boolean(bm);
-
-      const [lk] = await db
-        .select({ id: likes.id })
-        .from(likes)
-        .where(and(eq(likes.userId, req.user.id), eq(likes.contentId, item.id)))
-        .limit(1);
-      isLiked = Boolean(lk);
-
-      const [fl] = await db
-        .select({ id: followers.id })
-        .from(followers)
-        .where(and(eq(followers.followerId, req.user.id), eq(followers.creatorId, item.creatorId)))
-        .limit(1);
-      isFollowingCreator = Boolean(fl);
-    }
+    const customAuthor = (item.authorName || '').trim();
+    const effectiveAuthorName = customAuthor || creatorProfile?.displayName || row.creatorName;
 
     return res.json({
       content: {
         id: item.id,
         title: item.title,
         slug: item.slug,
+        authorName: customAuthor || null,
+        publisherName: (item.publisherName || '').trim() || null,
         shortDescription: item.shortDescription,
         bodyHtml: hasAccess ? item.bodyHtml : null,
         previewHtml: null,
@@ -567,7 +586,8 @@ router.get('/contents/:slugOrId', optionalAuth, async (req: AuthRequest, res) =>
       },
       creator: {
         id: item.creatorId,
-        name: creatorProfile?.displayName || row.creatorName,
+        name: effectiveAuthorName,
+        profileName: creatorProfile?.displayName || row.creatorName,
         bio: row.creatorBio,
         avatarUrl: row.creatorAvatar,
         tagline: creatorProfile?.tagline || null,
@@ -581,9 +601,9 @@ router.get('/contents/:slugOrId', optionalAuth, async (req: AuthRequest, res) =>
       reviews: reviewRows,
       related,
       userState: {
-        isBookmarked,
-        isLiked,
-        isFollowingCreator,
+        isBookmarked: bookmarkRows.length > 0,
+        isLiked: likeRows.length > 0,
+        isFollowingCreator: followRows.length > 0,
       },
     });
   } catch (error) {
@@ -747,6 +767,8 @@ router.get('/creators/:id', optionalAuth, async (req: AuthRequest, res) => {
         id: contents.id,
         title: contents.title,
         slug: contents.slug,
+        authorName: contents.authorName,
+        publisherName: contents.publisherName,
         shortDescription: contents.shortDescription,
         coverImageUrl: contents.coverImageUrl,
         contentType: contents.contentType,
@@ -760,10 +782,17 @@ router.get('/creators/:id', optionalAuth, async (req: AuthRequest, res) => {
         readingTimeMins: contents.readingTimeMins,
         publishedAt: contents.publishedAt,
         categoryName: categories.name,
+        creatorName: sql<string>`COALESCE(NULLIF(TRIM(${contents.authorName}), ''), ${creator.displayName || creator.name})`,
       })
       .from(contents)
       .leftJoin(categories, eq(contents.categoryId, categories.id))
-      .where(and(eq(contents.creatorId, creatorId), eq(contents.status, 'approved')))
+      .where(
+        and(
+          eq(contents.creatorId, creatorId),
+          eq(contents.status, 'approved'),
+          isNull(contents.deletedAt)
+        )
+      )
       .orderBy(desc(contents.publishedAt));
 
     let isFollowing = false;

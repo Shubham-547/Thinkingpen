@@ -1,6 +1,7 @@
 import { Router } from 'express';
-import { and, asc, count, desc, eq, gte, inArray, lte, sql } from 'drizzle-orm';
+import { and, asc, count, desc, eq, gte, inArray, isNull, lte, sql } from 'drizzle-orm';
 import { db } from '../db/index.ts';
+import { invalidateCatalogCache } from '../lib/cache.ts';
 import {
   adminSettings,
   auditLogs,
@@ -75,52 +76,54 @@ router.get('/overview', async (req: AuthRequest, res) => {
       }
     }
 
-    const [totalUsersRow] = await db.select({ value: count() }).from(users);
-    const [activeUsersRow] = await db
-      .select({ value: count() })
-      .from(users)
-      .where(eq(users.status, 'active'));
-    const [totalCreatorsRow] = await db.select({ value: count() }).from(creatorProfiles);
-    const [publishedContentRow] = await db
-      .select({ value: count() })
-      .from(contents)
-      .where(eq(contents.status, 'approved'));
-    const [freeContentRow] = await db
-      .select({ value: count() })
-      .from(contents)
-      .where(and(eq(contents.status, 'approved'), eq(contents.isFree, true)));
-    const [paidContentRow] = await db
-      .select({ value: count() })
-      .from(contents)
-      .where(and(eq(contents.status, 'approved'), eq(contents.isFree, false)));
-    const [pendingApprovalsRow] = await db
-      .select({ value: count() })
-      .from(contents)
-      .where(eq(contents.status, 'pending'));
-    const [openReportsRow] = await db
-      .select({ value: count() })
-      .from(reports)
-      .where(eq(reports.status, 'open'));
-
-    const [blockedUsersRow] = await db
-      .select({ value: count() })
-      .from(users)
-      .where(inArray(users.status, ['blocked', 'suspended']));
-
-    const [deletedAccountsRow] = await db
-      .select({ value: count() })
-      .from(deletedAccountLogs);
-
-    const [purchasesRow] = await db
-      .select({ value: count() })
-      .from(purchases)
-      .where(eq(purchases.status, 'active'));
-
-    const creditedCommissions = await db
-      .select()
-      .from(commissionRecords)
-      .where(and(eq(commissionRecords.status, 'credited'), ...dateFilters))
-      .orderBy(desc(commissionRecords.createdAt));
+    const [
+      [totalUsersRow],
+      [activeUsersRow],
+      [totalCreatorsRow],
+      [publishedContentRow],
+      [freeContentRow],
+      [paidContentRow],
+      [pendingApprovalsRow],
+      [openReportsRow],
+      [blockedUsersRow],
+      [deletedAccountsRow],
+      [purchasesRow],
+      creditedCommissions,
+      pendingWithdrawalsList,
+    ] = await Promise.all([
+      db.select({ value: count() }).from(users),
+      db.select({ value: count() }).from(users).where(eq(users.status, 'active')),
+      db.select({ value: count() }).from(creatorProfiles),
+      db
+        .select({ value: count() })
+        .from(contents)
+        .where(and(eq(contents.status, 'approved'), isNull(contents.deletedAt))),
+      db
+        .select({ value: count() })
+        .from(contents)
+        .where(and(eq(contents.status, 'approved'), eq(contents.isFree, true), isNull(contents.deletedAt))),
+      db
+        .select({ value: count() })
+        .from(contents)
+        .where(and(eq(contents.status, 'approved'), eq(contents.isFree, false), isNull(contents.deletedAt))),
+      db
+        .select({ value: count() })
+        .from(contents)
+        .where(and(eq(contents.status, 'pending'), isNull(contents.deletedAt))),
+      db.select({ value: count() }).from(reports).where(eq(reports.status, 'open')),
+      db
+        .select({ value: count() })
+        .from(users)
+        .where(inArray(users.status, ['blocked', 'suspended'])),
+      db.select({ value: count() }).from(deletedAccountLogs),
+      db.select({ value: count() }).from(purchases).where(eq(purchases.status, 'active')),
+      db
+        .select()
+        .from(commissionRecords)
+        .where(and(eq(commissionRecords.status, 'credited'), ...dateFilters))
+        .orderBy(desc(commissionRecords.createdAt)),
+      db.select().from(withdrawals).where(eq(withdrawals.status, 'pending')),
+    ]);
 
     const grossTransactionValue = creditedCommissions.reduce(
       (sum, r) => sum + Number(r.grossAmountInr),
@@ -134,11 +137,6 @@ router.get('/overview', async (req: AuthRequest, res) => {
       (sum, r) => sum + Number(r.creatorEarningsInr),
       0
     );
-
-    const pendingWithdrawalsList = await db
-      .select()
-      .from(withdrawals)
-      .where(eq(withdrawals.status, 'pending'));
     const pendingWithdrawalsAmount = pendingWithdrawalsList.reduce(
       (sum, w) => sum + Number(w.amountInr),
       0
@@ -168,58 +166,59 @@ router.get('/overview', async (req: AuthRequest, res) => {
       a.month.localeCompare(b.month)
     );
 
-    // Most popular categories
-    const popularCategories = await db
-      .select({
-        id: categories.id,
-        name: categories.name,
-        contentCount: count(contents.id),
-        totalViews: sql<number>`COALESCE(SUM(${contents.viewsCount}), 0)`,
-        totalPurchases: sql<number>`COALESCE(SUM(${contents.purchasesCount}), 0)`,
-      })
-      .from(categories)
-      .leftJoin(
-        contents,
-        and(eq(contents.categoryId, categories.id), eq(contents.status, 'approved'))
-      )
-      .groupBy(categories.id, categories.name)
-      .orderBy(desc(sql`COALESCE(SUM(${contents.viewsCount}), 0)`))
-      .limit(8);
-
-    // Most purchased content
-    const topContent = await db
-      .select({
-        id: contents.id,
-        title: contents.title,
-        slug: contents.slug,
-        contentType: contents.contentType,
-        priceInr: contents.priceInr,
-        purchasesCount: contents.purchasesCount,
-        viewsCount: contents.viewsCount,
-        creatorName: users.name,
-      })
-      .from(contents)
-      .innerJoin(users, eq(contents.creatorId, users.id))
-      .where(eq(contents.status, 'approved'))
-      .orderBy(desc(contents.purchasesCount), desc(contents.viewsCount))
-      .limit(6);
-
-    // Top creators
-    const topCreators = await db
-      .select({
-        id: users.id,
-        name: users.name,
-        displayName: creatorProfiles.displayName,
-        totalSales: creatorProfiles.totalSales,
-        followerCount: creatorProfiles.followerCount,
-        totalEarningsInr: creatorWallets.totalEarningsInr,
-        availableBalanceInr: creatorWallets.availableBalanceInr,
-      })
-      .from(creatorProfiles)
-      .innerJoin(users, eq(creatorProfiles.userId, users.id))
-      .leftJoin(creatorWallets, eq(creatorWallets.creatorId, users.id))
-      .orderBy(desc(creatorProfiles.totalSales), desc(creatorProfiles.followerCount))
-      .limit(6);
+    const [popularCategories, topContent, topCreators] = await Promise.all([
+      db
+        .select({
+          id: categories.id,
+          name: categories.name,
+          contentCount: count(contents.id),
+          totalViews: sql<number>`COALESCE(SUM(${contents.viewsCount}), 0)`,
+          totalPurchases: sql<number>`COALESCE(SUM(${contents.purchasesCount}), 0)`,
+        })
+        .from(categories)
+        .leftJoin(
+          contents,
+          and(
+            eq(contents.categoryId, categories.id),
+            eq(contents.status, 'approved'),
+            isNull(contents.deletedAt)
+          )
+        )
+        .groupBy(categories.id, categories.name)
+        .orderBy(desc(sql`COALESCE(SUM(${contents.viewsCount}), 0)`))
+        .limit(8),
+      db
+        .select({
+          id: contents.id,
+          title: contents.title,
+          slug: contents.slug,
+          contentType: contents.contentType,
+          priceInr: contents.priceInr,
+          purchasesCount: contents.purchasesCount,
+          viewsCount: contents.viewsCount,
+          creatorName: sql<string>`COALESCE(NULLIF(TRIM(${contents.authorName}), ''), ${users.name})`,
+        })
+        .from(contents)
+        .innerJoin(users, eq(contents.creatorId, users.id))
+        .where(and(eq(contents.status, 'approved'), isNull(contents.deletedAt)))
+        .orderBy(desc(contents.purchasesCount), desc(contents.viewsCount))
+        .limit(6),
+      db
+        .select({
+          id: users.id,
+          name: users.name,
+          displayName: creatorProfiles.displayName,
+          totalSales: creatorProfiles.totalSales,
+          followerCount: creatorProfiles.followerCount,
+          totalEarningsInr: creatorWallets.totalEarningsInr,
+          availableBalanceInr: creatorWallets.availableBalanceInr,
+        })
+        .from(creatorProfiles)
+        .innerJoin(users, eq(creatorProfiles.userId, users.id))
+        .leftJoin(creatorWallets, eq(creatorWallets.creatorId, users.id))
+        .orderBy(desc(creatorProfiles.totalSales), desc(creatorProfiles.followerCount))
+        .limit(6),
+    ]);
 
     return res.json({
       metrics: {
@@ -952,14 +951,29 @@ router.patch('/users/:id', async (req: AuthRequest, res) => {
         ? `user_${req.body.status}`
         : req.body?.status === 'active'
         ? 'user_unblocked'
+        : req.body?.role && req.body.role !== targetUser.role
+        ? 'user_role_changed'
         : 'update_user',
       'user',
       targetId,
       {
+        targetName: targetUser.name,
+        targetEmail: targetUser.email,
+        targetPublicUid: targetUser.publicUid,
+        targetUsername: targetUser.username,
+        previousStatus: targetUser.status,
         status: updatedUser.status,
+        previousRole: targetUser.role,
         role: updatedUser.role,
         blockedReason: updatedUser.blockedReason,
         blockedUntil: updatedUser.blockedUntil,
+        permanent:
+          (updatedUser.status === 'blocked' || updatedUser.status === 'suspended') &&
+          !updatedUser.blockedUntil,
+        customCommissionRate: req.body?.customCommissionRate,
+        verified: req.body?.verified,
+        emailSent: blockEmailResult?.sent ?? false,
+        emailNote: blockEmailResult?.note ?? null,
       },
       req.ip
     );
@@ -1055,13 +1069,18 @@ router.delete('/users/:id', async (req: AuthRequest, res) => {
       'user',
       targetId,
       {
+        targetName: targetUser.name,
         email: targetUser.email,
         publicUid: targetUser.publicUid,
+        targetUsername: targetUser.username,
+        targetRole: targetUser.role,
         reason,
         emailSent: mailResult.sent,
+        emailNote: mailResult.note,
       },
       req.ip
     );
+    invalidateCatalogCache();
 
     return res.json({
       deleted: true,
@@ -1131,17 +1150,26 @@ router.get('/contents', async (req, res) => {
         customCommissionRate: contents.customCommissionRate,
         viewsCount: contents.viewsCount,
         purchasesCount: contents.purchasesCount,
+        authorName: contents.authorName,
+        publisherName: contents.publisherName,
+        deletedAt: contents.deletedAt,
+        purgeAfter: contents.purgeAfter,
         createdAt: contents.createdAt,
         publishedAt: contents.publishedAt,
         categoryName: categories.name,
         creatorId: users.id,
-        creatorName: users.name,
+        creatorName: sql<string>`COALESCE(NULLIF(TRIM(${contents.authorName}), ''), ${users.name})`,
+        accountName: users.name,
         creatorEmail: users.email,
       })
       .from(contents)
       .innerJoin(users, eq(contents.creatorId, users.id))
       .leftJoin(categories, eq(contents.categoryId, categories.id))
-      .where(statusFilter ? eq(contents.status, statusFilter) : undefined)
+      .where(
+        statusFilter
+          ? eq(contents.status, statusFilter)
+          : isNull(contents.deletedAt)
+      )
       .orderBy(desc(contents.createdAt));
 
     return res.json({ contents: rows });
@@ -1230,7 +1258,23 @@ router.patch('/contents/:id', async (req: AuthRequest, res) => {
       });
     }
 
-    await logAudit(req.user!.id, 'moderate_content', 'content', id, req.body || {}, req.ip);
+    await logAudit(
+      req.user!.id,
+      'moderate_content',
+      'content',
+      id,
+      {
+        contentTitle: existing.title,
+        contentSlug: existing.slug,
+        previousStatus: existing.status,
+        status: updated.status,
+        rejectionReason: updated.rejectionReason,
+        isFeatured: updated.isFeatured,
+        customCommissionRate: updated.customCommissionRate,
+      },
+      req.ip
+    );
+    invalidateCatalogCache();
     return res.json({ content: updated, message: 'Content status updated.' });
   } catch (error) {
     console.error('Admin patch content error:', error);
@@ -1257,6 +1301,7 @@ router.post('/categories', async (req: AuthRequest, res) => {
       .returning();
 
     await logAudit(req.user!.id, 'create_category', 'category', created.id, { name }, req.ip);
+    invalidateCatalogCache();
     return res.status(201).json({ category: created });
   } catch (error) {
     console.error('Create category error:', error);
@@ -1267,8 +1312,17 @@ router.post('/categories', async (req: AuthRequest, res) => {
 router.delete('/categories/:id', async (req: AuthRequest, res) => {
   try {
     const id = Number(req.params.id);
+    const [cat] = await db.select().from(categories).where(eq(categories.id, id)).limit(1);
     await db.delete(categories).where(eq(categories.id, id));
-    await logAudit(req.user!.id, 'delete_category', 'category', id, {}, req.ip);
+    await logAudit(
+      req.user!.id,
+      'delete_category',
+      'category',
+      id,
+      { name: cat?.name || `Category #${id}` },
+      req.ip
+    );
+    invalidateCatalogCache();
     return res.json({ deleted: true });
   } catch (error) {
     console.error('Delete category error:', error);
@@ -1289,6 +1343,7 @@ router.post('/subjects', async (req: AuthRequest, res) => {
       .values({ categoryId, name, slug: slugify(name), description })
       .returning();
     await logAudit(req.user!.id, 'create_subject', 'subject', created.id, { name, categoryId }, req.ip);
+    invalidateCatalogCache();
     return res.status(201).json({ subject: created });
   } catch (error) {
     console.error('Create subject error:', error);
@@ -1299,8 +1354,17 @@ router.post('/subjects', async (req: AuthRequest, res) => {
 router.delete('/subjects/:id', async (req: AuthRequest, res) => {
   try {
     const id = Number(req.params.id);
+    const [sub] = await db.select().from(subjects).where(eq(subjects.id, id)).limit(1);
     await db.delete(subjects).where(eq(subjects.id, id));
-    await logAudit(req.user!.id, 'delete_subject', 'subject', id, {}, req.ip);
+    await logAudit(
+      req.user!.id,
+      'delete_subject',
+      'subject',
+      id,
+      { name: sub?.name || `Subject #${id}` },
+      req.ip
+    );
+    invalidateCatalogCache();
     return res.json({ deleted: true });
   } catch (error) {
     console.error('Delete subject error:', error);
@@ -1630,9 +1694,10 @@ router.patch('/reports/:id', async (req: AuthRequest, res) => {
       'resolve_report',
       'report',
       id,
-      { status, removeContent, resolutionNote },
+      { status, removeContent, resolutionNote, contentId: report.contentId, reportType: report.reportType },
       req.ip
     );
+    if (removeContent) invalidateCatalogCache();
     return res.json({ report: updated, message: 'Report updated.' });
   } catch (error) {
     console.error('Resolve report error:', error);
@@ -1756,10 +1821,349 @@ router.put('/settings', async (req: AuthRequest, res) => {
     }
 
     await logAudit(req.user!.id, 'update_settings', 'admin_settings', null, updates, req.ip);
+    invalidateCatalogCache();
     return res.json({ message: 'Platform settings saved.' });
   } catch (error) {
     console.error('Update admin settings error:', error);
     return res.status(500).json({ error: 'Unable to save settings.' });
+  }
+});
+
+function classifyAdminHistoryCategory(action: string, entityType: string): string {
+  if (action === 'user_blocked' || action === 'user_suspended' || action === 'user_unblocked') {
+    return 'blocks';
+  }
+  if (action === 'delete_user_permanent') return 'deletions';
+  if (action === 'user_role_changed' || action === 'update_user') return 'users';
+  if (
+    action === 'moderate_content' ||
+    action === 'resolve_report' ||
+    action.includes('category') ||
+    action.includes('subject') ||
+    entityType === 'content' ||
+    entityType === 'report'
+  ) {
+    return 'content';
+  }
+  if (action.startsWith('withdrawal_') || action === 'refund_payment') return 'finance';
+  if (action === 'broadcast_notification' || action === 'update_settings') return 'system';
+  return 'other';
+}
+
+function summarizeAdminHistoryEntry(row: {
+  action: string;
+  entityType: string;
+  entityId: string | null;
+  details: Record<string, unknown> | null;
+}) {
+  const d = row.details || {};
+  const targetLabel =
+    String(d.targetName || d.contentTitle || d.name || d.email || d.targetEmail || '').trim() ||
+    (row.entityId ? `${row.entityType} #${row.entityId}` : row.entityType);
+
+  switch (row.action) {
+    case 'user_blocked':
+      return {
+        label: 'Blocked Account',
+        summary: `${targetLabel} blocked${d.blockedUntil ? ` until ${new Date(String(d.blockedUntil)).toLocaleString('en-IN')}` : ' permanently'}${d.blockedReason ? ` — "${String(d.blockedReason).slice(0, 90)}"` : ''}`,
+      };
+    case 'user_suspended':
+      return {
+        label: 'Suspended Account',
+        summary: `${targetLabel} suspended${d.blockedUntil ? ` until ${new Date(String(d.blockedUntil)).toLocaleString('en-IN')}` : ' permanently'}${d.blockedReason ? ` — "${String(d.blockedReason).slice(0, 90)}"` : ''}`,
+      };
+    case 'user_unblocked':
+      return {
+        label: 'Unblocked Account',
+        summary: `${targetLabel} restored to active status`,
+      };
+    case 'delete_user_permanent':
+      return {
+        label: 'Permanent Account Delete',
+        summary: `${targetLabel} (${String(d.email || '')}) erased from DB${d.reason ? ` — "${String(d.reason).slice(0, 90)}"` : ''}`,
+      };
+    case 'user_role_changed':
+      return {
+        label: 'Role Changed',
+        summary: `${targetLabel}: ${String(d.previousRole || 'user')} → ${String(d.role || 'user')}`,
+      };
+    case 'update_user':
+      return {
+        label: 'Updated User Account',
+        summary: `${targetLabel} (${String(d.role || '')}${d.status ? `, ${String(d.status)}` : ''})`,
+      };
+    case 'moderate_content':
+      return {
+        label: 'Content Moderation',
+        summary: `${targetLabel}${d.status ? ` → ${String(d.status)}` : ''}${d.isFeatured !== undefined ? ` (Featured: ${d.isFeatured ? 'Yes' : 'No'})` : ''}`,
+      };
+    case 'resolve_report':
+      return {
+        label: 'Report Action',
+        summary: `Report #${row.entityId || ''} → ${String(d.status || 'resolved')}${d.removeContent ? ' (Content Removed)' : ''}`,
+      };
+    case 'withdrawal_approve':
+    case 'withdrawal_reject':
+    case 'withdrawal_paid':
+      return {
+        label: `Withdrawal ${row.action.replace('withdrawal_', '').toUpperCase()}`,
+        summary: `Withdrawal #${row.entityId || ''}${d.payoutReference ? ` · Ref: ${String(d.payoutReference)}` : ''}${d.adminNote ? ` · ${String(d.adminNote).slice(0, 80)}` : ''}`,
+      };
+    case 'refund_payment':
+      return {
+        label: 'Payment Refunded',
+        summary: `Payment #${row.entityId || ''}${d.reason ? ` — ${String(d.reason).slice(0, 90)}` : ''}`,
+      };
+    case 'broadcast_notification':
+      return {
+        label: 'Broadcast Sent',
+        summary: `"${String(d.title || 'Announcement')}" to ${String(d.audience || 'all')} (${Number(d.recipientCount || 0)} accounts)`,
+      };
+    case 'update_settings':
+      return {
+        label: 'Settings Updated',
+        summary: `Changed keys: ${Object.keys(d).join(', ') || 'platform settings'}`,
+      };
+    default:
+      return {
+        label: row.action.replace(/_/g, ' '),
+        summary: targetLabel,
+      };
+  }
+}
+
+// GET /api/admin/history (Structured Admin Action History with Category & Search Filtering)
+router.get('/history', async (req: AuthRequest, res) => {
+  try {
+    const categoryFilter = String(req.query.category || 'all').trim().toLowerCase();
+    const q = String(req.query.q || '').trim().toLowerCase();
+    const limit = Math.min(250, Math.max(20, Number(req.query.limit) || 150));
+
+    const rows = await db
+      .select({
+        id: auditLogs.id,
+        action: auditLogs.action,
+        entityType: auditLogs.entityType,
+        entityId: auditLogs.entityId,
+        details: auditLogs.details,
+        ipAddress: auditLogs.ipAddress,
+        createdAt: auditLogs.createdAt,
+        actorId: auditLogs.actorId,
+        actorName: users.name,
+        actorEmail: users.email,
+      })
+      .from(auditLogs)
+      .leftJoin(users, eq(auditLogs.actorId, users.id))
+      .orderBy(desc(auditLogs.createdAt))
+      .limit(limit);
+
+    const enriched = rows
+      .map((r) => {
+        const detailsObj = (r.details && typeof r.details === 'object' ? r.details : {}) as Record<string, unknown>;
+        const category = classifyAdminHistoryCategory(r.action, r.entityType);
+        const { label, summary } = summarizeAdminHistoryEntry({
+          action: r.action,
+          entityType: r.entityType,
+          entityId: r.entityId,
+          details: detailsObj,
+        });
+        return {
+          ...r,
+          details: detailsObj,
+          category,
+          actionLabel: label,
+          summary,
+        };
+      })
+      .filter((item) => {
+        if (categoryFilter && categoryFilter !== 'all' && item.category !== categoryFilter) {
+          return false;
+        }
+        if (q) {
+          const hay = [
+            item.action,
+            item.actionLabel,
+            item.summary,
+            item.entityType,
+            item.entityId || '',
+            item.actorName || '',
+            item.actorEmail || '',
+            JSON.stringify(item.details || {}),
+          ]
+            .join(' ')
+            .toLowerCase();
+          return hay.includes(q);
+        }
+        return true;
+      });
+
+    const counts = {
+      all: rows.length,
+      blocks: rows.filter((r) => classifyAdminHistoryCategory(r.action, r.entityType) === 'blocks').length,
+      deletions: rows.filter((r) => classifyAdminHistoryCategory(r.action, r.entityType) === 'deletions').length,
+      users: rows.filter((r) => classifyAdminHistoryCategory(r.action, r.entityType) === 'users').length,
+      content: rows.filter((r) => classifyAdminHistoryCategory(r.action, r.entityType) === 'content').length,
+      finance: rows.filter((r) => classifyAdminHistoryCategory(r.action, r.entityType) === 'finance').length,
+      system: rows.filter((r) => classifyAdminHistoryCategory(r.action, r.entityType) === 'system').length,
+    };
+
+    return res.json({ history: enriched, counts });
+  } catch (error) {
+    console.error('Admin history error:', error);
+    return res.status(500).json({ error: 'Unable to load admin history.' });
+  }
+});
+
+// GET /api/admin/history/:id (Single Action Full Detail + Chronological Entity History Timeline)
+router.get('/history/:id', async (req: AuthRequest, res) => {
+  try {
+    const id = Number(req.params.id);
+    if (!Number.isInteger(id)) {
+      return res.status(400).json({ error: 'Invalid history record ID.' });
+    }
+
+    const [entry] = await db
+      .select({
+        id: auditLogs.id,
+        action: auditLogs.action,
+        entityType: auditLogs.entityType,
+        entityId: auditLogs.entityId,
+        details: auditLogs.details,
+        ipAddress: auditLogs.ipAddress,
+        createdAt: auditLogs.createdAt,
+        actorId: auditLogs.actorId,
+        actorName: users.name,
+        actorEmail: users.email,
+      })
+      .from(auditLogs)
+      .leftJoin(users, eq(auditLogs.actorId, users.id))
+      .where(eq(auditLogs.id, id))
+      .limit(1);
+
+    if (!entry) {
+      return res.status(404).json({ error: 'History entry not found.' });
+    }
+
+    const detailsObj = (entry.details && typeof entry.details === 'object' ? entry.details : {}) as Record<string, unknown>;
+    const summaryInfo = summarizeAdminHistoryEntry({
+      action: entry.action,
+      entityType: entry.entityType,
+      entityId: entry.entityId,
+      details: detailsObj,
+    });
+
+    // Fetch all admin history entries for the same entity (entityType + entityId)
+    let entityHistory: Array<{
+      id: number;
+      action: string;
+      actionLabel: string;
+      summary: string;
+      details: Record<string, unknown>;
+      createdAt: Date;
+      actorName: string | null;
+      actorEmail: string | null;
+    }> = [];
+
+    if (entry.entityId) {
+      const relatedRows = await db
+        .select({
+          id: auditLogs.id,
+          action: auditLogs.action,
+          entityType: auditLogs.entityType,
+          entityId: auditLogs.entityId,
+          details: auditLogs.details,
+          createdAt: auditLogs.createdAt,
+          actorName: users.name,
+          actorEmail: users.email,
+        })
+        .from(auditLogs)
+        .leftJoin(users, eq(auditLogs.actorId, users.id))
+        .where(
+          and(
+            eq(auditLogs.entityType, entry.entityType),
+            eq(auditLogs.entityId, entry.entityId)
+          )
+        )
+        .orderBy(desc(auditLogs.createdAt))
+        .limit(40);
+
+      entityHistory = relatedRows.map((r) => {
+        const dObj = (r.details && typeof r.details === 'object' ? r.details : {}) as Record<string, unknown>;
+        const s = summarizeAdminHistoryEntry({
+          action: r.action,
+          entityType: r.entityType,
+          entityId: r.entityId,
+          details: dObj,
+        });
+        return {
+          id: r.id,
+          action: r.action,
+          actionLabel: s.label,
+          summary: s.summary,
+          details: dObj,
+          createdAt: r.createdAt,
+          actorName: r.actorName,
+          actorEmail: r.actorEmail,
+        };
+      });
+    }
+
+    // Also pull live snapshot of the target user or content if still exists in DB (never exposing Super Admin private info)
+    let entitySnapshot: Record<string, unknown> | null = null;
+    if (entry.entityType === 'user' && entry.entityId && /^\d+$/.test(entry.entityId)) {
+      const [u] = await db
+        .select({
+          id: users.id,
+          name: users.name,
+          email: users.email,
+          publicUid: users.publicUid,
+          username: users.username,
+          role: users.role,
+          status: users.status,
+          blockedReason: users.blockedReason,
+          blockedUntil: users.blockedUntil,
+        })
+        .from(users)
+        .where(eq(users.id, Number(entry.entityId)))
+        .limit(1);
+      if (u && !isSuperAdminEmail(u.email)) {
+        entitySnapshot = { exists: true, ...u };
+      } else if (!u) {
+        entitySnapshot = { exists: false, note: 'Account has been permanently deleted from database.' };
+      }
+    } else if (entry.entityType === 'content' && entry.entityId && /^\d+$/.test(entry.entityId)) {
+      const [c] = await db
+        .select({
+          id: contents.id,
+          title: contents.title,
+          slug: contents.slug,
+          status: contents.status,
+          authorName: contents.authorName,
+          publisherName: contents.publisherName,
+          priceInr: contents.priceInr,
+          deletedAt: contents.deletedAt,
+        })
+        .from(contents)
+        .where(eq(contents.id, Number(entry.entityId)))
+        .limit(1);
+      if (c) entitySnapshot = { exists: true, ...c };
+      else entitySnapshot = { exists: false, note: 'Content item no longer exists in database.' };
+    }
+
+    return res.json({
+      entry: {
+        ...entry,
+        details: detailsObj,
+        category: classifyAdminHistoryCategory(entry.action, entry.entityType),
+        actionLabel: summaryInfo.label,
+        summary: summaryInfo.summary,
+      },
+      entitySnapshot,
+      entityHistory,
+    });
+  } catch (error) {
+    console.error('Admin history detail error:', error);
+    return res.status(500).json({ error: 'Unable to load history details.' });
   }
 });
 

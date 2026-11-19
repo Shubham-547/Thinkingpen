@@ -4,7 +4,9 @@ import {
   esc,
   formatBytes,
   formatDate,
+  formatDateTime,
   formatInr,
+  formatRelativeAge,
   LANGUAGES,
   notifyStore,
   openModal,
@@ -25,28 +27,30 @@ export async function renderCreatorDashboardPage(container, activeTab = 'overvie
     return;
   }
 
-  const tabs = [
-    { id: 'overview', label: 'Overview' },
-    { id: 'upload', label: editId ? 'Edit Content' : 'Upload Content' },
-    { id: 'published', label: 'Published Content' },
-    { id: 'drafts', label: 'Drafts' },
-    { id: 'pending', label: 'Pending & Review' },
-    { id: 'analytics', label: 'Analytics' },
-    { id: 'earnings', label: 'Earnings' },
-    { id: 'wallet', label: 'Wallet & Payouts' },
-    { id: 'withdrawals', label: 'Withdrawal Requests' },
-    { id: 'transactions', label: 'Transactions' },
-    { id: 'profile', label: 'Creator Profile' },
-  ];
-
   container.innerHTML = `<div class="max-w-7xl mx-auto px-4 py-12 text-sm text-slate-500">Loading Creator Studio...</div>`;
 
   try {
-    const data = await apiFetch('/api/creator/dashboard');
-    let editPayload = null;
-    if (activeTab === 'upload' && editId) {
-      editPayload = await apiFetch(`/api/creator/contents/${editId}`);
-    }
+    const [data, editPayload, historyPayload] = await Promise.all([
+      apiFetch('/api/creator/dashboard'),
+      activeTab === 'upload' && editId ? apiFetch(`/api/creator/contents/${editId}`) : Promise.resolve(null),
+      activeTab === 'history' ? apiFetch('/api/creator/history') : Promise.resolve(null),
+    ]);
+
+    const deletedCount = Number(data.analytics?.deletedCount || 0);
+    const tabs = [
+      { id: 'overview', label: 'Overview' },
+      { id: 'upload', label: editId ? 'Edit Content' : 'Upload Content' },
+      { id: 'published', label: 'Published Content' },
+      { id: 'drafts', label: 'Drafts' },
+      { id: 'pending', label: 'Pending & Review' },
+      { id: 'history', label: deletedCount > 0 ? `History & Recovery (${deletedCount})` : 'History & Recovery' },
+      { id: 'analytics', label: 'Analytics' },
+      { id: 'earnings', label: 'Earnings' },
+      { id: 'wallet', label: 'Wallet & Payouts' },
+      { id: 'withdrawals', label: 'Withdrawal Requests' },
+      { id: 'transactions', label: 'Transactions' },
+      { id: 'profile', label: 'Creator Profile' },
+    ];
 
     const wallet = data.wallet || {
       totalEarningsInr: '0.00',
@@ -130,6 +134,8 @@ export async function renderCreatorDashboardPage(container, activeTab = 'overvie
           ${renderCreatorContentTable(list, true)}
         </div>
       `;
+    } else if (activeTab === 'history') {
+      bodyHtml = renderCreatorHistoryHtml(historyPayload || { deletedContents: [], history: [], retentionDays: 15 });
     } else if (activeTab === 'analytics') {
       const maxViews = Math.max(1, ...data.contents.map((c) => c.viewsCount || 0));
       bodyHtml = `
@@ -447,18 +453,23 @@ export async function renderCreatorDashboardPage(container, activeTab = 'overvie
       </div>
     `;
 
-    // Wire table actions (Edit / Delete)
+    // Wire table actions (Soft-Delete to 15-Day History & Recovery Bin)
     container.querySelectorAll('.creator-delete-btn').forEach((btn) => {
       btn.addEventListener('click', async () => {
         try {
-          await apiFetch(`/api/creator/contents/${btn.dataset.id}`, { method: 'DELETE' });
-          showToast('Publication deleted.', 'success');
+          const res = await apiFetch(`/api/creator/contents/${btn.dataset.id}`, { method: 'DELETE' });
+          showToast(res.message || 'Moved to History & Recovery Bin (recoverable for 15 days).', 'success');
           renderCreatorDashboardPage(container, activeTab);
         } catch (err) {
           showToast(err.message, 'error');
         }
       });
     });
+
+    // Wire Creator History & 15-Day Recovery Bin actions
+    if (activeTab === 'history') {
+      wireCreatorHistoryHandlers(container, historyPayload || { deletedContents: [], history: [] });
+    }
 
     // Wire Upload / Editor studio if active
     if (activeTab === 'upload') {
@@ -552,7 +563,7 @@ function renderCreatorContentTable(list, showNotes = false) {
                 <tr class="hover:bg-slate-50/70 dark:hover:bg-slate-900/40">
                   <td class="px-4 py-3">
                     <a href="#/content/${esc(c.slug)}" class="font-medium text-slate-900 dark:text-white hover:underline block">${esc(c.title)}</a>
-                    <span class="text-xs text-slate-500">${esc(c.contentType)} · ${esc(c.categoryName || 'Uncategorized')}</span>
+                    <span class="text-xs text-slate-500">${esc(c.contentType)} · ${esc(c.categoryName || 'Uncategorized')}${c.authorName ? ` · Author: ${esc(c.authorName)}` : ''}</span>
                   </td>
                   <td class="px-4 py-3 font-mono text-xs tabular-nums">${c.isFree ? 'Free' : formatInr(c.priceInr)}</td>
                   <td class="px-4 py-3">${renderStatusLabel(c.status)}</td>
@@ -561,7 +572,7 @@ function renderCreatorContentTable(list, showNotes = false) {
                   <td class="px-4 py-3 text-right whitespace-nowrap space-x-3 text-xs font-semibold">
                     <a href="#/creator/edit/${c.id}" class="text-[#0F2547] dark:text-sky-400 hover:underline">Edit</a>
                     <a href="#/content/${esc(c.slug)}" class="text-slate-600 dark:text-slate-300 hover:underline">View</a>
-                    <button type="button" data-id="${c.id}" class="creator-delete-btn text-red-600 dark:text-red-400 hover:underline">Delete</button>
+                    <button type="button" data-id="${c.id}" class="creator-delete-btn text-red-600 dark:text-red-400 hover:underline" title="Move to 15-day Recovery Bin">Delete</button>
                   </td>
                 </tr>
               `
@@ -601,6 +612,16 @@ function renderContentEditorHtml(editPayload, commRate) {
           <div class="md:col-span-2">
             <label class="block text-xs font-semibold text-slate-600 dark:text-slate-300 mb-1">Publication Title</label>
             <input name="title" id="ed-title" required value="${esc(item?.title || '')}" placeholder="e.g. Complete Organic Chemistry Reaction Mechanisms Notes" class="w-full px-3.5 py-2.5 text-sm rounded-lg border border-slate-300 dark:border-slate-700 bg-slate-50 dark:bg-[#0B1120]" />
+          </div>
+          <div>
+            <label for="ed-author-name" class="block text-xs font-semibold text-slate-600 dark:text-slate-300 mb-1">Author / Creator Display Name *</label>
+            <input name="authorName" id="ed-author-name" maxlength="160" value="${esc(item?.authorName || '')}" placeholder="Name shown publicly on this publication (overrides profile name)" class="w-full px-3.5 py-2.5 text-sm rounded-lg border border-slate-300 dark:border-slate-700 bg-slate-50 dark:bg-[#0B1120]" />
+            <p class="text-[11px] text-slate-500 dark:text-slate-400 mt-1">Readers will see this exact author name on this work instead of your account profile name.</p>
+          </div>
+          <div>
+            <label for="ed-publisher-name" class="block text-xs font-semibold text-slate-600 dark:text-slate-300 mb-1">Publisher / Institution Name (optional)</label>
+            <input name="publisherName" id="ed-publisher-name" maxlength="160" value="${esc(item?.publisherName || '')}" placeholder="e.g. Vidya Academy Press, IIT Notes Cell, Self-Published" class="w-full px-3.5 py-2.5 text-sm rounded-lg border border-slate-300 dark:border-slate-700 bg-slate-50 dark:bg-[#0B1120]" />
+            <p class="text-[11px] text-slate-500 dark:text-slate-400 mt-1">Optional coaching institute, college department, or publisher imprint.</p>
           </div>
           <div>
             <label class="block text-xs font-semibold text-slate-600 dark:text-slate-300 mb-1">Content Type</label>
@@ -701,7 +722,7 @@ function renderContentEditorHtml(editPayload, commRate) {
               <button type="button" data-cmd="insertOrderedList" class="rte-btn min-h-[34px] px-2.5 py-1 text-xs rounded hover:bg-slate-200 dark:hover:bg-slate-800 whitespace-nowrap shrink-0">1. List</button>
               <button type="button" data-cmd="formatBlock" data-val="BLOCKQUOTE" class="rte-btn min-h-[34px] px-2.5 py-1 text-xs rounded hover:bg-slate-200 dark:hover:bg-slate-800 whitespace-nowrap shrink-0">Quote</button>
               <button type="button" id="rte-insert-code" class="min-h-[34px] px-2.5 py-1 text-xs font-mono rounded hover:bg-slate-200 dark:hover:bg-slate-800 whitespace-nowrap shrink-0">Code</button>
-              <input type="file" id="rte-image-file-input" accept="image/jpeg,image/png,image/webp,image/gif" class="hidden" />
+              <input type="file" id="rte-image-file-input" accept="image/jpeg,image/png,image/webp,image/gif" multiple class="hidden" />
             </div>
 
             <!-- Editable Prose Canvas -->
@@ -712,14 +733,14 @@ function renderContentEditorHtml(editPayload, commRate) {
               <div class="flex flex-wrap items-center gap-2">
                 <button type="button" id="rte-bottom-photo-btn" class="inline-flex items-center gap-1.5 min-h-[36px] px-3 py-1.5 text-xs font-semibold rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-[#0B1120] text-slate-800 dark:text-slate-100 hover:border-[#0F2547] dark:hover:border-sky-400 transition-colors">
                   <svg class="w-4 h-4 text-[#0F2547] dark:text-sky-400 shrink-0" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M12 4v16m8-8H4"></path></svg>
-                  <span>Upload Photo</span>
+                  <span>Insert Photos (up to 20)</span>
                 </button>
                 <button type="button" id="rte-bottom-file-btn" class="inline-flex items-center gap-1.5 min-h-[36px] px-3 py-1.5 text-xs font-semibold rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-[#0B1120] text-slate-800 dark:text-slate-100 hover:border-[#0F2547] dark:hover:border-sky-400 transition-colors">
                   <svg class="w-4 h-4 text-slate-600 dark:text-slate-300 shrink-0" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M21.44 11.05l-9.19 9.19a6 6 0 01-8.49-8.49l9.19-9.19a4 4 0 015.66 5.66l-9.2 9.19a2 2 0 01-2.83-2.83l8.49-8.48"></path></svg>
-                  <span>Attach File (PDF/Doc/Video)</span>
+                  <span>Gallery / Files (up to 20)</span>
                 </button>
               </div>
-              <span id="rte-pending-file-chip" class="text-[11px] text-slate-500 dark:text-slate-400">JPG, PNG, WebP, GIF · PDF, DOCX, MP4</span>
+              <span id="rte-pending-file-chip" class="text-[11px] text-slate-500 dark:text-slate-400">Select up to 20 Images, Videos, PDFs or Docs together</span>
             </div>
           </div>
         </div>
@@ -778,26 +799,42 @@ function renderContentEditorHtml(editPayload, commRate) {
           </div>
         </div>
 
-        <!-- File Attachments (PDFs, Videos, Docs, Custom Cover) -->
+        <!-- Multi-File Gallery & Media Attachments (Up to 20 Images, Videos, PDFs & Docs Together) -->
         <div class="pt-4 border-t border-slate-100 dark:border-slate-800 space-y-3">
           <div class="flex flex-wrap items-center justify-between gap-2">
             <div>
-              <label class="block text-xs font-semibold text-slate-600 dark:text-slate-300">Attach Protected PDF, Video, Document, or Cover Image</label>
-              <p class="text-xs text-slate-500">Allowed: PDF (25MB), MP4/WebM (50MB), DOCX/TXT/MD (15MB), JPG/PNG/WebP (5MB).</p>
+              <label class="block text-xs font-semibold text-slate-600 dark:text-slate-300">Attach Gallery Photos, Videos, PDFs &amp; Study Files (Up to 20 together)</label>
+              <p class="text-xs text-slate-500">Select up to <strong>20 images &amp; videos at once</strong> from Gallery or Files. Allowed: JPG/PNG/WebP/GIF (10MB), MP4/WebM/MOV (50MB), PDF (25MB), DOCX/TXT/MD (15MB).</p>
             </div>
+            <span id="ed-queue-counter" class="text-xs font-mono font-semibold text-slate-500 dark:text-slate-400">0 / 20 selected</span>
           </div>
-          <div class="flex flex-wrap items-center gap-3">
-            <input type="file" id="ed-file-input" accept=".pdf,.mp4,.webm,.jpg,.jpeg,.png,.webp,.txt,.md,.docx" class="max-w-full text-xs text-slate-600 dark:text-slate-300" />
+          <div class="flex flex-wrap items-center gap-3 p-3.5 rounded-xl border border-dashed border-slate-300 dark:border-slate-700 bg-slate-50/70 dark:bg-[#0B1120]">
+            <button type="button" id="ed-pick-gallery-btn" class="inline-flex items-center gap-2 min-h-[40px] px-4 py-2 text-xs font-semibold rounded-lg bg-[#0F2547] hover:bg-[#1B3B6F] dark:bg-sky-500 dark:hover:bg-sky-400 text-white dark:text-slate-950 transition-colors whitespace-nowrap shrink-0">
+              <svg class="w-4 h-4 shrink-0" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M12 4v16m8-8H4"></path></svg>
+              <span>Select up to 20 Photos / Videos / Files</span>
+            </button>
+            <input type="file" id="ed-file-input" multiple accept="image/*,video/*,.pdf,.mp4,.webm,.mov,.jpg,.jpeg,.png,.webp,.gif,.txt,.md,.docx" class="hidden" />
             <label class="flex items-center gap-1.5 text-xs text-slate-600 dark:text-slate-300">
               <input type="checkbox" id="ed-file-preview" />
-              <span>Allow free preview of this file</span>
+              <span>Allow free preview of uploaded files</span>
             </label>
             ${
               item
-                ? `<button type="button" id="ed-upload-file-btn" class="min-h-[36px] px-3.5 py-1.5 text-xs font-semibold rounded-lg border border-slate-300 dark:border-slate-700 hover:bg-slate-100 dark:hover:bg-slate-800">Upload Now</button>`
-                : `<span class="text-xs text-slate-400">(File attaches automatically when you save or submit)</span>`
+                ? `<button type="button" id="ed-upload-file-btn" class="hidden min-h-[38px] px-4 py-1.5 text-xs font-semibold rounded-lg bg-emerald-700 hover:bg-emerald-800 text-white whitespace-nowrap">Upload Selected Files Now</button>`
+                : `<span class="text-xs text-slate-400">(All queued files upload automatically when you save or submit)</span>`
             }
           </div>
+
+          <!-- Live Selected Queue Preview Grid -->
+          <div id="ed-queued-files-wrap" class="hidden space-y-2">
+            <div class="flex items-center justify-between text-xs">
+              <span class="font-semibold text-slate-700 dark:text-slate-300">Queued for Upload</span>
+              <button type="button" id="ed-clear-queue-btn" class="text-red-600 dark:text-red-400 hover:underline font-medium">Clear Queue</button>
+            </div>
+            <div id="ed-queued-files-grid" class="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-2.5"></div>
+          </div>
+
+          <!-- Already Saved Attachments -->
           <div id="ed-files-list" class="space-y-2">
             ${files
               .map(
@@ -1123,44 +1160,127 @@ function wireContentEditor(container, editPayload, commRate) {
     }
   });
 
-  // Wire + File shortcuts in Rich-Text Editor to the file attachment picker
-  const triggerAttachFile = () => {
-    const fileInput = document.getElementById('ed-file-input');
-    if (fileInput) {
-      fileInput.click();
+  // Multi-file Gallery & Attachment Queue (up to 20 images, videos, PDFs & docs together)
+  const MAX_MULTI_FILES = 20;
+  let queuedUploadFiles = [];
+  const fileInputEl = document.getElementById('ed-file-input');
+  const queueCounterEl = document.getElementById('ed-queue-counter');
+  const queueWrapEl = document.getElementById('ed-queued-files-wrap');
+  const queueGridEl = document.getElementById('ed-queued-files-grid');
+  const uploadQueueBtn = document.getElementById('ed-upload-file-btn');
+  const pendingChipEl = document.getElementById('rte-pending-file-chip');
+
+  const renderQueuedFiles = () => {
+    const count = queuedUploadFiles.length;
+    if (queueCounterEl) {
+      queueCounterEl.textContent = `${count} / ${MAX_MULTI_FILES} selected`;
+      queueCounterEl.className = `text-xs font-mono font-semibold ${count > 0 ? 'text-emerald-700 dark:text-emerald-400' : 'text-slate-500 dark:text-slate-400'}`;
     }
+    if (uploadQueueBtn) {
+      uploadQueueBtn.classList.toggle('hidden', count === 0);
+      uploadQueueBtn.textContent = `Upload ${count} Selected File${count > 1 ? 's' : ''} Now`;
+    }
+    if (pendingChipEl) {
+      pendingChipEl.innerHTML =
+        count > 0
+          ? `<span class="font-semibold text-emerald-700 dark:text-emerald-400">${count} file${count > 1 ? 's' : ''} queued (images/videos/files)</span>`
+          : 'Select up to 20 Images, Videos, PDFs or Docs together';
+    }
+    if (!queueWrapEl || !queueGridEl) return;
+    queueWrapEl.classList.toggle('hidden', count === 0);
+    queueGridEl.innerHTML = '';
+
+    queuedUploadFiles.forEach((f, idx) => {
+      const card = document.createElement('div');
+      card.className =
+        'relative rounded-lg border border-slate-200 dark:border-slate-800 bg-white dark:bg-[#0B1120] p-2 flex flex-col gap-1.5 overflow-hidden';
+      const isImg = f.type && f.type.startsWith('image/');
+      const isVid = f.type && f.type.startsWith('video/');
+
+      if (isImg) {
+        const previewUrl = URL.createObjectURL(f);
+        card.innerHTML = `
+          <div class="aspect-[4/3] rounded overflow-hidden bg-slate-100 dark:bg-slate-900">
+            <img src="${previewUrl}" alt="${esc(f.name)}" class="w-full h-full object-cover" />
+          </div>
+          <div class="text-[11px] font-medium truncate text-slate-800 dark:text-slate-200" title="${esc(f.name)}">${esc(f.name)}</div>
+          <div class="text-[10px] font-mono text-slate-500">IMAGE · ${formatBytes(f.size)}</div>
+        `;
+      } else {
+        const badgeLabel = isVid ? 'VIDEO' : f.name.toLowerCase().endsWith('.pdf') ? 'PDF' : 'FILE';
+        const badgeTone = isVid
+          ? 'text-purple-700 dark:text-purple-400'
+          : 'text-[#0F2547] dark:text-sky-400';
+        card.innerHTML = `
+          <div class="aspect-[4/3] rounded bg-slate-100 dark:bg-slate-900 flex flex-col items-center justify-center p-2 text-center">
+            <span class="text-xs font-mono font-bold ${badgeTone}">${badgeLabel}</span>
+            <span class="text-[10px] text-slate-500 mt-1 font-mono">${formatBytes(f.size)}</span>
+          </div>
+          <div class="text-[11px] font-medium truncate text-slate-800 dark:text-slate-200" title="${esc(f.name)}">${esc(f.name)}</div>
+          <div class="text-[10px] font-mono text-slate-500">${badgeLabel}</div>
+        `;
+      }
+
+      const removeBtn = document.createElement('button');
+      removeBtn.type = 'button';
+      removeBtn.className =
+        'absolute top-1.5 right-1.5 w-6 h-6 rounded-full bg-slate-900/80 text-white text-xs font-bold flex items-center justify-center hover:bg-red-600 transition-colors';
+      removeBtn.setAttribute('aria-label', `Remove ${f.name}`);
+      removeBtn.textContent = '×';
+      removeBtn.addEventListener('click', () => {
+        queuedUploadFiles.splice(idx, 1);
+        renderQueuedFiles();
+      });
+      card.appendChild(removeBtn);
+      queueGridEl.appendChild(card);
+    });
+  };
+
+  const triggerAttachFile = () => {
+    fileInputEl?.click();
   };
   document.getElementById('rte-attach-file-top')?.addEventListener('click', triggerAttachFile);
   document.getElementById('rte-bottom-file-btn')?.addEventListener('click', triggerAttachFile);
+  document.getElementById('ed-pick-gallery-btn')?.addEventListener('click', triggerAttachFile);
 
-  document.getElementById('ed-file-input')?.addEventListener('change', async (e) => {
-    const file = e.target.files?.[0];
-    const chip = document.getElementById('rte-pending-file-chip');
-    if (!file) {
-      if (chip) chip.textContent = 'JPG, PNG, WebP, GIF · PDF, DOCX, MP4';
-      return;
-    }
-    if (editingId) {
-      try {
-        if (chip) chip.textContent = `Uploading ${file.name}...`;
-        await uploadAttachedFile(editingId);
-        showToast(`Attached "${file.name}" securely.`, 'success');
-        renderCreatorDashboardPage(container, 'upload', editingId);
-      } catch (err) {
-        showToast(err.message || 'File upload failed.', 'error');
-        if (chip) chip.textContent = 'JPG, PNG, WebP, GIF · PDF, DOCX, MP4';
-      }
-    } else {
-      if (chip) {
-        chip.innerHTML = `<span class="font-semibold text-emerald-700 dark:text-emerald-400">Ready to attach: ${esc(file.name)} (${formatBytes(file.size)})</span>`;
-      }
-      showToast(`"${file.name}" selected — it will upload automatically when you save or submit.`, 'info');
-    }
+  document.getElementById('ed-clear-queue-btn')?.addEventListener('click', () => {
+    queuedUploadFiles = [];
+    if (fileInputEl) fileInputEl.value = '';
+    renderQueuedFiles();
   });
 
-  rteImageInput?.addEventListener('change', (e) => {
-    const file = e.target.files?.[0];
-    if (file) insertUploadedImageIntoRte(file);
+  fileInputEl?.addEventListener('change', (e) => {
+    const incoming = Array.from(e.target.files || []);
+    if (!incoming.length) return;
+    const availableSlots = MAX_MULTI_FILES - queuedUploadFiles.length;
+    if (availableSlots <= 0) {
+      showToast(`Maximum ${MAX_MULTI_FILES} files can be selected together.`, 'error');
+      fileInputEl.value = '';
+      return;
+    }
+    const accepted = incoming.slice(0, availableSlots);
+    queuedUploadFiles.push(...accepted);
+    if (incoming.length > availableSlots) {
+      showToast(`Added first ${accepted.length} files (max ${MAX_MULTI_FILES} files per batch).`, 'info');
+    } else {
+      showToast(`${accepted.length} file${accepted.length > 1 ? 's' : ''} added to upload queue (${queuedUploadFiles.length}/${MAX_MULTI_FILES}).`, 'success');
+    }
+    fileInputEl.value = '';
+    renderQueuedFiles();
+  });
+
+  rteImageInput?.addEventListener('change', async (e) => {
+    const selected = Array.from(e.target.files || []).slice(0, MAX_MULTI_FILES);
+    if (!selected.length) return;
+    if (selected.length > 1) {
+      showToast(`Inserting ${selected.length} photos into content...`, 'info');
+    }
+    for (const file of selected) {
+      await insertUploadedImageIntoRte(file);
+    }
+    if (selected.length > 1) {
+      showToast(`Inserted ${selected.length} photos into content.`, 'success');
+    }
   });
 
   rteEl?.addEventListener('paste', (e) => {
@@ -1185,14 +1305,17 @@ function wireContentEditor(container, editPayload, commRate) {
     rteEl.classList.remove('ring-2', 'ring-sky-400');
   });
 
-  rteEl?.addEventListener('drop', (e) => {
+  rteEl?.addEventListener('drop', async (e) => {
     rteEl.classList.remove('ring-2', 'ring-sky-400');
-    const files = Array.from(e.dataTransfer?.files || []);
-    const imgFile = files.find((f) => f.type && f.type.startsWith('image/'));
-    if (imgFile) {
+    const droppedImages = Array.from(e.dataTransfer?.files || [])
+      .filter((f) => f.type && f.type.startsWith('image/'))
+      .slice(0, MAX_MULTI_FILES);
+    if (droppedImages.length) {
       e.preventDefault();
       saveRteSelection();
-      insertUploadedImageIntoRte(imgFile);
+      for (const imgFile of droppedImages) {
+        await insertUploadedImageIntoRte(imgFile);
+      }
     }
   });
 
@@ -1246,6 +1369,8 @@ function wireContentEditor(container, editPayload, commRate) {
   // Live Preview Modal
   document.getElementById('ed-preview-btn')?.addEventListener('click', () => {
     const title = document.getElementById('ed-title')?.value || 'Untitled Publication';
+    const authorName = document.getElementById('ed-author-name')?.value.trim() || store.user?.name || 'Author';
+    const publisherName = document.getElementById('ed-publisher-name')?.value.trim() || '';
     const desc = document.getElementById('ed-desc')?.value || '';
     const html = document.getElementById('ed-rte')?.innerHTML || '';
     const ctype = document.getElementById('ed-type')?.value || '';
@@ -1259,6 +1384,9 @@ function wireContentEditor(container, editPayload, commRate) {
         <div class="space-y-4">
           <div class="text-xs text-slate-500">${esc(ctype)} · ${esc(lang)} · <strong class="font-mono text-slate-900 dark:text-white">${esc(price)}</strong></div>
           <h2 class="font-display text-2xl font-semibold text-slate-900 dark:text-white">${esc(title)}</h2>
+          <div class="text-xs text-slate-600 dark:text-slate-300">
+            By <strong class="text-slate-900 dark:text-white">${esc(authorName)}</strong>${publisherName ? ` · Published by <strong>${esc(publisherName)}</strong>` : ''}
+          </div>
           <p class="text-sm text-slate-600 dark:text-slate-300">${esc(desc)}</p>
           ${
             resolvedVideo
@@ -1274,26 +1402,40 @@ function wireContentEditor(container, editPayload, commRate) {
     });
   });
 
-  // Upload file helper
-  const uploadAttachedFile = async (contentId) => {
-    const fileInput = document.getElementById('ed-file-input');
-    const file = fileInput?.files?.[0];
-    if (!file) return;
+  // Batch upload up to 20 queued gallery photos/videos/files at once
+  const uploadAttachedFilesBatch = async (contentId) => {
+    if (!queuedUploadFiles.length) return null;
     const fd = new FormData();
-    fd.append('file', file);
+    for (const f of queuedUploadFiles.slice(0, MAX_MULTI_FILES)) {
+      fd.append('files', f);
+    }
     fd.append('isPreview', document.getElementById('ed-file-preview')?.checked ? 'true' : 'false');
-    await apiFetch(`/api/creator/contents/${contentId}/files`, { method: 'POST', body: fd });
-    fileInput.value = '';
+    const res = await apiFetch(`/api/creator/contents/${contentId}/files/batch`, {
+      method: 'POST',
+      body: fd,
+    });
+    queuedUploadFiles = [];
+    renderQueuedFiles();
+    return res;
   };
 
   document.getElementById('ed-upload-file-btn')?.addEventListener('click', async () => {
-    if (!editingId) return;
+    if (!editingId || !queuedUploadFiles.length) return;
+    const btn = document.getElementById('ed-upload-file-btn');
+    if (btn) {
+      btn.disabled = true;
+      btn.textContent = `Uploading ${queuedUploadFiles.length} file(s)...`;
+    }
     try {
-      await uploadAttachedFile(editingId);
-      showToast('File uploaded securely.', 'success');
+      const res = await uploadAttachedFilesBatch(editingId);
+      showToast(res?.message || 'Files uploaded securely.', 'success');
       renderCreatorDashboardPage(container, 'upload', editingId);
     } catch (err) {
       showToast(err.message, 'error');
+      if (btn) {
+        btn.disabled = false;
+        renderQueuedFiles();
+      }
     }
   });
 
@@ -1312,6 +1454,8 @@ function wireContentEditor(container, editPayload, commRate) {
   const saveContent = async (action) => {
     const payload = {
       title: document.getElementById('ed-title')?.value.trim(),
+      authorName: document.getElementById('ed-author-name')?.value.trim() || '',
+      publisherName: document.getElementById('ed-publisher-name')?.value.trim() || '',
       shortDescription: document.getElementById('ed-desc')?.value.trim(),
       bodyHtml: document.getElementById('ed-rte')?.innerHTML || '',
       previewHtml: document.getElementById('ed-preview-html')?.value || '',
@@ -1331,6 +1475,16 @@ function wireContentEditor(container, editPayload, commRate) {
       action,
     };
 
+    const draftBtn = document.getElementById('ed-save-draft');
+    const pubBtn = document.getElementById('ed-submit-publish');
+    if (draftBtn) draftBtn.disabled = true;
+    if (pubBtn) {
+      pubBtn.disabled = true;
+      pubBtn.textContent = queuedUploadFiles.length
+        ? `Saving & Uploading ${queuedUploadFiles.length} file(s)...`
+        : 'Saving...';
+    }
+
     try {
       let saved;
       if (editingId) {
@@ -1339,16 +1493,288 @@ function wireContentEditor(container, editPayload, commRate) {
         saved = await apiFetch('/api/creator/contents', { method: 'POST', body: payload });
       }
       const cid = saved.content.id;
-      if (document.getElementById('ed-file-input')?.files?.[0]) {
-        await uploadAttachedFile(cid);
+      if (queuedUploadFiles.length > 0) {
+        await uploadAttachedFilesBatch(cid);
       }
       showToast(saved.message, 'success');
       window.location.hash = action === 'draft' ? '#/creator/drafts' : '#/creator/overview';
     } catch (err) {
       showToast(err.message, 'error');
+      if (draftBtn) draftBtn.disabled = false;
+      if (pubBtn) {
+        pubBtn.disabled = false;
+        pubBtn.textContent = editingId ? 'Save & Submit for Approval' : 'Submit for Approval';
+      }
     }
   };
 
   document.getElementById('ed-save-draft')?.addEventListener('click', () => saveContent('draft'));
   document.getElementById('ed-submit-publish')?.addEventListener('click', () => saveContent('submit'));
+}
+
+function formatRecoveryCountdown(purgeAfterIso) {
+  if (!purgeAfterIso) return '15 days remaining';
+  const diffMs = new Date(purgeAfterIso).getTime() - Date.now();
+  if (diffMs <= 0) return 'Expiring soon';
+  const totalHours = Math.floor(diffMs / 3_600_000);
+  const days = Math.floor(totalHours / 24);
+  const hrs = totalHours % 24;
+  return days > 0 ? `${days}d ${hrs}h left to recover` : `${Math.max(1, hrs)}h left to recover`;
+}
+
+function renderCreatorHistoryHtml(payload) {
+  const deletedList = payload.deletedContents || [];
+  const historyList = payload.history || [];
+  const retentionDays = Number(payload.retentionDays || 15);
+
+  const actionMeta = {
+    created: { label: 'Created', cls: 'text-sky-700 dark:text-sky-400' },
+    updated: { label: 'Updated', cls: 'text-slate-700 dark:text-slate-300' },
+    deleted: { label: 'Deleted (15d Bin)', cls: 'text-amber-700 dark:text-amber-400' },
+    recovered: { label: 'Recovered', cls: 'text-emerald-700 dark:text-emerald-400' },
+    permanently_deleted: { label: 'Deleted Forever', cls: 'text-red-700 dark:text-red-400' },
+    auto_purged: { label: 'Auto-Purged (15d)', cls: 'text-red-700 dark:text-red-400' },
+  };
+
+  return `
+    <div class="space-y-8">
+      <div>
+        <h1 class="font-display text-2xl sm:text-3xl font-semibold text-slate-900 dark:text-white">History &amp; 15-Day Recovery Bin</h1>
+        <p class="text-xs text-slate-500 dark:text-slate-400 mt-1">
+          Deleted content is safely kept in the database for <strong>${retentionDays} days</strong>. You can inspect details and recover any deleted work before its countdown expires.
+        </p>
+      </div>
+
+      <!-- 15-Day Deleted Content Recovery Bin -->
+      <section class="space-y-3">
+        <div class="flex flex-wrap items-center justify-between gap-2">
+          <h2 class="font-display text-lg font-semibold text-slate-900 dark:text-white">Deleted Content — Recoverable (${deletedList.length})</h2>
+          <span class="text-xs font-mono text-amber-700 dark:text-amber-400">Auto-deletes permanently after 15 days</span>
+        </div>
+
+        <div class="bg-white dark:bg-[#111A2E] border border-slate-200 dark:border-slate-800 rounded-xl overflow-x-auto touch-scroll-x">
+          <table class="w-full min-w-[760px] text-left text-xs">
+            <thead class="text-[11px] uppercase tracking-wider text-slate-500 border-b border-slate-200 dark:border-slate-800 bg-slate-50/70 dark:bg-[#0B1120]/60">
+              <tr>
+                <th class="px-4 py-3 font-semibold">Deleted Content</th>
+                <th class="px-4 py-3 font-semibold">Deleted On &amp; Age</th>
+                <th class="px-4 py-3 font-semibold">Recovery Window</th>
+                <th class="px-4 py-3 font-semibold text-right">Actions</th>
+              </tr>
+            </thead>
+            <tbody class="divide-y divide-slate-100 dark:divide-slate-800">
+              ${
+                deletedList.length
+                  ? deletedList
+                      .map(
+                        (item) => `
+                    <tr class="hover:bg-slate-50/70 dark:hover:bg-slate-900/40">
+                      <td class="px-4 py-3">
+                        <div class="font-semibold text-slate-900 dark:text-white">${esc(item.title)}</div>
+                        <div class="text-[11px] text-slate-500 mt-0.5">
+                          ${esc(item.contentType)} · ${esc(item.categoryName || 'Uncategorized')}
+                          ${item.authorName ? ` · Author: ${esc(item.authorName)}` : ''}
+                          · ${item.isFree ? 'Free' : formatInr(item.priceInr)}
+                        </div>
+                      </td>
+                      <td class="px-4 py-3 whitespace-nowrap">
+                        <div class="font-semibold text-slate-800 dark:text-slate-200">${esc(formatRelativeAge(item.deletedAt))}</div>
+                        <div class="text-[11px] font-mono text-slate-500">${esc(formatDateTime(item.deletedAt))}</div>
+                      </td>
+                      <td class="px-4 py-3 whitespace-nowrap">
+                        <div class="font-mono font-semibold text-amber-700 dark:text-amber-400">${esc(formatRecoveryCountdown(item.purgeAfter))}</div>
+                        <div class="text-[11px] text-slate-500">Expires ${esc(formatDate(item.purgeAfter))}</div>
+                      </td>
+                      <td class="px-4 py-3 text-right whitespace-nowrap space-x-2.5 font-semibold">
+                        <button type="button" data-del-detail-id="${item.id}" class="cr-deleted-detail text-slate-600 dark:text-slate-300 hover:underline">Details</button>
+                        <button type="button" data-recover-id="${item.id}" class="cr-recover-btn px-3 py-1.5 rounded-lg bg-emerald-700 hover:bg-emerald-800 text-white">Recover</button>
+                        <button type="button" data-perm-del-id="${item.id}" class="cr-perm-delete-btn text-red-600 dark:text-red-400 hover:underline">Delete Forever</button>
+                      </td>
+                    </tr>
+                  `
+                      )
+                      .join('')
+                  : `<tr><td colspan="4" class="px-4 py-10 text-center text-slate-500">Your 15-day Recovery Bin is empty. Any deleted publication will appear here for 15 days.</td></tr>`
+              }
+            </tbody>
+          </table>
+        </div>
+      </section>
+
+      <!-- Complete Creator Activity History Log -->
+      <section class="space-y-3">
+        <h2 class="font-display text-lg font-semibold text-slate-900 dark:text-white">Content Activity History (${historyList.length})</h2>
+        <div class="bg-white dark:bg-[#111A2E] border border-slate-200 dark:border-slate-800 rounded-xl overflow-x-auto touch-scroll-x">
+          <table class="w-full min-w-[700px] text-left text-xs">
+            <thead class="text-[11px] uppercase tracking-wider text-slate-500 border-b border-slate-200 dark:border-slate-800 bg-slate-50/70 dark:bg-[#0B1120]/60">
+              <tr>
+                <th class="px-4 py-3 font-semibold">Event</th>
+                <th class="px-4 py-3 font-semibold">Publication</th>
+                <th class="px-4 py-3 font-semibold">Date, Time &amp; Age</th>
+                <th class="px-4 py-3 font-semibold text-right">Details</th>
+              </tr>
+            </thead>
+            <tbody class="divide-y divide-slate-100 dark:divide-slate-800">
+              ${
+                historyList.length
+                  ? historyList
+                      .map((h) => {
+                        const meta = actionMeta[h.action] || { label: h.action, cls: 'text-slate-600 dark:text-slate-300' };
+                        return `
+                          <tr class="hover:bg-slate-50/70 dark:hover:bg-slate-900/40">
+                            <td class="px-4 py-3 font-semibold ${meta.cls} whitespace-nowrap">${esc(meta.label)}</td>
+                            <td class="px-4 py-3">
+                              <div class="font-medium text-slate-900 dark:text-white">${esc(h.contentTitle)}</div>
+                              <div class="text-[11px] text-slate-500">${esc(h.contentType || 'Publication')}${h.authorName ? ` · Author: ${esc(h.authorName)}` : ''}</div>
+                            </td>
+                            <td class="px-4 py-3 whitespace-nowrap">
+                              <div class="font-medium text-slate-800 dark:text-slate-200">${esc(formatRelativeAge(h.createdAt))}</div>
+                              <div class="text-[11px] font-mono text-slate-500">${esc(formatDateTime(h.createdAt))}</div>
+                            </td>
+                            <td class="px-4 py-3 text-right whitespace-nowrap">
+                              <button type="button" data-hist-id="${h.id}" class="cr-hist-detail font-semibold text-[#0F2547] dark:text-sky-400 hover:underline">Details</button>
+                            </td>
+                          </tr>
+                        `;
+                      })
+                      .join('')
+                  : `<tr><td colspan="4" class="px-4 py-8 text-center text-slate-500">No history events recorded yet.</td></tr>`
+              }
+            </tbody>
+          </table>
+        </div>
+      </section>
+    </div>
+  `;
+}
+
+function wireCreatorHistoryHandlers(container, payload) {
+  const deletedList = payload.deletedContents || [];
+  const historyList = payload.history || [];
+
+  container.querySelectorAll('.cr-recover-btn').forEach((btn) => {
+    btn.addEventListener('click', async () => {
+      const id = btn.dataset.recoverId;
+      btn.disabled = true;
+      btn.textContent = 'Recovering...';
+      try {
+        const res = await apiFetch(`/api/creator/contents/${id}/recover`, { method: 'POST' });
+        showToast(res.message || 'Content recovered successfully!', 'success');
+        renderCreatorDashboardPage(container, 'history');
+      } catch (err) {
+        showToast(err.message, 'error');
+        btn.disabled = false;
+        btn.textContent = 'Recover';
+      }
+    });
+  });
+
+  container.querySelectorAll('.cr-perm-delete-btn').forEach((btn) => {
+    btn.addEventListener('click', () => {
+      const id = Number(btn.dataset.permDelId);
+      const item = deletedList.find((d) => Number(d.id) === id);
+      openModal({
+        title: 'Delete Permanently?',
+        bodyHtml: `
+          <div class="space-y-4 text-xs">
+            <p class="text-slate-600 dark:text-slate-300 leading-relaxed">
+              Are you sure you want to permanently erase <strong>${esc(item?.title || 'this content')}</strong>? Once permanently deleted, it cannot be recovered.
+            </p>
+            <div class="flex justify-end gap-2 pt-2 border-t border-slate-100 dark:border-slate-800">
+              <button type="button" id="cr-perm-cancel" class="px-3.5 py-2 font-semibold rounded-lg border border-slate-300 dark:border-slate-700">Cancel</button>
+              <button type="button" id="cr-perm-confirm" class="px-4 py-2 font-semibold rounded-lg bg-red-700 hover:bg-red-800 text-white">Delete Permanently</button>
+            </div>
+          </div>
+        `,
+        onMount: (close) => {
+          document.getElementById('cr-perm-cancel')?.addEventListener('click', close);
+          document.getElementById('cr-perm-confirm')?.addEventListener('click', async () => {
+            try {
+              const res = await apiFetch(`/api/creator/contents/${id}/permanent`, { method: 'DELETE' });
+              showToast(res.message || 'Permanently deleted.', 'success');
+              close();
+              renderCreatorDashboardPage(container, 'history');
+            } catch (err) {
+              showToast(err.message, 'error');
+            }
+          });
+        },
+      });
+    });
+  });
+
+  container.querySelectorAll('.cr-deleted-detail').forEach((btn) => {
+    btn.addEventListener('click', () => {
+      const id = Number(btn.dataset.delDetailId);
+      const item = deletedList.find((d) => Number(d.id) === id);
+      if (!item) return;
+      openModal({
+        title: 'Deleted Content Details',
+        bodyHtml: `
+          <div class="space-y-4 text-xs">
+            <div class="p-3.5 rounded-lg bg-amber-50/70 dark:bg-amber-950/25 border border-amber-200 dark:border-amber-900/70">
+              <div class="font-semibold text-amber-900 dark:text-amber-200">${esc(formatRelativeAge(item.deletedAt))}</div>
+              <div class="text-amber-800/80 dark:text-amber-300/80 mt-0.5">Deleted at ${esc(formatDateTime(item.deletedAt))} · ${esc(formatRecoveryCountdown(item.purgeAfter))}</div>
+            </div>
+            <dl class="divide-y divide-slate-100 dark:divide-slate-800">
+              <div class="py-2 flex justify-between gap-4"><dt class="text-slate-500">Title</dt><dd class="font-semibold text-slate-900 dark:text-white text-right">${esc(item.title)}</dd></div>
+              <div class="py-2 flex justify-between gap-4"><dt class="text-slate-500">Author Name</dt><dd class="text-slate-800 dark:text-slate-200">${esc(item.authorName || store.user?.name || '—')}</dd></div>
+              ${item.publisherName ? `<div class="py-2 flex justify-between gap-4"><dt class="text-slate-500">Publisher</dt><dd class="text-slate-800 dark:text-slate-200">${esc(item.publisherName)}</dd></div>` : ''}
+              <div class="py-2 flex justify-between gap-4"><dt class="text-slate-500">Format &amp; Category</dt><dd class="text-slate-800 dark:text-slate-200">${esc(item.contentType)} · ${esc(item.categoryName || 'General')}</dd></div>
+              <div class="py-2 flex justify-between gap-4"><dt class="text-slate-500">Pricing</dt><dd class="font-mono">${item.isFree ? 'Free' : formatInr(item.priceInr)}</dd></div>
+              <div class="py-2 flex justify-between gap-4"><dt class="text-slate-500">Status Before Deletion</dt><dd class="capitalize font-semibold">${esc(item.previousStatus || 'draft')}</dd></div>
+              <div class="py-2 flex justify-between gap-4"><dt class="text-slate-500">Views / Paid Sales</dt><dd class="font-mono">${item.viewsCount} views · ${item.purchasesCount} sales</dd></div>
+              <div class="py-2 flex justify-between gap-4"><dt class="text-slate-500">Permanent Auto-Purge Date</dt><dd class="font-mono text-red-700 dark:text-red-400">${esc(formatDateTime(item.purgeAfter))}</dd></div>
+            </dl>
+            ${item.shortDescription ? `<div class="p-3 rounded-lg bg-slate-50 dark:bg-[#0B1120] border border-slate-200 dark:border-slate-800 text-slate-600 dark:text-slate-300 leading-relaxed">${esc(item.shortDescription)}</div>` : ''}
+          </div>
+        `,
+      });
+    });
+  });
+
+  container.querySelectorAll('.cr-hist-detail').forEach((btn) => {
+    btn.addEventListener('click', () => {
+      const id = Number(btn.dataset.histId);
+      const h = historyList.find((x) => Number(x.id) === id);
+      if (!h) return;
+      const detailsEntries = Object.entries(h.details || {}).filter(
+        ([, v]) => v !== null && v !== undefined && v !== ''
+      );
+      openModal({
+        title: 'History Event Details',
+        bodyHtml: `
+          <div class="space-y-4 text-xs">
+            <div class="p-3.5 rounded-lg bg-slate-50 dark:bg-[#0B1120] border border-slate-200 dark:border-slate-800 space-y-1">
+              <div class="font-semibold text-slate-900 dark:text-white">${esc(h.contentTitle)}</div>
+              <div class="text-slate-500">Action: <strong class="capitalize text-slate-800 dark:text-slate-200">${esc(String(h.action).replace(/_/g, ' '))}</strong> · ${esc(formatRelativeAge(h.createdAt))}</div>
+              <div class="font-mono text-[11px] text-slate-500">${esc(formatDateTime(h.createdAt))}</div>
+            </div>
+            ${
+              detailsEntries.length
+                ? `<dl class="divide-y divide-slate-100 dark:divide-slate-800">
+                    ${detailsEntries
+                      .map(
+                        ([k, v]) => `
+                      <div class="py-2 flex justify-between gap-4">
+                        <dt class="text-slate-500 capitalize">${esc(k.replace(/([A-Z])/g, ' $1'))}</dt>
+                        <dd class="font-mono text-slate-900 dark:text-slate-100 text-right break-all">${esc(
+                          k.toLowerCase().includes('at') || k.toLowerCase().includes('after')
+                            ? formatDateTime(String(v))
+                            : typeof v === 'object'
+                            ? JSON.stringify(v)
+                            : String(v)
+                        )}</dd>
+                      </div>
+                    `
+                      )
+                      .join('')}
+                  </dl>`
+                : `<p class="text-slate-500">No extra metadata recorded for this event.</p>`
+            }
+          </div>
+        `,
+      });
+    });
+  });
 }

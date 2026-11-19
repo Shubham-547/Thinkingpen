@@ -3,7 +3,7 @@ import path from 'node:path';
 import crypto from 'node:crypto';
 import { Router } from 'express';
 import multer from 'multer';
-import { and, desc, eq } from 'drizzle-orm';
+import { and, count, desc, eq, isNotNull, isNull, lte } from 'drizzle-orm';
 import { db } from '../db/index.ts';
 import {
   adminSettings,
@@ -12,6 +12,7 @@ import {
   contentFiles,
   contents,
   contentTags,
+  creatorContentHistory,
   creatorProfiles,
   creatorWallets,
   notifications,
@@ -20,6 +21,7 @@ import {
   users,
   withdrawals,
 } from '../db/schema.ts';
+import { invalidateCatalogCache } from '../lib/cache.ts';
 import {
   ALLOWED_UPLOAD_MIMES,
   createAutoPreview,
@@ -56,6 +58,7 @@ const upload = multer({
   }),
   limits: {
     fileSize: 50 * 1024 * 1024, // 50 MB upper cap; per-MIME caps verified below
+    files: 20, // Support up to 20 images/videos/files selected together from gallery
   },
   fileFilter: (_req, file, cb) => {
     if (!ALLOWED_UPLOAD_MIMES[file.mimetype]) {
@@ -116,17 +119,165 @@ const SUPPORTED_CONTENT_TYPES = [
   'Other Educational Content',
 ];
 
-// GET /api/creator/dashboard
+const RETENTION_DAYS = 15;
+const RETENTION_MS = RETENTION_DAYS * 24 * 60 * 60 * 1000;
+
+async function recordCreatorHistory(params: {
+  creatorId: number;
+  contentId?: number | null;
+  action: string;
+  contentTitle: string;
+  contentType: string;
+  authorName?: string | null;
+  details?: Record<string, unknown>;
+}) {
+  try {
+    await db.insert(creatorContentHistory).values({
+      creatorId: params.creatorId,
+      contentId: params.contentId ?? null,
+      action: params.action,
+      contentTitle: params.contentTitle,
+      contentType: params.contentType,
+      authorName: params.authorName || null,
+      details: params.details || {},
+    });
+  } catch (err) {
+    console.warn('Creator history insert skipped:', (err as Error).message);
+  }
+}
+
+export async function purgeExpiredDeletedContents(): Promise<number> {
+  try {
+    const now = new Date();
+    const expired = await db
+      .select()
+      .from(contents)
+      .where(and(isNotNull(contents.deletedAt), lte(contents.purgeAfter, now)));
+
+    if (expired.length === 0) return 0;
+
+    for (const item of expired) {
+      const files = await db.select().from(contentFiles).where(eq(contentFiles.contentId, item.id));
+      for (const f of files) {
+        if (f.storagePath && f.storagePath !== 'external') {
+          const resolved = path.resolve(storageRoot, path.basename(f.storagePath));
+          if (resolved.startsWith(storageRoot) && fs.existsSync(resolved)) {
+            fs.unlinkSync(resolved);
+          }
+        }
+      }
+      await recordCreatorHistory({
+        creatorId: item.creatorId,
+        contentId: null,
+        action: 'auto_purged',
+        contentTitle: item.title,
+        contentType: item.contentType,
+        authorName: item.authorName,
+        details: {
+          slug: item.slug,
+          deletedAt: item.deletedAt,
+          purgedAt: now.toISOString(),
+          reason: `Automatically permanently removed after ${RETENTION_DAYS}-day recovery window expired.`,
+        },
+      });
+      await db.delete(contents).where(eq(contents.id, item.id));
+    }
+    invalidateCatalogCache();
+    return expired.length;
+  } catch (err) {
+    console.error('Auto-purge expired deleted contents error:', err);
+    return 0;
+  }
+}
+
+// GET /api/creator/dashboard (Parallelized for fast load)
 router.get('/dashboard', requireAuth, requireCreator, async (req: AuthRequest, res) => {
   try {
     const creatorId = req.user!.id;
 
-    let [wallet] = await db
-      .select()
-      .from(creatorWallets)
-      .where(eq(creatorWallets.creatorId, creatorId))
-      .limit(1);
+    const [
+      walletRows,
+      profileRows,
+      myContents,
+      deletedCountRows,
+      myCommissions,
+      myWithdrawals,
+      myTransactions,
+      settingsRows,
+    ] = await Promise.all([
+      db.select().from(creatorWallets).where(eq(creatorWallets.creatorId, creatorId)).limit(1),
+      db.select().from(creatorProfiles).where(eq(creatorProfiles.userId, creatorId)).limit(1),
+      db
+        .select({
+          id: contents.id,
+          title: contents.title,
+          slug: contents.slug,
+          authorName: contents.authorName,
+          publisherName: contents.publisherName,
+          shortDescription: contents.shortDescription,
+          coverImageUrl: contents.coverImageUrl,
+          contentType: contents.contentType,
+          language: contents.language,
+          priceInr: contents.priceInr,
+          isFree: contents.isFree,
+          status: contents.status,
+          rejectionReason: contents.rejectionReason,
+          customCommissionRate: contents.customCommissionRate,
+          viewsCount: contents.viewsCount,
+          likesCount: contents.likesCount,
+          purchasesCount: contents.purchasesCount,
+          avgRating: contents.avgRating,
+          reviewsCount: contents.reviewsCount,
+          categoryId: contents.categoryId,
+          subjectId: contents.subjectId,
+          categoryName: categories.name,
+          subjectName: subjects.name,
+          publishedAt: contents.publishedAt,
+          createdAt: contents.createdAt,
+          updatedAt: contents.updatedAt,
+        })
+        .from(contents)
+        .leftJoin(categories, eq(contents.categoryId, categories.id))
+        .leftJoin(subjects, eq(contents.subjectId, subjects.id))
+        .where(and(eq(contents.creatorId, creatorId), isNull(contents.deletedAt)))
+        .orderBy(desc(contents.updatedAt)),
+      db
+        .select({ value: count() })
+        .from(contents)
+        .where(and(eq(contents.creatorId, creatorId), isNotNull(contents.deletedAt))),
+      db
+        .select({
+          id: commissionRecords.id,
+          contentId: commissionRecords.contentId,
+          contentTitle: contents.title,
+          grossAmountInr: commissionRecords.grossAmountInr,
+          commissionRate: commissionRecords.commissionRate,
+          commissionSource: commissionRecords.commissionSource,
+          platformCommissionInr: commissionRecords.platformCommissionInr,
+          creatorEarningsInr: commissionRecords.creatorEarningsInr,
+          status: commissionRecords.status,
+          createdAt: commissionRecords.createdAt,
+        })
+        .from(commissionRecords)
+        .innerJoin(contents, eq(commissionRecords.contentId, contents.id))
+        .where(eq(commissionRecords.creatorId, creatorId))
+        .orderBy(desc(commissionRecords.createdAt))
+        .limit(100),
+      db
+        .select()
+        .from(withdrawals)
+        .where(eq(withdrawals.creatorId, creatorId))
+        .orderBy(desc(withdrawals.createdAt)),
+      db
+        .select()
+        .from(transactions)
+        .where(eq(transactions.creatorId, creatorId))
+        .orderBy(desc(transactions.createdAt))
+        .limit(100),
+      db.select().from(adminSettings),
+    ]);
 
+    let wallet = walletRows[0];
     if (!wallet) {
       [wallet] = await db
         .insert(creatorWallets)
@@ -142,92 +293,13 @@ router.get('/dashboard', requireAuth, requireCreator, async (req: AuthRequest, r
       }
     }
 
-    const [profile] = await db
-      .select()
-      .from(creatorProfiles)
-      .where(eq(creatorProfiles.userId, creatorId))
-      .limit(1);
-
-    const myContents = await db
-      .select({
-        id: contents.id,
-        title: contents.title,
-        slug: contents.slug,
-        shortDescription: contents.shortDescription,
-        coverImageUrl: contents.coverImageUrl,
-        contentType: contents.contentType,
-        language: contents.language,
-        priceInr: contents.priceInr,
-        isFree: contents.isFree,
-        status: contents.status,
-        rejectionReason: contents.rejectionReason,
-        customCommissionRate: contents.customCommissionRate,
-        viewsCount: contents.viewsCount,
-        likesCount: contents.likesCount,
-        purchasesCount: contents.purchasesCount,
-        avgRating: contents.avgRating,
-        reviewsCount: contents.reviewsCount,
-        categoryId: contents.categoryId,
-        subjectId: contents.subjectId,
-        categoryName: categories.name,
-        subjectName: subjects.name,
-        publishedAt: contents.publishedAt,
-        createdAt: contents.createdAt,
-        updatedAt: contents.updatedAt,
-      })
-      .from(contents)
-      .leftJoin(categories, eq(contents.categoryId, categories.id))
-      .leftJoin(subjects, eq(contents.subjectId, subjects.id))
-      .where(eq(contents.creatorId, creatorId))
-      .orderBy(desc(contents.updatedAt));
-
-    const myCommissions = await db
-      .select({
-        id: commissionRecords.id,
-        contentId: commissionRecords.contentId,
-        contentTitle: contents.title,
-        grossAmountInr: commissionRecords.grossAmountInr,
-        commissionRate: commissionRecords.commissionRate,
-        commissionSource: commissionRecords.commissionSource,
-        platformCommissionInr: commissionRecords.platformCommissionInr,
-        creatorEarningsInr: commissionRecords.creatorEarningsInr,
-        status: commissionRecords.status,
-        createdAt: commissionRecords.createdAt,
-      })
-      .from(commissionRecords)
-      .innerJoin(contents, eq(commissionRecords.contentId, contents.id))
-      .where(eq(commissionRecords.creatorId, creatorId))
-      .orderBy(desc(commissionRecords.createdAt))
-      .limit(100);
-
-    const myWithdrawals = await db
-      .select()
-      .from(withdrawals)
-      .where(eq(withdrawals.creatorId, creatorId))
-      .orderBy(desc(withdrawals.createdAt));
-
-    const myTransactions = await db
-      .select()
-      .from(transactions)
-      .where(eq(transactions.creatorId, creatorId))
-      .orderBy(desc(transactions.createdAt))
-      .limit(100);
-
-    const [minWithdrawalRow] = await db
-      .select()
-      .from(adminSettings)
-      .where(eq(adminSettings.key, 'min_withdrawal_inr'))
-      .limit(1);
-
-    const [defaultCommRow] = await db
-      .select()
-      .from(adminSettings)
-      .where(eq(adminSettings.key, 'default_commission_rate'))
-      .limit(1);
+    const profile = profileRows[0];
+    const settingsMap: Record<string, string> = {};
+    for (const s of settingsRows) settingsMap[s.key] = s.value;
 
     const effectiveCommissionRate = profile?.customCommissionRate
       ? Number(profile.customCommissionRate)
-      : Number(defaultCommRow?.value || 10);
+      : Number(settingsMap.default_commission_rate || 10);
 
     const totalViews = myContents.reduce((sum, c) => sum + c.viewsCount, 0);
     const totalLikes = myContents.reduce((sum, c) => sum + c.likesCount, 0);
@@ -236,7 +308,7 @@ router.get('/dashboard', requireAuth, requireCreator, async (req: AuthRequest, r
     return res.json({
       profile: profile || null,
       wallet,
-      minWithdrawalInr: Number(minWithdrawalRow?.value || 100),
+      minWithdrawalInr: Number(settingsMap.min_withdrawal_inr || 100),
       effectiveCommissionRate,
       analytics: {
         totalViews,
@@ -246,6 +318,7 @@ router.get('/dashboard', requireAuth, requireCreator, async (req: AuthRequest, r
         draftCount: myContents.filter((c) => c.status === 'draft').length,
         pendingCount: myContents.filter((c) => c.status === 'pending').length,
         rejectedCount: myContents.filter((c) => c.status === 'rejected').length,
+        deletedCount: Number(deletedCountRows[0]?.value || 0),
       },
       contents: myContents,
       commissions: myCommissions,
@@ -255,6 +328,59 @@ router.get('/dashboard', requireAuth, requireCreator, async (req: AuthRequest, r
   } catch (error) {
     console.error('Creator dashboard error:', error);
     return res.status(500).json({ error: 'Unable to load creator dashboard.' });
+  }
+});
+
+// GET /api/creator/history (15-day Recycle Bin + Activity History)
+router.get('/history', requireAuth, requireCreator, async (req: AuthRequest, res) => {
+  try {
+    await purgeExpiredDeletedContents();
+    const creatorId = req.user!.id;
+
+    const [recoverableItems, historyLogs] = await Promise.all([
+      db
+        .select({
+          id: contents.id,
+          title: contents.title,
+          slug: contents.slug,
+          authorName: contents.authorName,
+          publisherName: contents.publisherName,
+          shortDescription: contents.shortDescription,
+          contentType: contents.contentType,
+          language: contents.language,
+          priceInr: contents.priceInr,
+          isFree: contents.isFree,
+          previousStatus: contents.previousStatus,
+          viewsCount: contents.viewsCount,
+          likesCount: contents.likesCount,
+          purchasesCount: contents.purchasesCount,
+          categoryName: categories.name,
+          deletedAt: contents.deletedAt,
+          purgeAfter: contents.purgeAfter,
+          createdAt: contents.createdAt,
+        })
+        .from(contents)
+        .leftJoin(categories, eq(contents.categoryId, categories.id))
+        .where(and(eq(contents.creatorId, creatorId), isNotNull(contents.deletedAt)))
+        .orderBy(desc(contents.deletedAt)),
+      db
+        .select()
+        .from(creatorContentHistory)
+        .where(eq(creatorContentHistory.creatorId, creatorId))
+        .orderBy(desc(creatorContentHistory.createdAt))
+        .limit(150),
+    ]);
+
+    return res.json({
+      retentionDays: RETENTION_DAYS,
+      deletedContents: recoverableItems,
+      history: historyLogs,
+      recoverableItems,
+      historyLogs,
+    });
+  } catch (error) {
+    console.error('Creator history error:', error);
+    return res.status(500).json({ error: 'Unable to load creator history.' });
   }
 });
 
@@ -285,6 +411,8 @@ router.get('/contents/:id', requireAuth, requireCreator, async (req: AuthRequest
 router.post('/contents', requireAuth, requireCreator, async (req: AuthRequest, res) => {
   try {
     const title = String(req.body?.title || '').trim();
+    const authorName = String(req.body?.authorName || '').trim().slice(0, 120) || null;
+    const publisherName = String(req.body?.publisherName || '').trim().slice(0, 120) || null;
     const shortDescription = String(req.body?.shortDescription || '').trim();
     const bodyHtml = sanitizeHtml(req.body?.bodyHtml || '');
     const customPreview = sanitizeHtml(req.body?.previewHtml || '');
@@ -359,6 +487,8 @@ router.post('/contents', requireAuth, requireCreator, async (req: AuthRequest, r
         creatorId: req.user!.id,
         title,
         slug: slugify(title),
+        authorName,
+        publisherName,
         shortDescription,
         bodyHtml,
         previewHtml,
@@ -416,6 +546,24 @@ router.post('/contents', requireAuth, requireCreator, async (req: AuthRequest, r
       }
     }
 
+    await recordCreatorHistory({
+      creatorId: req.user!.id,
+      contentId: created.id,
+      action: 'created',
+      contentTitle: created.title,
+      contentType: created.contentType,
+      authorName: created.authorName,
+      details: {
+        slug: created.slug,
+        status: created.status,
+        publisherName: created.publisherName,
+        isFree: created.isFree,
+        priceInr: created.priceInr,
+        language: created.language,
+      },
+    });
+    invalidateCatalogCache();
+
     return res.status(201).json({
       content: created,
       message:
@@ -442,6 +590,14 @@ router.put('/contents/:id', requireAuth, requireCreator, async (req: AuthRequest
     }
 
     const title = String(req.body?.title || existing.title).trim();
+    const authorName =
+      req.body?.authorName !== undefined
+        ? String(req.body.authorName || '').trim().slice(0, 120) || null
+        : existing.authorName;
+    const publisherName =
+      req.body?.publisherName !== undefined
+        ? String(req.body.publisherName || '').trim().slice(0, 120) || null
+        : existing.publisherName;
     const shortDescription = String(req.body?.shortDescription || existing.shortDescription).trim();
     const bodyHtml =
       req.body?.bodyHtml !== undefined ? sanitizeHtml(req.body.bodyHtml) : existing.bodyHtml;
@@ -507,6 +663,8 @@ router.put('/contents/:id', requireAuth, requireCreator, async (req: AuthRequest
       .update(contents)
       .set({
         title,
+        authorName,
+        publisherName,
         shortDescription,
         bodyHtml,
         previewHtml,
@@ -592,6 +750,23 @@ router.put('/contents/:id', requireAuth, requireCreator, async (req: AuthRequest
       }
     }
 
+    await recordCreatorHistory({
+      creatorId: existing.creatorId,
+      contentId: updated.id,
+      action: 'updated',
+      contentTitle: updated.title,
+      contentType: updated.contentType,
+      authorName: updated.authorName,
+      details: {
+        slug: updated.slug,
+        status: updated.status,
+        publisherName: updated.publisherName,
+        isFree: updated.isFree,
+        priceInr: updated.priceInr,
+      },
+    });
+    invalidateCatalogCache();
+
     return res.json({ content: updated, message: 'Publication updated.' });
   } catch (error) {
     console.error('Update content error:', error);
@@ -599,7 +774,7 @@ router.put('/contents/:id', requireAuth, requireCreator, async (req: AuthRequest
   }
 });
 
-// DELETE /api/creator/contents/:id
+// DELETE /api/creator/contents/:id (Soft-delete into 15-day Recycle Bin & Creator History)
 router.delete('/contents/:id', requireAuth, requireCreator, async (req: AuthRequest, res) => {
   try {
     const id = Number(req.params.id);
@@ -608,8 +783,136 @@ router.delete('/contents/:id', requireAuth, requireCreator, async (req: AuthRequ
     if (existing.creatorId !== req.user!.id && req.user!.role !== 'admin') {
       return res.status(403).json({ error: 'You can only delete your own content.' });
     }
+    if (existing.deletedAt) {
+      return res.json({
+        deleted: true,
+        softDeleted: true,
+        message: 'Content is already in your 15-day recovery bin.',
+      });
+    }
 
-    // Remove associated stored files cleanly
+    const now = new Date();
+    const purgeAfter = new Date(now.getTime() + RETENTION_MS);
+
+    await db
+      .update(contents)
+      .set({
+        previousStatus: existing.status,
+        status: 'deleted',
+        deletedAt: now,
+        deletedBy: req.user!.id,
+        purgeAfter,
+        updatedAt: now,
+      })
+      .where(eq(contents.id, id));
+
+    await recordCreatorHistory({
+      creatorId: existing.creatorId,
+      contentId: existing.id,
+      action: 'deleted',
+      contentTitle: existing.title,
+      contentType: existing.contentType,
+      authorName: existing.authorName,
+      details: {
+        slug: existing.slug,
+        publisherName: existing.publisherName,
+        previousStatus: existing.status,
+        priceInr: existing.priceInr,
+        isFree: existing.isFree,
+        viewsCount: existing.viewsCount,
+        purchasesCount: existing.purchasesCount,
+        deletedAt: now.toISOString(),
+        purgeAfter: purgeAfter.toISOString(),
+        retentionDays: RETENTION_DAYS,
+      },
+    });
+    invalidateCatalogCache();
+
+    return res.json({
+      deleted: true,
+      softDeleted: true,
+      deletedAt: now.toISOString(),
+      purgeAfter: purgeAfter.toISOString(),
+      message: `Moved to History & Recovery Bin. You can recover this content anytime within ${RETENTION_DAYS} days.`,
+    });
+  } catch (error) {
+    console.error('Delete content error:', error);
+    return res.status(500).json({ error: 'Unable to delete content.' });
+  }
+});
+
+// POST /api/creator/contents/:id/recover (Restore soft-deleted content within 15 days)
+router.post('/contents/:id/recover', requireAuth, requireCreator, async (req: AuthRequest, res) => {
+  try {
+    const id = Number(req.params.id);
+    const [existing] = await db.select().from(contents).where(eq(contents.id, id)).limit(1);
+    if (!existing) return res.status(404).json({ error: 'Content not found or already permanently purged.' });
+    if (existing.creatorId !== req.user!.id && req.user!.role !== 'admin') {
+      return res.status(403).json({ error: 'You can only recover your own content.' });
+    }
+    if (!existing.deletedAt) {
+      return res.status(400).json({ error: 'This content is already active.' });
+    }
+    if (existing.purgeAfter && new Date(existing.purgeAfter).getTime() <= Date.now()) {
+      await purgeExpiredDeletedContents();
+      return res.status(410).json({ error: 'The 15-day recovery period for this content has expired.' });
+    }
+
+    const restoredStatus =
+      existing.previousStatus && existing.previousStatus !== 'deleted'
+        ? existing.previousStatus
+        : 'draft';
+
+    const [recovered] = await db
+      .update(contents)
+      .set({
+        status: restoredStatus,
+        previousStatus: null,
+        deletedAt: null,
+        deletedBy: null,
+        purgeAfter: null,
+        updatedAt: new Date(),
+      })
+      .where(eq(contents.id, id))
+      .returning();
+
+    await recordCreatorHistory({
+      creatorId: existing.creatorId,
+      contentId: existing.id,
+      action: 'recovered',
+      contentTitle: existing.title,
+      contentType: existing.contentType,
+      authorName: existing.authorName,
+      details: {
+        slug: existing.slug,
+        restoredStatus,
+        originallyDeletedAt: existing.deletedAt,
+        recoveredAt: new Date().toISOString(),
+      },
+    });
+    invalidateCatalogCache();
+
+    return res.json({
+      recovered: true,
+      content: recovered,
+      message: `"${existing.title}" has been recovered and restored as ${restoredStatus}.`,
+    });
+  } catch (error) {
+    console.error('Recover content error:', error);
+    return res.status(500).json({ error: 'Unable to recover content.' });
+  }
+});
+
+// DELETE /api/creator/contents/:id/permanent (Optional immediate permanent wipe from Recycle Bin)
+router.delete('/contents/:id/permanent', requireAuth, requireCreator, async (req: AuthRequest, res) => {
+  try {
+    const id = Number(req.params.id);
+    const [existing] = await db.select().from(contents).where(eq(contents.id, id)).limit(1);
+    if (!existing) return res.status(404).json({ error: 'Content not found.' });
+    if (existing.creatorId !== req.user!.id && req.user!.role !== 'admin') {
+      return res.status(403).json({ error: 'You can only permanently delete your own content.' });
+    }
+
     const files = await db.select().from(contentFiles).where(eq(contentFiles.contentId, id));
     for (const f of files) {
       if (f.storagePath && f.storagePath !== 'external') {
@@ -620,11 +923,31 @@ router.delete('/contents/:id', requireAuth, requireCreator, async (req: AuthRequ
       }
     }
 
+    await recordCreatorHistory({
+      creatorId: existing.creatorId,
+      contentId: null,
+      action: 'permanently_deleted',
+      contentTitle: existing.title,
+      contentType: existing.contentType,
+      authorName: existing.authorName,
+      details: {
+        slug: existing.slug,
+        originallyDeletedAt: existing.deletedAt,
+        permanentlyDeletedAt: new Date().toISOString(),
+      },
+    });
+
     await db.delete(contents).where(eq(contents.id, id));
-    return res.json({ deleted: true });
+    invalidateCatalogCache();
+    return res.json({
+      deleted: true,
+      permanent: true,
+      permanentlyDeleted: true,
+      message: 'Content permanently erased.',
+    });
   } catch (error) {
-    console.error('Delete content error:', error);
-    return res.status(500).json({ error: 'Unable to delete content.' });
+    console.error('Permanent delete content error:', error);
+    return res.status(500).json({ error: 'Unable to permanently delete content.' });
   }
 });
 
@@ -669,7 +992,7 @@ router.post(
         .insert(contentFiles)
         .values({
           contentId,
-          fileType: rule.fileType,
+          fileType: req.body?.setAsCover === 'true' ? 'cover' : rule.fileType,
           originalName: req.file.originalname,
           storagePath: req.file.filename,
           mimeType: req.file.mimetype,
@@ -678,8 +1001,7 @@ router.post(
         })
         .returning();
 
-      // If it's a cover image, also update the content's coverImageUrl
-      if (rule.fileType === 'cover' && req.body?.setAsCover !== 'false') {
+      if (req.body?.setAsCover === 'true') {
         await db
           .update(contents)
           .set({ coverImageUrl: `/api/catalog/files/${savedFile.id}`, updatedAt: new Date() })
@@ -695,6 +1017,90 @@ router.post(
     } catch (error) {
       console.error('File upload error:', error);
       return res.status(500).json({ error: 'File upload failed.' });
+    }
+  }
+);
+
+// POST /api/creator/contents/:id/files/batch (Upload up to 20 images, videos, PDFs, or docs together from gallery)
+router.post(
+  '/contents/:id/files/batch',
+  requireAuth,
+  requireCreator,
+  upload.array('files', 20),
+  async (req: AuthRequest, res) => {
+    const uploadedFiles = (req.files as Express.Multer.File[]) || [];
+    const cleanupUploaded = () => {
+      for (const f of uploadedFiles) {
+        if (f?.path && fs.existsSync(f.path)) {
+          try {
+            fs.unlinkSync(f.path);
+          } catch {}
+        }
+      }
+    };
+
+    try {
+      const contentId = Number(req.params.id);
+      const [content] = await db
+        .select()
+        .from(contents)
+        .where(eq(contents.id, contentId))
+        .limit(1);
+
+      if (!content) {
+        cleanupUploaded();
+        return res.status(404).json({ error: 'Content item not found.' });
+      }
+      if (content.creatorId !== req.user!.id && req.user!.role !== 'admin') {
+        cleanupUploaded();
+        return res.status(403).json({ error: 'Unauthorized to upload files to this content.' });
+      }
+      if (!uploadedFiles.length) {
+        return res.status(400).json({ error: 'Please select at least 1 file (up to 20 images/videos/files).' });
+      }
+
+      const isPreview = req.body?.isPreview === 'true';
+      const savedList = [];
+
+      for (const f of uploadedFiles) {
+        const rule = ALLOWED_UPLOAD_MIMES[f.mimetype];
+        if (!rule || f.size > rule.maxBytes) {
+          cleanupUploaded();
+          return res.status(400).json({
+            error: `"${f.originalname}" exceeds size limit or unsupported format (${f.mimetype}).`,
+          });
+        }
+      }
+
+      for (const f of uploadedFiles) {
+        const rule = ALLOWED_UPLOAD_MIMES[f.mimetype];
+        const [savedFile] = await db
+          .insert(contentFiles)
+          .values({
+            contentId,
+            fileType: rule.fileType,
+            originalName: f.originalname,
+            storagePath: f.filename,
+            mimeType: f.mimetype,
+            sizeBytes: f.size,
+            isPreview,
+          })
+          .returning();
+        savedList.push({
+          ...savedFile,
+          accessUrl: `/api/catalog/files/${savedFile.id}`,
+        });
+      }
+
+      return res.status(201).json({
+        count: savedList.length,
+        files: savedList,
+        message: `${savedList.length} file${savedList.length === 1 ? '' : 's'} uploaded successfully.`,
+      });
+    } catch (error) {
+      cleanupUploaded();
+      console.error('Batch file upload error:', error);
+      return res.status(500).json({ error: 'Batch gallery upload failed.' });
     }
   }
 );

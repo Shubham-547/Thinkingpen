@@ -66,7 +66,9 @@ export async function renderContentDetailPage(container, slug) {
 
     const pdfFiles = files.filter((f) => f.fileType === 'pdf');
     const videoFiles = files.filter((f) => f.fileType === 'video');
+    const imageFiles = files.filter((f) => f.fileType === 'image');
     const docFiles = files.filter((f) => f.fileType === 'document');
+    const displayAuthorName = (c.authorName && c.authorName.trim()) || creator.name;
 
     const withAuthParam = (url) => {
       if (!url) return '';
@@ -117,8 +119,9 @@ export async function renderContentDetailPage(container, slug) {
 
                 <div class="flex flex-wrap items-center justify-between gap-4 pt-4 border-t border-slate-100 dark:border-slate-800 text-xs text-slate-500 dark:text-slate-400">
                   <div class="flex items-center gap-x-4 gap-y-1.5 flex-wrap tabular-nums">
-                    <span>By <a href="#/creator-profile/${creator.id}" class="font-semibold text-slate-900 dark:text-white hover:underline">${esc(creator.name)}</a></span>
-                    <span>Published ${formatDate(c.publishedAt || c.createdAt)}</span>
+                    <span>By <a href="#/creator-profile/${creator.id}" class="font-semibold text-slate-900 dark:text-white hover:underline">${esc(displayAuthorName)}</a></span>
+                    ${c.publisherName ? `<span>Published by <strong class="font-semibold text-slate-800 dark:text-slate-200">${esc(c.publisherName)}</strong></span>` : ''}
+                    <span>${formatDate(c.publishedAt || c.createdAt)}</span>
                     <span>${c.viewsCount} views</span>
                     <span>★ ${Number(c.avgRating || 0) > 0 ? Number(c.avgRating).toFixed(1) : 'Unrated'} (${c.reviewsCount})</span>
                   </div>
@@ -256,6 +259,33 @@ export async function renderContentDetailPage(container, slug) {
                         : ''
                     }
 
+                    <!-- Attached Photo Gallery (Multi-Image Uploads) -->
+                    ${
+                      imageFiles.length
+                        ? `<section class="bg-white dark:bg-[#111A2E] border border-slate-200 dark:border-slate-800 rounded-xl p-4 sm:p-6">
+                            <div class="flex flex-wrap items-center justify-between gap-2 mb-4">
+                              <h2 class="font-display text-lg sm:text-xl font-semibold text-slate-900 dark:text-white">Attached Gallery (${imageFiles.length} Photo${imageFiles.length > 1 ? 's' : ''})</h2>
+                              <span class="text-xs text-slate-500">Click any photo to view full size</span>
+                            </div>
+                            <div class="grid grid-cols-2 sm:grid-cols-3 gap-3">
+                              ${imageFiles
+                                .map((imgFile, i) => {
+                                  const imgSrc = withAuthParam(imgFile.accessUrl);
+                                  return `
+                                    <button type="button" data-gallery-src="${esc(imgSrc)}" data-gallery-name="${esc(imgFile.originalName)}" data-gallery-dl="${esc(withAuthParam(`${imgFile.accessUrl}?download=1`))}" class="rd-gallery-item group text-left rounded-lg overflow-hidden border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-[#0B1120] hover:border-[#0F2547] dark:hover:border-sky-400 transition-colors">
+                                      <div class="aspect-[4/3] w-full overflow-hidden bg-slate-100 dark:bg-slate-900">
+                                        <img src="${esc(imgSrc)}" alt="${esc(imgFile.originalName || `Photo ${i + 1}`)}" loading="lazy" class="w-full h-full object-cover group-hover:scale-[1.03] transition-transform duration-200" />
+                                      </div>
+                                      <div class="px-2.5 py-1.5 text-[11px] text-slate-600 dark:text-slate-300 truncate">${esc(imgFile.originalName)}</div>
+                                    </button>
+                                  `;
+                                })
+                                .join('')}
+                            </div>
+                          </section>`
+                        : ''
+                    }
+
                     <!-- Unlocked Main Body -->
                     <section class="bg-white dark:bg-[#111A2E] border border-slate-200 dark:border-slate-800 rounded-xl p-5 sm:p-10">
                       <div class="reading-prose">${processedBody || '<p>No inline text content attached; see media or PDF files above.</p>'}</div>
@@ -312,7 +342,14 @@ export async function renderContentDetailPage(container, slug) {
                         </p>
                         ${
                           files.length
-                            ? `<p class="text-xs text-slate-500 dark:text-slate-400 font-mono">Includes ${files.length} protected attachment${files.length > 1 ? 's' : ''} (${pdfFiles.length ? `${pdfFiles.length} PDF` : ''}${videoFiles.length ? ` ${videoFiles.length} Video` : ''}${docFiles.length ? ` ${docFiles.length} File` : ''})</p>`
+                            ? `<p class="text-xs text-slate-500 dark:text-slate-400 font-mono">Includes ${files.length} protected attachment${files.length > 1 ? 's' : ''} (${[
+                                imageFiles.length ? `${imageFiles.length} Photo${imageFiles.length > 1 ? 's' : ''}` : '',
+                                videoFiles.length ? `${videoFiles.length} Video${videoFiles.length > 1 ? 's' : ''}` : '',
+                                pdfFiles.length ? `${pdfFiles.length} PDF` : '',
+                                docFiles.length ? `${docFiles.length} File` : '',
+                              ]
+                                .filter(Boolean)
+                                .join(' · ')})</p>`
                             : ''
                         }
                       </div>
@@ -442,6 +479,8 @@ export async function renderContentDetailPage(container, slug) {
                     </button>`
               }
               <dl class="space-y-2.5 text-xs pt-3 border-t border-slate-100 dark:border-slate-800">
+                <div class="flex justify-between gap-2"><dt class="text-slate-500">Author</dt><dd class="font-medium text-slate-900 dark:text-slate-200 text-right truncate">${esc(displayAuthorName)}</dd></div>
+                ${c.publisherName ? `<div class="flex justify-between gap-2"><dt class="text-slate-500">Publisher</dt><dd class="font-medium text-slate-900 dark:text-slate-200 text-right truncate">${esc(c.publisherName)}</dd></div>` : ''}
                 <div class="flex justify-between"><dt class="text-slate-500">Format</dt><dd class="font-medium text-slate-900 dark:text-slate-200">${esc(c.contentType)}</dd></div>
                 <div class="flex justify-between"><dt class="text-slate-500">Language</dt><dd class="font-medium text-slate-900 dark:text-slate-200">${esc(c.language)}</dd></div>
                 <div class="flex justify-between"><dt class="text-slate-500">Est. Study Time</dt><dd class="font-mono text-slate-900 dark:text-slate-200 tabular-nums">${c.readingTimeMins} min</dd></div>
@@ -512,6 +551,30 @@ export async function renderContentDetailPage(container, slug) {
     container.querySelectorAll('.toc-link').forEach((link) => {
       link.addEventListener('click', () => {
         document.getElementById(link.dataset.scrollTarget)?.scrollIntoView({ behavior: 'smooth' });
+      });
+    });
+
+    // Wire Photo Gallery Lightbox Modal
+    container.querySelectorAll('.rd-gallery-item').forEach((btn) => {
+      btn.addEventListener('click', () => {
+        const src = btn.dataset.gallerySrc;
+        const name = btn.dataset.galleryName || 'Gallery Photo';
+        const dl = btn.dataset.galleryDl;
+        openModal({
+          title: name,
+          widthClass: 'max-w-4xl',
+          bodyHtml: `
+            <div class="space-y-3">
+              <div class="rounded-lg overflow-hidden bg-slate-100 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 flex items-center justify-center">
+                <img src="${esc(src)}" alt="${esc(name)}" class="max-h-[72vh] w-auto object-contain" />
+              </div>
+              <div class="flex items-center justify-between text-xs text-slate-500">
+                <span class="truncate">${esc(name)}</span>
+                ${dl ? `<a href="${esc(dl)}" class="font-semibold text-[#0F2547] dark:text-sky-400 hover:underline whitespace-nowrap shrink-0">Download Photo</a>` : ''}
+              </div>
+            </div>
+          `,
+        });
       });
     });
 

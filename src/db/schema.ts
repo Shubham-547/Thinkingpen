@@ -130,6 +130,8 @@ export const contents = pgTable(
       .notNull(),
     title: text('title').notNull(),
     slug: text('slug').notNull().unique(),
+    authorName: text('author_name'),
+    publisherName: text('publisher_name'),
     shortDescription: text('short_description').notNull(),
     bodyHtml: text('body_html'),
     previewHtml: text('preview_html'),
@@ -141,7 +143,11 @@ export const contents = pgTable(
     priceInr: numeric('price_inr', { precision: 10, scale: 2 }).notNull().default('0.00'),
     isFree: boolean('is_free').notNull().default(true),
     customCommissionRate: numeric('custom_commission_rate', { precision: 5, scale: 2 }),
-    status: text('status').notNull().default('draft'), // 'draft' | 'pending' | 'approved' | 'rejected' | 'removed'
+    status: text('status').notNull().default('draft'), // 'draft' | 'pending' | 'approved' | 'rejected' | 'removed' | 'deleted'
+    previousStatus: text('previous_status'),
+    deletedAt: timestamp('deleted_at'),
+    deletedBy: integer('deleted_by').references(() => users.id, { onDelete: 'set null' }),
+    purgeAfter: timestamp('purge_after'),
     rejectionReason: text('rejection_reason'),
     isFeatured: boolean('is_featured').notNull().default(false),
     ownershipConfirmed: boolean('ownership_confirmed').notNull().default(false),
@@ -160,6 +166,7 @@ export const contents = pgTable(
     index('idx_contents_category').on(table.categoryId),
     index('idx_contents_status').on(table.status),
     index('idx_contents_type').on(table.contentType),
+    index('idx_contents_deleted_at').on(table.deletedAt),
   ]
 );
 
@@ -596,6 +603,28 @@ export const deletedAccountLogs = pgTable(
   (table) => [
     index('idx_deleted_accounts_email').on(table.deletedUserEmail),
     index('idx_deleted_accounts_date').on(table.deletedAt),
+  ]
+);
+
+// 29. Creator Content Activity & 15-Day Recycle Bin History
+export const creatorContentHistory = pgTable(
+  'creator_content_history',
+  {
+    id: serial('id').primaryKey(),
+    creatorId: integer('creator_id')
+      .references(() => users.id, { onDelete: 'cascade' })
+      .notNull(),
+    contentId: integer('content_id').references(() => contents.id, { onDelete: 'set null' }),
+    action: text('action').notNull(), // 'created' | 'updated' | 'deleted' | 'recovered' | 'permanently_deleted' | 'auto_purged'
+    contentTitle: text('content_title').notNull(),
+    contentType: text('content_type').notNull(),
+    authorName: text('author_name'),
+    details: jsonb('details').$type<Record<string, unknown>>(),
+    createdAt: timestamp('created_at').defaultNow().notNull(),
+  },
+  (table) => [
+    index('idx_creator_history_creator').on(table.creatorId),
+    index('idx_creator_history_created').on(table.createdAt),
   ]
 );
 
