@@ -722,27 +722,56 @@ function renderContentEditorHtml(editPayload, commRate) {
               <button type="button" data-cmd="insertOrderedList" class="rte-btn min-h-[34px] px-2.5 py-1 text-xs rounded hover:bg-slate-200 dark:hover:bg-slate-800 whitespace-nowrap shrink-0">1. List</button>
               <button type="button" data-cmd="formatBlock" data-val="BLOCKQUOTE" class="rte-btn min-h-[34px] px-2.5 py-1 text-xs rounded hover:bg-slate-200 dark:hover:bg-slate-800 whitespace-nowrap shrink-0">Quote</button>
               <button type="button" id="rte-insert-code" class="min-h-[34px] px-2.5 py-1 text-xs font-mono rounded hover:bg-slate-200 dark:hover:bg-slate-800 whitespace-nowrap shrink-0">Code</button>
-              <input type="file" id="rte-image-file-input" accept="image/jpeg,image/png,image/webp,image/gif" multiple class="hidden" />
+              <input type="file" id="rte-image-file-input" accept="image/*,video/*" multiple class="hidden" />
             </div>
 
             <!-- Editable Prose Canvas -->
-            <div id="ed-rte" contenteditable="true" data-placeholder="Write your notes, article, poem, story, or lecture transcript here. Use + Photo or + File on the left to add images, PDFs, or documents..." class="sp-rte-editor reading-prose p-4 sm:p-5 max-w-none">${item?.bodyHtml || ''}</div>
+            <div id="ed-rte" contenteditable="true" data-placeholder="Write your notes, article, poem, story, or lecture transcript here. Use + Photo or + File to add images, videos, PDFs, or documents..." class="sp-rte-editor reading-prose p-4 sm:p-5 max-w-none">${item?.bodyHtml || ''}</div>
 
             <!-- Bottom-Left Composer Attachment Bar (always visible on phone & desktop) -->
             <div class="flex flex-wrap items-center justify-between gap-2 px-3 py-2 border-t border-slate-200 dark:border-slate-800 bg-slate-50/80 dark:bg-[#111A2E]">
               <div class="flex flex-wrap items-center gap-2">
                 <button type="button" id="rte-bottom-photo-btn" class="inline-flex items-center gap-1.5 min-h-[36px] px-3 py-1.5 text-xs font-semibold rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-[#0B1120] text-slate-800 dark:text-slate-100 hover:border-[#0F2547] dark:hover:border-sky-400 transition-colors">
                   <svg class="w-4 h-4 text-[#0F2547] dark:text-sky-400 shrink-0" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M12 4v16m8-8H4"></path></svg>
-                  <span>Insert Photos (up to 20)</span>
+                  <span>Insert Photos</span>
                 </button>
                 <button type="button" id="rte-bottom-file-btn" class="inline-flex items-center gap-1.5 min-h-[36px] px-3 py-1.5 text-xs font-semibold rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-[#0B1120] text-slate-800 dark:text-slate-100 hover:border-[#0F2547] dark:hover:border-sky-400 transition-colors">
                   <svg class="w-4 h-4 text-slate-600 dark:text-slate-300 shrink-0" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M21.44 11.05l-9.19 9.19a6 6 0 01-8.49-8.49l9.19-9.19a4 4 0 015.66 5.66l-9.2 9.19a2 2 0 01-2.83-2.83l8.49-8.48"></path></svg>
-                  <span>Gallery / Files (up to 20)</span>
+                  <span>Attach Files / Media</span>
                 </button>
+                <input type="file" id="ed-file-input" multiple accept="image/*,video/*,.pdf,.mp4,.webm,.mov,.jpg,.jpeg,.png,.webp,.gif,.txt,.md,.docx" class="hidden" />
               </div>
-              <span id="rte-pending-file-chip" class="text-[11px] text-slate-500 dark:text-slate-400">Select up to 20 Images, Videos, PDFs or Docs together</span>
+              <span id="rte-pending-file-chip" class="text-[11px] text-slate-500 dark:text-slate-400">Add photos, videos, PDFs, or study files</span>
             </div>
           </div>
+
+          <!-- Compact Attached / Queued Media List (appears only when files are selected or already saved) -->
+          <div id="ed-queued-files-wrap" class="hidden space-y-2 pt-2">
+            <div class="flex items-center justify-between text-xs">
+              <span class="font-semibold text-slate-700 dark:text-slate-300">Selected Media &amp; Files</span>
+              <div class="flex items-center gap-3">
+                ${item ? `<button type="button" id="ed-upload-file-btn" class="hidden px-3 py-1 text-xs font-semibold rounded-lg bg-emerald-700 hover:bg-emerald-800 text-white whitespace-nowrap">Upload Now</button>` : ''}
+                <button type="button" id="ed-clear-queue-btn" class="text-red-600 dark:text-red-400 hover:underline font-medium">Clear</button>
+              </div>
+            </div>
+            <div id="ed-queued-files-grid" class="grid grid-cols-2 sm:grid-cols-4 md:grid-cols-5 gap-2"></div>
+          </div>
+          ${
+            files.length
+              ? `<div id="ed-files-list" class="space-y-1.5 pt-2">
+                  ${files
+                    .map(
+                      (f) => `
+                    <div class="flex items-center justify-between gap-2 p-2.5 rounded-lg border border-slate-200 dark:border-slate-800 text-xs">
+                      <span class="truncate">${esc(f.originalName)} (${esc(f.fileType.toUpperCase())} · ${formatBytes(f.sizeBytes)})</span>
+                      <button type="button" data-file-id="${f.id}" class="ed-del-file text-red-600 hover:underline font-semibold shrink-0">Remove</button>
+                    </div>
+                  `
+                    )
+                    .join('')}
+                </div>`
+              : `<div id="ed-files-list" class="hidden"></div>`
+          }
         </div>
 
         <!-- YouTube Share Link / Authorized Video URL (optional) -->
@@ -796,56 +825,6 @@ function renderContentEditorHtml(editPayload, commRate) {
               <label class="block text-xs font-semibold text-slate-600 dark:text-slate-300 mb-1">Public Preview Excerpt (shown before purchase, optional)</label>
               <textarea name="previewHtml" id="ed-preview-html" rows="2" placeholder="Leave blank to auto-generate a clean excerpt from your opening paragraphs." class="w-full px-3.5 py-2 text-sm rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-[#111A2E]">${esc(item?.previewHtml || '')}</textarea>
             </div>
-          </div>
-        </div>
-
-        <!-- Multi-File Gallery & Media Attachments (Up to 20 Images, Videos, PDFs & Docs Together) -->
-        <div class="pt-4 border-t border-slate-100 dark:border-slate-800 space-y-3">
-          <div class="flex flex-wrap items-center justify-between gap-2">
-            <div>
-              <label class="block text-xs font-semibold text-slate-600 dark:text-slate-300">Attach Gallery Photos, Videos, PDFs &amp; Study Files (Up to 20 together)</label>
-              <p class="text-xs text-slate-500">Select up to <strong>20 images &amp; videos at once</strong> from Gallery or Files. Allowed: JPG/PNG/WebP/GIF (10MB), MP4/WebM/MOV (50MB), PDF (25MB), DOCX/TXT/MD (15MB).</p>
-            </div>
-            <span id="ed-queue-counter" class="text-xs font-mono font-semibold text-slate-500 dark:text-slate-400">0 / 20 selected</span>
-          </div>
-          <div class="flex flex-wrap items-center gap-3 p-3.5 rounded-xl border border-dashed border-slate-300 dark:border-slate-700 bg-slate-50/70 dark:bg-[#0B1120]">
-            <button type="button" id="ed-pick-gallery-btn" class="inline-flex items-center gap-2 min-h-[40px] px-4 py-2 text-xs font-semibold rounded-lg bg-[#0F2547] hover:bg-[#1B3B6F] dark:bg-sky-500 dark:hover:bg-sky-400 text-white dark:text-slate-950 transition-colors whitespace-nowrap shrink-0">
-              <svg class="w-4 h-4 shrink-0" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M12 4v16m8-8H4"></path></svg>
-              <span>Select up to 20 Photos / Videos / Files</span>
-            </button>
-            <input type="file" id="ed-file-input" multiple accept="image/*,video/*,.pdf,.mp4,.webm,.mov,.jpg,.jpeg,.png,.webp,.gif,.txt,.md,.docx" class="hidden" />
-            <label class="flex items-center gap-1.5 text-xs text-slate-600 dark:text-slate-300">
-              <input type="checkbox" id="ed-file-preview" />
-              <span>Allow free preview of uploaded files</span>
-            </label>
-            ${
-              item
-                ? `<button type="button" id="ed-upload-file-btn" class="hidden min-h-[38px] px-4 py-1.5 text-xs font-semibold rounded-lg bg-emerald-700 hover:bg-emerald-800 text-white whitespace-nowrap">Upload Selected Files Now</button>`
-                : `<span class="text-xs text-slate-400">(All queued files upload automatically when you save or submit)</span>`
-            }
-          </div>
-
-          <!-- Live Selected Queue Preview Grid -->
-          <div id="ed-queued-files-wrap" class="hidden space-y-2">
-            <div class="flex items-center justify-between text-xs">
-              <span class="font-semibold text-slate-700 dark:text-slate-300">Queued for Upload</span>
-              <button type="button" id="ed-clear-queue-btn" class="text-red-600 dark:text-red-400 hover:underline font-medium">Clear Queue</button>
-            </div>
-            <div id="ed-queued-files-grid" class="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-2.5"></div>
-          </div>
-
-          <!-- Already Saved Attachments -->
-          <div id="ed-files-list" class="space-y-2">
-            ${files
-              .map(
-                (f) => `
-              <div class="flex items-center justify-between gap-2 p-2.5 rounded-lg border border-slate-200 dark:border-slate-800 text-xs">
-                <span class="truncate">${esc(f.originalName)} (${esc(f.fileType.toUpperCase())} · ${formatBytes(f.sizeBytes)}${f.isPreview ? ' · Public Preview' : ' · Protected'})</span>
-                <button type="button" data-file-id="${f.id}" class="ed-del-file text-red-600 hover:underline font-semibold shrink-0">Remove</button>
-              </div>
-            `
-              )
-              .join('')}
           </div>
         </div>
 
@@ -1160,11 +1139,10 @@ function wireContentEditor(container, editPayload, commRate) {
     }
   });
 
-  // Multi-file Gallery & Attachment Queue (up to 20 images, videos, PDFs & docs together)
-  const MAX_MULTI_FILES = 20;
+  // Multi-file Gallery & Attachment Queue (up to 20 files per selection; unlimited repeated picks, chunked upload)
+  const BATCH_PICK_LIMIT = 20;
   let queuedUploadFiles = [];
   const fileInputEl = document.getElementById('ed-file-input');
-  const queueCounterEl = document.getElementById('ed-queue-counter');
   const queueWrapEl = document.getElementById('ed-queued-files-wrap');
   const queueGridEl = document.getElementById('ed-queued-files-grid');
   const uploadQueueBtn = document.getElementById('ed-upload-file-btn');
@@ -1172,19 +1150,15 @@ function wireContentEditor(container, editPayload, commRate) {
 
   const renderQueuedFiles = () => {
     const count = queuedUploadFiles.length;
-    if (queueCounterEl) {
-      queueCounterEl.textContent = `${count} / ${MAX_MULTI_FILES} selected`;
-      queueCounterEl.className = `text-xs font-mono font-semibold ${count > 0 ? 'text-emerald-700 dark:text-emerald-400' : 'text-slate-500 dark:text-slate-400'}`;
-    }
     if (uploadQueueBtn) {
       uploadQueueBtn.classList.toggle('hidden', count === 0);
-      uploadQueueBtn.textContent = `Upload ${count} Selected File${count > 1 ? 's' : ''} Now`;
+      uploadQueueBtn.textContent = `Upload ${count} File${count > 1 ? 's' : ''} Now`;
     }
     if (pendingChipEl) {
       pendingChipEl.innerHTML =
         count > 0
-          ? `<span class="font-semibold text-emerald-700 dark:text-emerald-400">${count} file${count > 1 ? 's' : ''} queued (images/videos/files)</span>`
-          : 'Select up to 20 Images, Videos, PDFs or Docs together';
+          ? `<span class="font-semibold text-emerald-700 dark:text-emerald-400">${count} file${count > 1 ? 's' : ''} attached</span>`
+          : 'Add photos, videos, PDFs, or study files';
     }
     if (!queueWrapEl || !queueGridEl) return;
     queueWrapEl.classList.toggle('hidden', count === 0);
@@ -1241,7 +1215,6 @@ function wireContentEditor(container, editPayload, commRate) {
   };
   document.getElementById('rte-attach-file-top')?.addEventListener('click', triggerAttachFile);
   document.getElementById('rte-bottom-file-btn')?.addEventListener('click', triggerAttachFile);
-  document.getElementById('ed-pick-gallery-btn')?.addEventListener('click', triggerAttachFile);
 
   document.getElementById('ed-clear-queue-btn')?.addEventListener('click', () => {
     queuedUploadFiles = [];
@@ -1252,35 +1225,41 @@ function wireContentEditor(container, editPayload, commRate) {
   fileInputEl?.addEventListener('change', (e) => {
     const incoming = Array.from(e.target.files || []);
     if (!incoming.length) return;
-    const availableSlots = MAX_MULTI_FILES - queuedUploadFiles.length;
-    if (availableSlots <= 0) {
-      showToast(`Maximum ${MAX_MULTI_FILES} files can be selected together.`, 'error');
-      fileInputEl.value = '';
-      return;
-    }
-    const accepted = incoming.slice(0, availableSlots);
+    const accepted = incoming.slice(0, BATCH_PICK_LIMIT);
     queuedUploadFiles.push(...accepted);
-    if (incoming.length > availableSlots) {
-      showToast(`Added first ${accepted.length} files (max ${MAX_MULTI_FILES} files per batch).`, 'info');
+    if (incoming.length > BATCH_PICK_LIMIT) {
+      showToast(`Added ${accepted.length} files. Click Attach again to add more.`, 'info');
     } else {
-      showToast(`${accepted.length} file${accepted.length > 1 ? 's' : ''} added to upload queue (${queuedUploadFiles.length}/${MAX_MULTI_FILES}).`, 'success');
+      showToast(`${accepted.length} file${accepted.length > 1 ? 's' : ''} added.`, 'success');
     }
     fileInputEl.value = '';
     renderQueuedFiles();
   });
 
   rteImageInput?.addEventListener('change', async (e) => {
-    const selected = Array.from(e.target.files || []).slice(0, MAX_MULTI_FILES);
-    if (!selected.length) return;
-    if (selected.length > 1) {
-      showToast(`Inserting ${selected.length} photos into content...`, 'info');
+    const incoming = Array.from(e.target.files || []);
+    if (!incoming.length) return;
+    const selected = incoming.slice(0, BATCH_PICK_LIMIT);
+    const images = selected.filter((f) => f.type && f.type.startsWith('image/'));
+    const videos = selected.filter((f) => f.type && f.type.startsWith('video/'));
+
+    if (videos.length > 0) {
+      queuedUploadFiles.push(...videos);
+      renderQueuedFiles();
     }
-    for (const file of selected) {
+    if (images.length > 1) {
+      showToast(`Inserting ${images.length} photos into content...`, 'info');
+    }
+    for (const file of images) {
       await insertUploadedImageIntoRte(file);
     }
-    if (selected.length > 1) {
-      showToast(`Inserted ${selected.length} photos into content.`, 'success');
+    if (images.length > 1 || videos.length > 0) {
+      const parts = [];
+      if (images.length) parts.push(`${images.length} photo${images.length > 1 ? 's' : ''}`);
+      if (videos.length) parts.push(`${videos.length} video${videos.length > 1 ? 's' : ''}`);
+      showToast(`Added ${parts.join(' & ')}. Click Photo again to add more.`, 'success');
     }
+    if (rteImageInput) rteImageInput.value = '';
   });
 
   rteEl?.addEventListener('paste', (e) => {
@@ -1309,7 +1288,7 @@ function wireContentEditor(container, editPayload, commRate) {
     rteEl.classList.remove('ring-2', 'ring-sky-400');
     const droppedImages = Array.from(e.dataTransfer?.files || [])
       .filter((f) => f.type && f.type.startsWith('image/'))
-      .slice(0, MAX_MULTI_FILES);
+      .slice(0, BATCH_PICK_LIMIT);
     if (droppedImages.length) {
       e.preventDefault();
       saveRteSelection();
@@ -1402,21 +1381,26 @@ function wireContentEditor(container, editPayload, commRate) {
     });
   });
 
-  // Batch upload up to 20 queued gallery photos/videos/files at once
+  // Upload queued files in chunks of 20 so creators can attach unlimited total files across clicks
   const uploadAttachedFilesBatch = async (contentId) => {
     if (!queuedUploadFiles.length) return null;
-    const fd = new FormData();
-    for (const f of queuedUploadFiles.slice(0, MAX_MULTI_FILES)) {
-      fd.append('files', f);
+    let totalUploaded = 0;
+    for (let i = 0; i < queuedUploadFiles.length; i += BATCH_PICK_LIMIT) {
+      const chunk = queuedUploadFiles.slice(i, i + BATCH_PICK_LIMIT);
+      const fd = new FormData();
+      for (const f of chunk) {
+        fd.append('files', f);
+      }
+      fd.append('isPreview', 'false');
+      const res = await apiFetch(`/api/creator/contents/${contentId}/files/batch`, {
+        method: 'POST',
+        body: fd,
+      });
+      totalUploaded += Number(res?.count || chunk.length);
     }
-    fd.append('isPreview', document.getElementById('ed-file-preview')?.checked ? 'true' : 'false');
-    const res = await apiFetch(`/api/creator/contents/${contentId}/files/batch`, {
-      method: 'POST',
-      body: fd,
-    });
     queuedUploadFiles = [];
     renderQueuedFiles();
-    return res;
+    return { count: totalUploaded, message: `${totalUploaded} file${totalUploaded === 1 ? '' : 's'} uploaded successfully.` };
   };
 
   document.getElementById('ed-upload-file-btn')?.addEventListener('click', async () => {

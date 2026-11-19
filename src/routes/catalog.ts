@@ -22,150 +22,117 @@ import {
 } from '../db/schema.ts';
 import { getCache, setCache } from '../lib/cache.ts';
 import { getStorageRoot, normalizeExternalVideoUrl } from '../lib/security.ts';
-import { optionalAuth, type AuthRequest } from '../middleware/auth.ts';
+import { optionalAuth, requireAuth, type AuthRequest } from '../middleware/auth.ts';
 
 const router = Router();
 
-// GET /api/catalog/home (Parallelized + 30s TTL cache for instant response)
+async function buildHomeCatalogPayload() {
+  const baseSelect = {
+    id: contents.id,
+    title: contents.title,
+    slug: contents.slug,
+    authorName: contents.authorName,
+    publisherName: contents.publisherName,
+    shortDescription: contents.shortDescription,
+    coverImageUrl: contents.coverImageUrl,
+    contentType: contents.contentType,
+    language: contents.language,
+    priceInr: contents.priceInr,
+    isFree: contents.isFree,
+    isFeatured: contents.isFeatured,
+    viewsCount: contents.viewsCount,
+    likesCount: contents.likesCount,
+    purchasesCount: contents.purchasesCount,
+    avgRating: contents.avgRating,
+    reviewsCount: contents.reviewsCount,
+    readingTimeMins: contents.readingTimeMins,
+    publishedAt: contents.publishedAt,
+    createdAt: contents.createdAt,
+    categoryId: contents.categoryId,
+    categoryName: categories.name,
+    categorySlug: categories.slug,
+    subjectName: subjects.name,
+    creatorId: users.id,
+    creatorName: sql<string>`COALESCE(NULLIF(TRIM(${contents.authorName}), ''), ${users.name})`,
+    creatorAvatar: users.avatarUrl,
+  };
+
+  const activeApproved = and(eq(contents.status, 'approved'), isNull(contents.deletedAt));
+
+  const [settingsRows, categoryRows, approvedCounts, trending, countsRow] = await Promise.all([
+    db.select().from(adminSettings),
+    db.select().from(categories).orderBy(asc(categories.displayOrder), asc(categories.name)),
+    db
+      .select({ categoryId: contents.categoryId, total: count() })
+      .from(contents)
+      .where(activeApproved)
+      .groupBy(contents.categoryId),
+    db
+      .select(baseSelect)
+      .from(contents)
+      .innerJoin(users, eq(contents.creatorId, users.id))
+      .leftJoin(categories, eq(contents.categoryId, categories.id))
+      .leftJoin(subjects, eq(contents.subjectId, subjects.id))
+      .where(activeApproved)
+      .orderBy(desc(contents.isFeatured), desc(contents.viewsCount), desc(contents.likesCount))
+      .limit(4),
+    db.execute(sql`
+      SELECT
+        (SELECT COUNT(*)::int FROM contents WHERE status = 'approved' AND deleted_at IS NULL) AS published_works,
+        (SELECT COUNT(*)::int FROM creator_profiles) AS active_creators,
+        (SELECT COUNT(*)::int FROM users) AS registered_members
+    `),
+  ]);
+
+  const settings: Record<string, string> = {};
+  for (const row of settingsRows) settings[row.key] = row.value;
+
+  const countByCat = new Map<number, number>();
+  for (const r of approvedCounts) {
+    if (r.categoryId) countByCat.set(r.categoryId, Number(r.total));
+  }
+
+  const featuredCategories = categoryRows.map((c) => ({
+    ...c,
+    contentCount: countByCat.get(c.id) || 0,
+  }));
+
+  const statsRaw = (countsRow.rows?.[0] || {}) as Record<string, unknown>;
+
+  return {
+    settings,
+    categories: featuredCategories,
+    trending,
+    stats: {
+      publishedWorks: Number(statsRaw.published_works || 0),
+      activeCreators: Number(statsRaw.active_creators || 0),
+      registeredMembers: Number(statsRaw.registered_members || 0),
+      defaultCommissionRate: Number(settings.default_commission_rate || 10),
+    },
+  };
+}
+
+export async function warmHomeCache(): Promise<void> {
+  try {
+    const payload = await buildHomeCatalogPayload();
+    setCache('catalog:home', payload, 60_000);
+  } catch (err) {
+    console.warn('Home cache warmup skipped:', (err as Error).message);
+  }
+}
+
+// GET /api/catalog/home (Public default landing summary — 5 parallel queries + 60s TTL cache)
 router.get('/home', async (_req, res) => {
   try {
     const cached = getCache<Record<string, unknown>>('catalog:home');
     if (cached) {
-      res.setHeader('Cache-Control', 'public, max-age=15, stale-while-revalidate=30');
+      res.setHeader('Cache-Control', 'public, max-age=20, stale-while-revalidate=60');
       return res.json(cached);
     }
 
-    const baseSelect = {
-      id: contents.id,
-      title: contents.title,
-      slug: contents.slug,
-      authorName: contents.authorName,
-      publisherName: contents.publisherName,
-      shortDescription: contents.shortDescription,
-      coverImageUrl: contents.coverImageUrl,
-      contentType: contents.contentType,
-      language: contents.language,
-      priceInr: contents.priceInr,
-      isFree: contents.isFree,
-      isFeatured: contents.isFeatured,
-      viewsCount: contents.viewsCount,
-      likesCount: contents.likesCount,
-      purchasesCount: contents.purchasesCount,
-      avgRating: contents.avgRating,
-      reviewsCount: contents.reviewsCount,
-      readingTimeMins: contents.readingTimeMins,
-      publishedAt: contents.publishedAt,
-      createdAt: contents.createdAt,
-      categoryId: contents.categoryId,
-      categoryName: categories.name,
-      categorySlug: categories.slug,
-      subjectName: subjects.name,
-      creatorId: users.id,
-      creatorName: sql<string>`COALESCE(NULLIF(TRIM(${contents.authorName}), ''), ${users.name})`,
-      creatorAvatar: users.avatarUrl,
-    };
-
-    const activeApproved = and(eq(contents.status, 'approved'), isNull(contents.deletedAt));
-
-    const [
-      settingsRows,
-      categoryRows,
-      approvedCounts,
-      trending,
-      recent,
-      creatorsList,
-      creatorPubCounts,
-      totalContentRows,
-      totalCreatorsRows,
-      totalUsersRows,
-    ] = await Promise.all([
-      db.select().from(adminSettings),
-      db.select().from(categories).orderBy(asc(categories.displayOrder), asc(categories.name)),
-      db
-        .select({ categoryId: contents.categoryId, total: count() })
-        .from(contents)
-        .where(activeApproved)
-        .groupBy(contents.categoryId),
-      db
-        .select(baseSelect)
-        .from(contents)
-        .innerJoin(users, eq(contents.creatorId, users.id))
-        .leftJoin(categories, eq(contents.categoryId, categories.id))
-        .leftJoin(subjects, eq(contents.subjectId, subjects.id))
-        .where(activeApproved)
-        .orderBy(desc(contents.isFeatured), desc(contents.viewsCount), desc(contents.likesCount))
-        .limit(6),
-      db
-        .select(baseSelect)
-        .from(contents)
-        .innerJoin(users, eq(contents.creatorId, users.id))
-        .leftJoin(categories, eq(contents.categoryId, categories.id))
-        .leftJoin(subjects, eq(contents.subjectId, subjects.id))
-        .where(activeApproved)
-        .orderBy(desc(contents.publishedAt), desc(contents.createdAt))
-        .limit(6),
-      db
-        .select({
-          id: users.id,
-          name: users.name,
-          avatarUrl: users.avatarUrl,
-          bio: users.bio,
-          displayName: creatorProfiles.displayName,
-          tagline: creatorProfiles.tagline,
-          expertise: creatorProfiles.expertise,
-          verified: creatorProfiles.verified,
-          totalSales: creatorProfiles.totalSales,
-          followerCount: creatorProfiles.followerCount,
-        })
-        .from(creatorProfiles)
-        .innerJoin(users, eq(creatorProfiles.userId, users.id))
-        .where(eq(users.status, 'active'))
-        .orderBy(desc(creatorProfiles.followerCount), desc(creatorProfiles.totalSales))
-        .limit(4),
-      db
-        .select({ creatorId: contents.creatorId, total: count() })
-        .from(contents)
-        .where(activeApproved)
-        .groupBy(contents.creatorId),
-      db.select({ value: count() }).from(contents).where(activeApproved),
-      db.select({ value: count() }).from(creatorProfiles),
-      db.select({ value: count() }).from(users),
-    ]);
-
-    const settings: Record<string, string> = {};
-    for (const row of settingsRows) settings[row.key] = row.value;
-
-    const countByCat = new Map<number, number>();
-    for (const r of approvedCounts) {
-      if (r.categoryId) countByCat.set(r.categoryId, Number(r.total));
-    }
-
-    const featuredCategories = categoryRows.map((c) => ({
-      ...c,
-      contentCount: countByCat.get(c.id) || 0,
-    }));
-
-    const pubMap = new Map(creatorPubCounts.map((r) => [r.creatorId, Number(r.total)]));
-
-    const payload = {
-      settings,
-      categories: featuredCategories,
-      trending,
-      recent,
-      featuredCreators: creatorsList.map((cr) => ({
-        ...cr,
-        publishedCount: pubMap.get(cr.id) || 0,
-      })),
-      stats: {
-        publishedWorks: Number(totalContentRows[0]?.value || 0),
-        activeCreators: Number(totalCreatorsRows[0]?.value || 0),
-        registeredMembers: Number(totalUsersRows[0]?.value || 0),
-        defaultCommissionRate: Number(settings.default_commission_rate || 10),
-      },
-    };
-
-    setCache('catalog:home', payload, 30_000);
-    res.setHeader('Cache-Control', 'public, max-age=15, stale-while-revalidate=30');
+    const payload = await buildHomeCatalogPayload();
+    setCache('catalog:home', payload, 60_000);
+    res.setHeader('Cache-Control', 'public, max-age=20, stale-while-revalidate=60');
     return res.json(payload);
   } catch (error) {
     console.error('Home catalog error:', error);
@@ -173,12 +140,12 @@ router.get('/home', async (_req, res) => {
   }
 });
 
-// GET /api/catalog/categories (Parallelized + 60s TTL cache)
-router.get('/categories', async (_req, res) => {
+// GET /api/catalog/categories (Authenticated members only — Parallelized + 60s TTL cache)
+router.get('/categories', requireAuth, async (_req, res) => {
   try {
     const cached = getCache<Record<string, unknown>>('catalog:categories');
     if (cached) {
-      res.setHeader('Cache-Control', 'public, max-age=30, stale-while-revalidate=60');
+      res.setHeader('Cache-Control', 'private, max-age=30');
       return res.json(cached);
     }
 
@@ -205,7 +172,7 @@ router.get('/categories', async (_req, res) => {
 
     const payload = { categories: grouped, subjects: subjs };
     setCache('catalog:categories', payload, 60_000);
-    res.setHeader('Cache-Control', 'public, max-age=30, stale-while-revalidate=60');
+    res.setHeader('Cache-Control', 'private, max-age=30');
     return res.json(payload);
   } catch (error) {
     console.error('Categories error:', error);
@@ -213,8 +180,8 @@ router.get('/categories', async (_req, res) => {
   }
 });
 
-// GET /api/catalog/contents (search + multi-filter + pagination)
-router.get('/contents', async (req, res) => {
+// GET /api/catalog/contents (Authenticated Explore/Search only — server-enforced, cannot bypass via DevTools)
+router.get('/contents', requireAuth, async (req, res) => {
   try {
     const q = String(req.query.q || '').trim();
     const categorySlug = String(req.query.category || '').trim();
@@ -528,24 +495,29 @@ router.get('/contents/:slugOrId', optionalAuth, async (req: AuthRequest, res) =>
         : Promise.resolve([]),
     ]);
 
+    const isAuthenticated = Boolean(req.user);
     const hasPurchased = purchaseRows.length > 0;
-    const hasAccess = (item.isFree && Boolean(req.user)) || isOwner || isAdmin || hasPurchased;
+    const hasAccess = isAuthenticated && (item.isFree || isOwner || isAdmin || hasPurchased);
     const creatorProfile = creatorProfileRows[0];
 
-    const safeFiles = fileRows.map((f) => ({
-      id: f.id,
-      fileType: f.fileType,
-      originalName: f.originalName,
-      mimeType: f.mimeType,
-      sizeBytes: f.sizeBytes,
-      isPreview: f.isPreview,
-      locked: !hasAccess && !f.isPreview,
-      externalVideoUrl:
-        hasAccess || f.isPreview
-          ? normalizeExternalVideoUrl(f.externalVideoUrl) || f.externalVideoUrl
-          : null,
-      accessUrl: hasAccess || f.isPreview ? `/api/catalog/files/${f.id}` : null,
-    }));
+    const safeFiles = fileRows
+      .filter((f) => f.fileType !== 'cover')
+      .map((f) => {
+        const allowFile = isAuthenticated && (hasAccess || f.isPreview);
+        return {
+          id: f.id,
+          fileType: f.fileType,
+          originalName: f.originalName,
+          mimeType: f.mimeType,
+          sizeBytes: f.sizeBytes,
+          isPreview: f.isPreview,
+          locked: !allowFile,
+          externalVideoUrl: allowFile
+            ? normalizeExternalVideoUrl(f.externalVideoUrl) || f.externalVideoUrl
+            : null,
+          accessUrl: allowFile ? `/api/catalog/files/${f.id}` : null,
+        };
+      });
 
     const customAuthor = (item.authorName || '').trim();
     const effectiveAuthorName = customAuthor || creatorProfile?.displayName || row.creatorName;
@@ -582,13 +554,13 @@ router.get('/contents/:slugOrId', optionalAuth, async (req: AuthRequest, res) =>
         tags: tagsRows.map((t) => t.tag),
         hasAccess,
         hasPurchased,
-        canReview: Boolean(req.user) && (item.isFree || hasPurchased),
+        canReview: isAuthenticated && (item.isFree || hasPurchased),
       },
       creator: {
         id: item.creatorId,
         name: effectiveAuthorName,
         profileName: creatorProfile?.displayName || row.creatorName,
-        bio: row.creatorBio,
+        bio: isAuthenticated ? row.creatorBio : null,
         avatarUrl: row.creatorAvatar,
         tagline: creatorProfile?.tagline || null,
         expertise: creatorProfile?.expertise || null,
@@ -597,9 +569,9 @@ router.get('/contents/:slugOrId', optionalAuth, async (req: AuthRequest, res) =>
         totalSales: creatorProfile?.totalSales || 0,
       },
       files: safeFiles,
-      comments: commentRows,
-      reviews: reviewRows,
-      related,
+      comments: isAuthenticated ? commentRows : [],
+      reviews: isAuthenticated ? reviewRows : [],
+      related: isAuthenticated ? related : [],
       userState: {
         isBookmarked: bookmarkRows.length > 0,
         isLiked: likeRows.length > 0,
@@ -643,6 +615,14 @@ router.get('/files/:fileId', optionalAuth, async (req: AuthRequest, res) => {
     const isOwner = req.user?.id === content.creatorId;
     const isAdmin = req.user?.role === 'admin';
     const isCoverFile = file.fileType === 'cover';
+
+    // Strict server-side auth gate: guests may ONLY fetch cover thumbnails, never study files/media
+    if (!isCoverFile && !req.user) {
+      return res.status(401).json({
+        error: 'Authentication required. Please sign up or log in to access files and media.',
+      });
+    }
+
     let hasAccess =
       isCoverFile ||
       (content.isFree && Boolean(req.user)) ||
@@ -694,32 +674,33 @@ router.get('/files/:fileId', optionalAuth, async (req: AuthRequest, res) => {
   }
 });
 
-// GET /api/catalog/creators
-router.get('/creators', async (_req, res) => {
+// GET /api/catalog/creators (Authenticated members only)
+router.get('/creators', requireAuth, async (_req, res) => {
   try {
-    const rows = await db
-      .select({
-        id: users.id,
-        name: users.name,
-        bio: users.bio,
-        avatarUrl: users.avatarUrl,
-        displayName: creatorProfiles.displayName,
-        tagline: creatorProfiles.tagline,
-        expertise: creatorProfiles.expertise,
-        verified: creatorProfiles.verified,
-        followerCount: creatorProfiles.followerCount,
-        totalSales: creatorProfiles.totalSales,
-      })
-      .from(creatorProfiles)
-      .innerJoin(users, eq(creatorProfiles.userId, users.id))
-      .where(eq(users.status, 'active'))
-      .orderBy(desc(creatorProfiles.followerCount), desc(creatorProfiles.totalSales));
-
-    const counts = await db
-      .select({ creatorId: contents.creatorId, total: count() })
-      .from(contents)
-      .where(eq(contents.status, 'approved'))
-      .groupBy(contents.creatorId);
+    const [rows, counts] = await Promise.all([
+      db
+        .select({
+          id: users.id,
+          name: users.name,
+          bio: users.bio,
+          avatarUrl: users.avatarUrl,
+          displayName: creatorProfiles.displayName,
+          tagline: creatorProfiles.tagline,
+          expertise: creatorProfiles.expertise,
+          verified: creatorProfiles.verified,
+          followerCount: creatorProfiles.followerCount,
+          totalSales: creatorProfiles.totalSales,
+        })
+        .from(creatorProfiles)
+        .innerJoin(users, eq(creatorProfiles.userId, users.id))
+        .where(eq(users.status, 'active'))
+        .orderBy(desc(creatorProfiles.followerCount), desc(creatorProfiles.totalSales)),
+      db
+        .select({ creatorId: contents.creatorId, total: count() })
+        .from(contents)
+        .where(and(eq(contents.status, 'approved'), isNull(contents.deletedAt)))
+        .groupBy(contents.creatorId),
+    ]);
     const countMap = new Map(counts.map((c) => [c.creatorId, Number(c.total)]));
 
     return res.json({
@@ -731,8 +712,8 @@ router.get('/creators', async (_req, res) => {
   }
 });
 
-// GET /api/catalog/creators/:id
-router.get('/creators/:id', optionalAuth, async (req: AuthRequest, res) => {
+// GET /api/catalog/creators/:id (Authenticated members only)
+router.get('/creators/:id', requireAuth, async (req: AuthRequest, res) => {
   try {
     const creatorId = Number(req.params.id);
     if (!Number.isInteger(creatorId)) {

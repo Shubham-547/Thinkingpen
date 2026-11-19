@@ -5,7 +5,7 @@ import helmet from 'helmet';
 import rateLimit from 'express-rate-limit';
 import dotenv from 'dotenv';
 import authRoutes from './src/routes/auth.ts';
-import catalogRoutes from './src/routes/catalog.ts';
+import catalogRoutes, { warmHomeCache } from './src/routes/catalog.ts';
 import communityRoutes from './src/routes/community.ts';
 import creatorRoutes, { purgeExpiredDeletedContents } from './src/routes/creator.ts';
 import paymentRoutes from './src/routes/payments.ts';
@@ -22,7 +22,7 @@ async function startServer() {
   app.set('trust proxy', 1);
 
   // Fast Gzip/Deflate compression for JSON APIs, HTML, CSS, and JS bundles
-  app.use(compression({ threshold: 1024 }));
+  app.use(compression({ threshold: 512 }));
 
   // Production HTTP security headers (iframe-safe & Google Sign-In popup compatible)
   app.use(
@@ -171,6 +171,7 @@ async function startServer() {
   }
 
   await ensureBaselineCatalog();
+  warmHomeCache().catch(() => {});
   purgeExpiredDeletedContents().catch((err) => {
     console.warn('Initial 15-day soft-delete purge warning:', err);
   });

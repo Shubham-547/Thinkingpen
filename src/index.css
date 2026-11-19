@@ -50,6 +50,10 @@
     font-family: "IBM Plex Mono", ui-monospace, SFMono-Regular, monospace;
   }
 
+  .font-script {
+    font-family: "Caveat", cursive;
+  }
+
   button:not(:disabled),
   a[href] {
     cursor: pointer;

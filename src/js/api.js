@@ -70,23 +70,46 @@ export async function logoutAll() {
   setSessionToken(null);
   await signOutFirebase();
   store.user = null;
+  clientGetCache.clear();
   notifyStore();
 }
 
 // Fast in-memory client GET cache for instant repeat navigation (auto-invalidated on mutations)
 const clientGetCache = new Map();
 const inflightGetRequests = new Map();
+const HOME_SNAP_KEY = 'sp_home_snap_v2';
+
+export function getCachedHomeSnapshot() {
+  try {
+    const raw = sessionStorage.getItem(HOME_SNAP_KEY);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw);
+    if (!parsed || !parsed.data || parsed.expiresAt <= Date.now()) return null;
+    return parsed.data;
+  } catch {
+    return null;
+  }
+}
+
+export function saveHomeSnapshot(data) {
+  try {
+    sessionStorage.setItem(HOME_SNAP_KEY, JSON.stringify({ data, expiresAt: Date.now() + 120_000 }));
+  } catch {}
+}
 
 function getClientCacheTtlMs(url) {
-  if (url === '/api/catalog/home') return 25_000;
-  if (url === '/api/catalog/categories' || url === '/api/payments/config') return 60_000;
-  if (url.startsWith('/api/catalog/contents?')) return 15_000;
-  if (url === '/api/catalog/creators') return 30_000;
+  if (url === '/api/catalog/home') return 35_000;
+  if (url === '/api/catalog/categories' || url === '/api/payments/config') return 90_000;
+  if (url.startsWith('/api/catalog/contents?')) return 20_000;
+  if (url === '/api/catalog/creators') return 45_000;
   return 0;
 }
 
 export function invalidateClientCache() {
   clientGetCache.clear();
+  try {
+    sessionStorage.removeItem(HOME_SNAP_KEY);
+  } catch {}
 }
 
 export async function apiFetch(url, options = {}) {
@@ -176,13 +199,20 @@ export async function refreshCurrentUser() {
 
 export async function loadGlobalCatalogMeta() {
   try {
-    const [catData, payCfg] = await Promise.all([
-      apiFetch('/api/catalog/categories'),
-      apiFetch('/api/payments/config'),
-    ]);
-    store.categories = catData.categories || [];
-    store.subjects = catData.subjects || [];
-    store.paymentConfig = payCfg || store.paymentConfig;
+    const token = await getAuthToken();
+    const tasks = [apiFetch('/api/payments/config')];
+    if (token) {
+      tasks.unshift(apiFetch('/api/catalog/categories'));
+    }
+    const results = await Promise.all(tasks);
+    if (token) {
+      const [catData, payCfg] = results;
+      store.categories = catData.categories || [];
+      store.subjects = catData.subjects || [];
+      store.paymentConfig = payCfg || store.paymentConfig;
+    } else {
+      store.paymentConfig = results[0] || store.paymentConfig;
+    }
   } catch (err) {
     console.warn('Could not load global catalog metadata:', err);
   }
@@ -308,29 +338,35 @@ export function closeModal() {
   if (root) root.innerHTML = '';
 }
 
-export function renderCoverImage(url, title, aspectClass = 'aspect-[4/3]') {
-  const fallbackBg = 'bg-gradient-to-br from-[#0F2547] via-[#1B3B6F] to-[#1E293B]';
+export function renderCoverImage(urlOrItem, titleArg, aspectClass = 'aspect-[4/3]') {
+  const isObj = urlOrItem && typeof urlOrItem === 'object';
+  const url = isObj ? urlOrItem.coverImageUrl : urlOrItem;
+  const title = isObj ? urlOrItem.title : titleArg;
+  const finalAspect = isObj && typeof titleArg === 'string' ? titleArg : aspectClass;
+
+  const fallbackBg = 'bg-gradient-to-br from-[#23196e] via-[#4125b8] to-[#1e1b4b]';
   if (!url) {
     return `
-      <div class="${aspectClass} ${fallbackBg} w-full flex flex-col justify-between p-5 text-white">
-        <span class="text-xs tracking-wide text-slate-300">ScholarPress Edition</span>
-        <span class="font-display text-base font-semibold leading-snug line-clamp-3">${esc(title)}</span>
+      <div class="${finalAspect} ${fallbackBg} w-full flex flex-col justify-between p-4 text-white">
+        <span class="text-[11px] tracking-wide text-indigo-200">ScholarPress</span>
+        <span class="font-display text-sm sm:text-base font-semibold leading-snug line-clamp-3">${esc(title)}</span>
       </div>
     `;
   }
   return `
-    <div class="${aspectClass} w-full overflow-hidden bg-slate-100 dark:bg-slate-900 relative">
+    <div class="${finalAspect} w-full overflow-hidden bg-slate-100 dark:bg-slate-900 relative">
       <img
         src="${esc(url)}"
         alt="${esc(title)}"
         referrerpolicy="no-referrer"
         loading="lazy"
+        decoding="async"
         class="w-full h-full object-cover transition-transform duration-300 group-hover:scale-[1.03]"
         onerror="this.style.display='none'; this.nextElementSibling.style.display='flex';"
       />
-      <div style="display:none" class="absolute inset-0 ${fallbackBg} p-5 flex-col justify-between text-white">
-        <span class="text-xs text-slate-300">ScholarPress Edition</span>
-        <span class="font-display text-base font-semibold leading-snug">${esc(title)}</span>
+      <div style="display:none" class="absolute inset-0 ${fallbackBg} p-4 flex-col justify-between text-white">
+        <span class="text-[11px] text-indigo-200">ScholarPress</span>
+        <span class="font-display text-sm sm:text-base font-semibold leading-snug line-clamp-3">${esc(title)}</span>
       </div>
     </div>
   `;
