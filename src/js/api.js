@@ -1,5 +1,9 @@
 import { getActiveFirebaseIdToken, signOutFirebase } from './firebase.js';
-export { openImageLightbox } from './image-viewer.js';
+
+export async function openImageLightbox(opts) {
+  const mod = await import('./image-viewer.js');
+  return mod.openImageLightbox(opts);
+}
 
 export const CONTENT_TYPES = [
   'Notes',
@@ -339,11 +343,67 @@ export function closeModal() {
   if (root) root.innerHTML = '';
 }
 
-export function renderCoverImage(urlOrItem, titleArg, aspectClass = 'aspect-[4/3]') {
+/**
+ * Resolves responsive AVIF/WebP thumbnail sources for static assets and uploaded `/api/catalog/files/:id` media.
+ * Feed cards download compact 480w WebP/AVIF previews (~8–35 KB); full-resolution loads only in the Full-Screen Viewer.
+ */
+export function getResponsiveImageSources(url, preferredWidth = 480) {
+  if (!url || typeof url !== 'string') return null;
+  const trimmed = url.trim();
+  if (!trimmed || trimmed.startsWith('data:') || trimmed.startsWith('blob:')) {
+    return { fallbackSrc: trimmed, fullSrc: trimmed, avifSrcSet: '', webpSrcSet: '' };
+  }
+
+  // 1) Local preset covers under /src/assets/images/*.jpg (pre-generated 480w & 960w AVIF/WebP)
+  const srcMatch = trimmed.match(/^(\/src\/assets\/images\/.+)\.(jpe?g|png)$/i);
+  if (srcMatch) {
+    const stem = srcMatch[1];
+    const w = preferredWidth > 640 ? 960 : 480;
+    return {
+      avifSrcSet: `${stem}-480w.avif 480w, ${stem}-960w.avif 960w`,
+      webpSrcSet: `${stem}-480w.webp 480w, ${stem}-960w.webp 960w`,
+      fallbackSrc: `${stem}-${w}w.webp`,
+      fullSrc: `${stem}.webp`,
+    };
+  }
+
+  // 2) Public hero/artwork assets under /assets/aistudio/*.png (pre-generated 768w & 1280w AVIF/WebP)
+  const pubMatch = trimmed.match(/^(\/assets\/aistudio\/.+)\.(png|jpe?g)$/i);
+  if (pubMatch) {
+    const stem = pubMatch[1];
+    const w = preferredWidth > 800 ? 1280 : 768;
+    return {
+      avifSrcSet: `${stem}-768w.avif 768w, ${stem}-1280w.avif 1280w`,
+      webpSrcSet: `${stem}-768w.webp 768w, ${stem}-1280w.webp 1280w`,
+      fallbackSrc: `${stem}-${w}w.webp`,
+      fullSrc: trimmed,
+    };
+  }
+
+  // 3) Dynamic uploaded files served by /api/catalog/files/:id (on-the-fly cached sharp WebP/AVIF variants)
+  if (/^\/api\/catalog\/files\/\d+/i.test(trimmed)) {
+    const sep = trimmed.includes('?') ? '&' : '?';
+    const wSmall = Math.min(480, preferredWidth);
+    const wMed = Math.max(768, preferredWidth);
+    return {
+      avifSrcSet: `${trimmed}${sep}w=${wSmall}&fmt=avif ${wSmall}w, ${trimmed}${sep}w=${wMed}&fmt=avif ${wMed}w`,
+      webpSrcSet: `${trimmed}${sep}w=${wSmall}&fmt=webp ${wSmall}w, ${trimmed}${sep}w=${wMed}&fmt=webp ${wMed}w`,
+      fallbackSrc: `${trimmed}${sep}w=${preferredWidth}&fmt=webp`,
+      fullSrc: trimmed,
+    };
+  }
+
+  return { fallbackSrc: trimmed, fullSrc: trimmed, avifSrcSet: '', webpSrcSet: '' };
+}
+
+export function renderCoverImage(urlOrItem, titleArg, aspectClass = 'aspect-[4/3]', opts = {}) {
   const isObj = urlOrItem && typeof urlOrItem === 'object';
   const url = isObj ? urlOrItem.coverImageUrl || urlOrItem.coverUrl : urlOrItem;
   const title = isObj ? urlOrItem.title : titleArg;
   const finalAspect = isObj && typeof titleArg === 'string' ? titleArg : aspectClass;
+  const thumbWidth = opts.width || 480;
+  const sizes = opts.sizes || '(max-width: 640px) 92vw, (max-width: 1024px) 46vw, 380px';
+  const fetchPriorityAttr = opts.priority ? 'fetchpriority="high"' : 'loading="lazy"';
 
   const fallbackBg = 'bg-gradient-to-br from-[#23196e] via-[#4125b8] to-[#1e1b4b]';
   if (!url) {
@@ -354,24 +414,226 @@ export function renderCoverImage(urlOrItem, titleArg, aspectClass = 'aspect-[4/3
       </div>
     `;
   }
+
+  const sources = getResponsiveImageSources(url, thumbWidth);
+  const imgSrc = sources?.fallbackSrc || url;
+  const fullSrc = sources?.fullSrc || url;
+
   return `
     <div class="${finalAspect} w-full overflow-hidden bg-slate-100 dark:bg-slate-900 relative">
-      <img
-        src="${esc(url)}"
-        alt="${esc(title)}"
-        data-zoom-title="${esc(title)}"
-        referrerpolicy="no-referrer"
-        loading="lazy"
-        decoding="async"
-        class="sp-zoom-img cursor-zoom-in w-full h-full object-cover transition-transform duration-300 group-hover:scale-[1.03]"
-        onerror="this.style.display='none'; this.nextElementSibling.style.display='flex';"
-      />
+      <picture class="block w-full h-full">
+        ${sources?.avifSrcSet ? `<source type="image/avif" srcset="${esc(sources.avifSrcSet)}" sizes="${esc(sizes)}" />` : ''}
+        ${sources?.webpSrcSet ? `<source type="image/webp" srcset="${esc(sources.webpSrcSet)}" sizes="${esc(sizes)}" />` : ''}
+        <img
+          src="${esc(imgSrc)}"
+          data-full-src="${esc(fullSrc)}"
+          alt="${esc(title)}"
+          data-zoom-title="${esc(title)}"
+          referrerpolicy="no-referrer"
+          ${fetchPriorityAttr}
+          decoding="async"
+          class="sp-zoom-img cursor-zoom-in w-full h-full object-cover transition-transform duration-300 group-hover:scale-[1.03]"
+          onerror="if(!this.dataset.retried && this.dataset.fullSrc && this.src !== this.dataset.fullSrc){this.dataset.retried='1';this.src=this.dataset.fullSrc;return;}this.closest('picture').style.display='none';this.closest('picture').nextElementSibling.style.display='flex';"
+        />
+      </picture>
       <div style="display:none" class="absolute inset-0 ${fallbackBg} p-4 flex-col justify-between text-white">
         <span class="text-[11px] text-indigo-200">ScholarPress</span>
         <span class="font-display text-sm sm:text-base font-semibold leading-snug line-clamp-3">${esc(title)}</span>
       </div>
     </div>
   `;
+}
+
+async function computeClientSha256(file) {
+  try {
+    if (!window.crypto?.subtle || file.size > 35 * 1024 * 1024) return '';
+    const buf = await file.arrayBuffer();
+    const hashBuf = await window.crypto.subtle.digest('SHA-256', buf);
+    return Array.from(new Uint8Array(hashBuf))
+      .map((b) => b.toString(16).padStart(2, '0'))
+      .join('');
+  } catch {
+    return '';
+  }
+}
+
+function xhrSend({ method, url, body, headers = {}, onProgress }) {
+  return new Promise((resolve, reject) => {
+    const xhr = new XMLHttpRequest();
+    xhr.open(method, url, true);
+    Object.entries(headers).forEach(([k, v]) => xhr.setRequestHeader(k, v));
+    xhr.upload.onprogress = (ev) => {
+      if (ev.lengthComputable && onProgress) {
+        onProgress(ev.loaded, ev.total);
+      }
+    };
+    xhr.onload = () => {
+      const text = xhr.responseText || '';
+      let data = {};
+      try {
+        data = text ? JSON.parse(text) : {};
+      } catch {
+        data = { raw: text };
+      }
+      if (xhr.status >= 200 && xhr.status < 300) {
+        resolve(data);
+      } else {
+        const err = new Error(data.error || `Upload failed (${xhr.status})`);
+        err.status = xhr.status;
+        reject(err);
+      }
+    };
+    xhr.onerror = () => reject(new Error('Network error during file upload.'));
+    xhr.ontimeout = () => reject(new Error('Upload timed out.'));
+    xhr.timeout = 120_000;
+    xhr.send(body);
+  });
+}
+
+async function withUploadRetry(fn, maxRetries = 3) {
+  let lastErr;
+  for (let attempt = 0; attempt < maxRetries; attempt += 1) {
+    try {
+      return await fn(attempt);
+    } catch (err) {
+      lastErr = err;
+      // Do not retry 4xx validation or permission errors
+      if (err?.status && err.status >= 400 && err.status < 500) {
+        throw err;
+      }
+      if (attempt < maxRetries - 1) {
+        await new Promise((r) => setTimeout(r, 600 * Math.pow(2, attempt)));
+      }
+    }
+  }
+  throw lastErr;
+}
+
+/**
+ * Resilient file uploader supporting:
+ * 1) SHA-256 duplicate upload prevention
+ * 2) Direct-to-S3/R2/GCS presigned PUT uploads when object storage is configured
+ * 3) Resumable 2 MB chunked uploads for large files (> 4 MB) on local/persistent storage
+ * 4) Real-time % progress tracking + automatic exponential-backoff retry
+ */
+export async function uploadFileResilient({
+  contentId,
+  file,
+  isPreview = false,
+  setAsCover = false,
+  onProgress,
+}) {
+  const token = await getAuthToken();
+  const authHeaders = token ? { Authorization: `Bearer ${token}` } : {};
+  const sha256Hash = await computeClientSha256(file);
+
+  // Initialize upload (checks duplicate hash + determines direct presigned S3 vs chunked local)
+  const init = await apiFetch('/api/creator/uploads/presign', {
+    method: 'POST',
+    body: {
+      contentId,
+      fileName: file.name,
+      mimeType: file.type || 'application/octet-stream',
+      sizeBytes: file.size,
+      sha256Hash,
+      setAsCover,
+    },
+  });
+
+  if (init.mode === 'duplicate') {
+    onProgress?.(100);
+    return init;
+  }
+
+  // Path A: Direct-to-Object-Storage Presigned PUT (bypasses application server bandwidth)
+  if (init.mode === 'presigned' && init.uploadUrl) {
+    await withUploadRetry(() =>
+      xhrSend({
+        method: 'PUT',
+        url: init.uploadUrl,
+        body: file,
+        headers: { 'Content-Type': init.contentType || file.type },
+        onProgress: (loaded, total) => {
+          onProgress?.(Math.min(96, Math.round((loaded / Math.max(1, total)) * 96)));
+        },
+      })
+    );
+    const completed = await apiFetch('/api/creator/uploads/complete', {
+      method: 'POST',
+      body: {
+        contentId,
+        objectKey: init.objectKey,
+        originalName: file.name,
+        mimeType: file.type,
+        sizeBytes: file.size,
+        sha256Hash,
+        isPreview,
+        setAsCover,
+      },
+    });
+    onProgress?.(100);
+    return completed;
+  }
+
+  // Path B: Resumable Chunked Upload for large files (> 4 MB) so flaky mobile connections auto-retry individual chunks
+  const chunkSize = init.chunkSizeBytes || 2 * 1024 * 1024;
+  if (file.size > 4 * 1024 * 1024) {
+    const totalChunks = Math.ceil(file.size / chunkSize);
+    for (let idx = 0; idx < totalChunks; idx += 1) {
+      const start = idx * chunkSize;
+      const end = Math.min(file.size, start + chunkSize);
+      const blob = file.slice(start, end);
+      await withUploadRetry(() => {
+        const fd = new FormData();
+        fd.append('uploadId', init.uploadId);
+        fd.append('chunkIndex', String(idx));
+        fd.append('chunk', blob, `chunk-${idx}.part`);
+        return xhrSend({
+          method: 'POST',
+          url: '/api/creator/uploads/chunk',
+          body: fd,
+          headers: authHeaders,
+          onProgress: (loaded) => {
+            const overall = Math.min(95, Math.round(((start + loaded) / Math.max(1, file.size)) * 95));
+            onProgress?.(overall);
+          },
+        });
+      });
+    }
+    const assembled = await apiFetch('/api/creator/uploads/chunk/complete', {
+      method: 'POST',
+      body: {
+        contentId,
+        uploadId: init.uploadId,
+        totalChunks,
+        originalName: file.name,
+        mimeType: file.type,
+        isPreview,
+        setAsCover,
+      },
+    });
+    onProgress?.(100);
+    return assembled;
+  }
+
+  // Path C: Single-request XHR upload with real-time progress + automatic retry for smaller files
+  const res = await withUploadRetry(() => {
+    const fd = new FormData();
+    fd.append('file', file);
+    fd.append('isPreview', isPreview ? 'true' : 'false');
+    if (setAsCover) fd.append('setAsCover', 'true');
+    return xhrSend({
+      method: 'POST',
+      url: `/api/creator/contents/${contentId}/files`,
+      body: fd,
+      headers: authHeaders,
+      onProgress: (loaded, total) => {
+        onProgress?.(Math.min(99, Math.round((loaded / Math.max(1, total)) * 99)));
+      },
+    });
+  });
+  onProgress?.(100);
+  return res;
 }
 
 /**
@@ -388,7 +650,7 @@ export function renderContentCard(item) {
       : `<span>New</span>`;
 
   return `
-    <article class="group bg-white dark:bg-[#111A2E] border border-slate-200 dark:border-slate-800 rounded-xl overflow-hidden flex flex-col transition-colors hover:border-slate-300 dark:hover:border-slate-700">
+    <article data-content-id="${esc(item.id)}" style="content-visibility:auto;contain-intrinsic-size:0 370px;" class="group bg-white dark:bg-[#111A2E] border border-slate-200 dark:border-slate-800 rounded-xl overflow-hidden flex flex-col transition-colors hover:border-slate-300 dark:hover:border-slate-700">
       <a href="#/content/${esc(item.slug)}" class="block overflow-hidden">
         ${renderCoverImage(item.coverImageUrl, item.title)}
       </a>

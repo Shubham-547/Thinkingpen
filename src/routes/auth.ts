@@ -23,13 +23,15 @@ import {
 import {
   createSessionToken,
   generateRandomToken,
-  hashPassword,
+  hashPasswordAsync,
   sanitizeSafeUrl,
-  verifyPassword,
+  verifyPasswordAsync,
 } from '../lib/security.ts';
+import { isMailerConfigured } from '../lib/mailer.ts';
 import {
   autoUnblockIfExpired,
   buildBlockedPayload,
+  invalidateUserAuthCache,
   isOwnerAdminEmail,
   isSuperAdminEmail,
   optionalAuth,
@@ -40,31 +42,23 @@ import {
 const router = Router();
 
 async function buildUserEnvelope(userId: number) {
-  const [user] = await db.select().from(users).where(eq(users.id, userId)).limit(1);
+  const [userRows, profileRows, creatorProfileRows, walletRows, unreadRows] = await Promise.all([
+    db.select().from(users).where(eq(users.id, userId)).limit(1),
+    db.select().from(userProfiles).where(eq(userProfiles.userId, userId)).limit(1),
+    db.select().from(creatorProfiles).where(eq(creatorProfiles.userId, userId)).limit(1),
+    db.select().from(creatorWallets).where(eq(creatorWallets.creatorId, userId)).limit(1),
+    db
+      .select({ value: count() })
+      .from(notifications)
+      .where(and(eq(notifications.userId, userId), eq(notifications.isRead, false))),
+  ]);
+
+  const user = userRows[0];
   if (!user) return null;
-
-  const [profile] = await db
-    .select()
-    .from(userProfiles)
-    .where(eq(userProfiles.userId, userId))
-    .limit(1);
-
-  const [creatorProfile] = await db
-    .select()
-    .from(creatorProfiles)
-    .where(eq(creatorProfiles.userId, userId))
-    .limit(1);
-
-  const [wallet] = await db
-    .select()
-    .from(creatorWallets)
-    .where(eq(creatorWallets.creatorId, userId))
-    .limit(1);
-
-  const [unreadRow] = await db
-    .select({ value: count() })
-    .from(notifications)
-    .where(and(eq(notifications.userId, userId), eq(notifications.isRead, false)));
+  const profile = profileRows[0];
+  const creatorProfile = creatorProfileRows[0];
+  const wallet = walletRows[0];
+  const unreadRow = unreadRows[0];
 
   let publicUid = user.publicUid;
   if (!publicUid) {
@@ -73,6 +67,7 @@ async function buildUserEnvelope(userId: number) {
       .update(users)
       .set({ publicUid, updatedAt: new Date() })
       .where(eq(users.id, user.id));
+    invalidateUserAuthCache(user.id, user.email);
   }
 
   return {
@@ -171,7 +166,7 @@ router.post('/register', async (req, res) => {
 
     const uid = `local-${generateRandomToken(12)}`;
     const publicUid = await generateUnique10DigitUid();
-    const passwordHash = hashPassword(password);
+    const passwordHash = await hashPasswordAsync(password);
     const role = isOwnerAdminEmail(email) ? 'admin' : registerAsCreator ? 'creator' : 'user';
 
     const [created] = await db
@@ -247,10 +242,11 @@ router.post('/register', async (req, res) => {
     });
 
     const envelope = await buildUserEnvelope(created.id);
+    const allowDevPreview = process.env.NODE_ENV !== 'production' && !isMailerConfigured();
     return res.status(201).json({
       token,
       user: envelope,
-      verificationTokenPreview: verifyToken,
+      ...(allowDevPreview ? { verificationTokenPreview: verifyToken } : {}),
     });
   } catch (error) {
     console.error('Register error:', error);
@@ -288,7 +284,7 @@ router.post('/login', async (req, res) => {
       return res.status(401).json({ error: 'Invalid email or password.' });
     }
 
-    if (!rawUser.passwordHash || !verifyPassword(password, rawUser.passwordHash)) {
+    if (!rawUser.passwordHash || !(await verifyPasswordAsync(password, rawUser.passwordHash))) {
       return res.status(401).json({ error: 'Invalid email or password.' });
     }
 
@@ -380,15 +376,16 @@ router.post('/change-password', requireAuth, async (req: AuthRequest, res) => {
     if (!user) return res.status(404).json({ error: 'Account not found.' });
 
     if (user.passwordHash) {
-      if (!currentPassword || !verifyPassword(currentPassword, user.passwordHash)) {
+      if (!currentPassword || !(await verifyPasswordAsync(currentPassword, user.passwordHash))) {
         return res.status(401).json({ error: 'Current password is incorrect.' });
       }
     }
 
     await db
       .update(users)
-      .set({ passwordHash: hashPassword(newPassword), updatedAt: new Date() })
+      .set({ passwordHash: await hashPasswordAsync(newPassword), updatedAt: new Date() })
       .where(eq(users.id, user.id));
+    invalidateUserAuthCache(user.id, user.email);
 
     return res.json({ message: 'Password updated successfully.' });
   } catch (error) {
@@ -428,8 +425,9 @@ router.post('/reset-password', async (req, res) => {
 
     await db
       .update(users)
-      .set({ passwordHash: hashPassword(newPassword), updatedAt: new Date() })
+      .set({ passwordHash: await hashPasswordAsync(newPassword), updatedAt: new Date() })
       .where(eq(users.id, record.userId));
+    invalidateUserAuthCache(record.userId);
 
     await db
       .update(authTokens)
@@ -472,6 +470,7 @@ router.post('/verify-email', async (req, res) => {
       .update(users)
       .set({ emailVerified: true, updatedAt: new Date() })
       .where(eq(users.id, record.userId));
+    invalidateUserAuthCache(record.userId);
 
     await db
       .update(authTokens)
@@ -495,9 +494,10 @@ router.post('/resend-verification', requireAuth, async (req: AuthRequest, res) =
       type: 'email_verify',
       expiresAt: new Date(Date.now() + 24 * 60 * 60 * 1000),
     });
+    const allowDevPreview = process.env.NODE_ENV !== 'production' && !isMailerConfigured();
     return res.json({
       message: 'A new verification code has been generated.',
-      verificationTokenPreview: verifyToken,
+      ...(allowDevPreview ? { verificationTokenPreview: verifyToken } : {}),
     });
   } catch (error) {
     console.error('Resend verification error:', error);
@@ -529,6 +529,7 @@ router.post('/become-creator', requireAuth, async (req: AuthRequest, res) => {
       .update(users)
       .set({ role: nextRole, updatedAt: new Date() })
       .where(eq(users.id, req.user!.id));
+    invalidateUserAuthCache(req.user!.id, req.user!.email);
 
     await db
       .insert(creatorProfiles)
@@ -672,6 +673,7 @@ router.put('/profile', requireAuth, async (req: AuthRequest, res) => {
       .update(users)
       .set(userUpdates)
       .where(eq(users.id, req.user!.id));
+    invalidateUserAuthCache(req.user!.id, req.user!.email);
 
     await db
       .insert(userProfiles)

@@ -2,15 +2,25 @@ services:
   - type: web
     name: scholarpress
     runtime: node
+    # NOTE: Free tier (512MB RAM / 0.1 CPU) spins down after 15m idle and uses ephemeral disk.
+    # For production traffic (>50 concurrent users) upgrade to `starter` (always-on) or `standard` (2GB RAM)
+    # and configure S3/Cloudflare R2 env vars (`S3_BUCKET`, `S3_ENDPOINT`, `S3_ACCESS_KEY_ID`, `S3_SECRET_ACCESS_KEY`)
+    # so uploaded files persist across deploys and bypass application server bandwidth.
     plan: free
     buildCommand: npm install --include=dev --legacy-peer-deps && npm run build
-    startCommand: npx drizzle-kit push --config=src/db/drizzle.config.ts --force && npx tsx server.ts
+    # Pre-bundled dist/server.mjs avoids ~90-120MB of tsx runtime memory overhead.
+    # Schema sync runs once during deploy via preDeployCommand on paid tiers, or fallback here on free tier.
+    startCommand: npx drizzle-kit push --config=src/db/drizzle.config.ts --force && npm run start:prod
     healthCheckPath: /api/health
     envVars:
       - key: NODE_VERSION
         value: "22"
       - key: NODE_ENV
         value: production
+      - key: NODE_OPTIONS
+        value: "--max-old-space-size=384"
+      - key: PG_POOL_MAX
+        value: "10"
       - key: DATABASE_URL
         fromDatabase:
           name: scholarpress-db
@@ -22,6 +32,7 @@ services:
 
 databases:
   - name: scholarpress-db
+    # NOTE: Render free Postgres has 1GB disk and expires after 90 days; upgrade to Basic-256mb+ for production.
     plan: free
     databaseName: scholarpress
     user: scholarpress_user

@@ -5,6 +5,7 @@ import {
   formatDate,
   formatInr,
   getCachedHomeSnapshot,
+  getResponsiveImageSources,
   HOME_HERO_BANNER,
   LANGUAGES,
   renderContentCard,
@@ -13,6 +14,58 @@ import {
   showToast,
   store,
 } from './api.js';
+
+// ===== INFINITE SCROLL FEED CACHE & CLEANUP REGISTRY =====
+let activeExploreCleanup = null;
+const exploreFeedCache = new Map();
+const MAX_EXPLORE_CACHE = 8;
+
+export function cleanupExploreObservers() {
+  if (typeof activeExploreCleanup === 'function') {
+    activeExploreCleanup();
+    activeExploreCleanup = null;
+  }
+}
+
+function saveExploreFeedState(key, snapshot) {
+  if (exploreFeedCache.size >= MAX_EXPLORE_CACHE && !exploreFeedCache.has(key)) {
+    const oldest = exploreFeedCache.keys().next().value;
+    if (oldest) exploreFeedCache.delete(oldest);
+  }
+  exploreFeedCache.set(key, { ...snapshot, savedAt: Date.now() });
+}
+
+function getExploreFeedState(key) {
+  const entry = exploreFeedCache.get(key);
+  if (!entry) return null;
+  if (Date.now() - entry.savedAt > 5 * 60 * 1000) {
+    exploreFeedCache.delete(key);
+    return null;
+  }
+  return entry;
+}
+
+function renderCardSkeletons(count = 6) {
+  return Array.from({ length: count })
+    .map(
+      () => `
+      <div class="bg-white dark:bg-[#111A2E] border border-slate-200 dark:border-slate-800 rounded-xl overflow-hidden animate-pulse flex flex-col">
+        <div class="aspect-[4/3] w-full bg-slate-200/80 dark:bg-slate-800"></div>
+        <div class="p-5 space-y-3 flex-1">
+          <div class="h-3 w-2/3 bg-slate-200 dark:bg-slate-800 rounded"></div>
+          <div class="h-5 w-11/12 bg-slate-200 dark:bg-slate-800 rounded"></div>
+          <div class="h-3 w-full bg-slate-100 dark:bg-slate-800/80 rounded"></div>
+          <div class="h-3 w-4/5 bg-slate-100 dark:bg-slate-800/80 rounded"></div>
+          <div class="pt-3 border-t border-slate-100 dark:border-slate-800 flex items-center justify-between">
+            <div class="h-3 w-24 bg-slate-200 dark:bg-slate-800 rounded"></div>
+            <div class="h-4 w-12 bg-slate-200 dark:bg-slate-800 rounded"></div>
+          </div>
+        </div>
+      </div>
+    `
+    )
+    .join('');
+}
 
 function formatCompactCount(num) {
   const n = Number(num || 0);
@@ -198,14 +251,23 @@ function renderHomeMarkup(container, data) {
 
         <!-- HERO SECTION -->
         <section class="relative rounded-2xl lg:rounded-3xl overflow-hidden border border-indigo-200/75 dark:border-slate-800 shadow-[0_12px_34px_rgba(65,70,165,0.10)] dark:shadow-none bg-gradient-to-br from-[#e2eeff] via-[#d7e8ff] to-[#c7e0ff] dark:from-[#0e1933] dark:via-[#111e3d] dark:to-[#0b152b]">
-          <!-- Hero Desk Artwork (Right-Aligned on BOTH Mobile & Desktop like Images 1 & 2) -->
-          <img
-            src="${HOME_HERO_BANNER}"
-            alt="ScholarPress study desk with books, glowing lightbulb, laptop, graduation cap, and globe"
-            fetchpriority="high"
-            decoding="async"
-            class="absolute right-0 top-0 h-[230px] sm:h-[285px] lg:h-full w-[72%] sm:w-[68%] lg:w-full object-cover object-[84%_center] sm:object-[80%_center] lg:object-right select-none pointer-events-none"
-          />
+          <!-- Hero Desk Artwork (Responsive AVIF/WebP 768w & 1280w — 98%+ smaller than PNG) -->
+          ${(() => {
+            const heroSrc = getResponsiveImageSources(HOME_HERO_BANNER, 1280);
+            return `
+              <picture class="contents">
+                ${heroSrc?.avifSrcSet ? `<source type="image/avif" srcset="${esc(heroSrc.avifSrcSet)}" sizes="(max-width: 768px) 75vw, 100vw" />` : ''}
+                ${heroSrc?.webpSrcSet ? `<source type="image/webp" srcset="${esc(heroSrc.webpSrcSet)}" sizes="(max-width: 768px) 75vw, 100vw" />` : ''}
+                <img
+                  src="${esc(heroSrc?.fallbackSrc || HOME_HERO_BANNER)}"
+                  alt="ScholarPress study desk with books, glowing lightbulb, laptop, graduation cap, and globe"
+                  fetchpriority="high"
+                  decoding="async"
+                  class="absolute right-0 top-0 h-[230px] sm:h-[285px] lg:h-full w-[72%] sm:w-[68%] lg:w-full object-cover object-[84%_center] sm:object-[80%_center] lg:object-right select-none pointer-events-none"
+                />
+              </picture>
+            `;
+          })()}
           <!-- Directional Left Readability Gradient -->
           <div class="absolute inset-0 bg-gradient-to-r from-[#e6f0ff] via-[#e6f0ff]/95 via-[44%] sm:via-[46%] lg:via-[42%] to-transparent dark:from-[#0c162d] dark:via-[#0d1831]/94 dark:via-[46%] dark:to-[#0d1831]/20 pointer-events-none"></div>
           <!-- Mobile Lower Surface Fade so Search & CTAs sit cleanly -->
@@ -526,6 +588,8 @@ export async function renderHomePage(container) {
 }
 
 export async function renderExplorePage(container, preset = {}) {
+  cleanupExploreObservers();
+
   const hashQuery = window.location.hash.includes('?')
     ? new URLSearchParams(window.location.hash.split('?')[1])
     : new URLSearchParams();
@@ -538,7 +602,6 @@ export async function renderExplorePage(container, preset = {}) {
     language: hashQuery.get('language') || 'all',
     pricing: hashQuery.get('pricing') || 'all',
     sort: hashQuery.get('sort') || 'latest',
-    page: Math.max(1, Number(hashQuery.get('page') || 1)),
   };
 
   const pageTitle = preset.title || 'Explore Educational Catalog';
@@ -641,18 +704,174 @@ export async function renderExplorePage(container, preset = {}) {
       </form>
 
       <div id="explore-results-meta" class="text-xs text-slate-500 dark:text-slate-400 mb-4 tabular-nums"></div>
+      <div id="explore-virtual-top" aria-hidden="true"></div>
       <div id="explore-results-grid" class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-6"></div>
-      <div id="explore-pagination" class="mt-10 flex items-center justify-center gap-2"></div>
+      <div id="explore-virtual-bottom" aria-hidden="true"></div>
+      <div id="explore-batch-skeleton" class="hidden grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-6 mt-6">
+        ${renderCardSkeletons(3)}
+      </div>
+      <!-- Proactive IntersectionObserver sentinel (prefetches 700px before reaching end) -->
+      <div id="explore-scroll-sentinel" class="h-2 w-full" aria-hidden="true"></div>
+      <div id="explore-feed-footer" class="mt-8 text-center"></div>
     </div>
   `;
 
-  async function runQuery() {
-    const grid = document.getElementById('explore-results-grid');
-    const meta = document.getElementById('explore-results-meta');
-    const pag = document.getElementById('explore-pagination');
-    if (!grid) return;
+  const grid = document.getElementById('explore-results-grid');
+  const topSpacer = document.getElementById('explore-virtual-top');
+  const bottomSpacer = document.getElementById('explore-virtual-bottom');
+  const meta = document.getElementById('explore-results-meta');
+  const batchSkeleton = document.getElementById('explore-batch-skeleton');
+  const sentinel = document.getElementById('explore-scroll-sentinel');
+  const feedFooter = document.getElementById('explore-feed-footer');
+  if (!grid || !sentinel) return;
 
-    grid.innerHTML = `<div class="col-span-full py-12 text-center text-sm text-slate-500">Loading publications...</div>`;
+  const BATCH_SIZE = 10;
+  const VIRTUALIZE_THRESHOLD = 48;
+  const ESTIMATED_ROW_HEIGHT = 415;
+  const BUFFER_ROWS = 3;
+
+  let loadedItems = [];
+  let seenIds = new Set();
+  let nextCursor = null;
+  let hasMore = true;
+  let totalCount = null;
+  let isFetching = false;
+  let activeFetchId = 0;
+  let activeAbort = null;
+  let lastVirtRange = '';
+  let rafVirtPending = false;
+
+  const getCacheKey = () =>
+    JSON.stringify({
+      route: window.location.hash.split('?')[0],
+      q: state.q,
+      category: state.category,
+      subject: state.subject,
+      contentType: state.contentType,
+      language: state.language,
+      pricing: state.pricing,
+      sort: state.sort,
+    });
+
+  const getGridCols = () => {
+    const w = window.innerWidth;
+    if (w >= 1024) return 3;
+    if (w >= 640) return 2;
+    return 1;
+  };
+
+  const updateMetaText = () => {
+    if (!meta) return;
+    if (totalCount !== null) {
+      meta.textContent = `Showing ${loadedItems.length} of ${totalCount} matching ${totalCount === 1 ? 'publication' : 'publications'}`;
+    } else if (loadedItems.length > 0) {
+      meta.textContent = `Loaded ${loadedItems.length} publications`;
+    } else {
+      meta.textContent = '';
+    }
+  };
+
+  const renderFeedFooter = (errorMsg = '') => {
+    if (!feedFooter) return;
+    if (errorMsg) {
+      feedFooter.innerHTML = `
+        <div class="inline-flex flex-col sm:flex-row items-center gap-3 px-5 py-3.5 rounded-xl border border-red-200 dark:border-red-900/70 bg-red-50/70 dark:bg-red-950/30 text-xs text-red-700 dark:text-red-300">
+          <span>${esc(errorMsg)}</span>
+          <button type="button" id="ex-retry-batch" class="px-3.5 py-1.5 rounded-lg bg-[#0F2547] dark:bg-sky-500 text-white dark:text-slate-950 font-semibold">Retry</button>
+        </div>
+      `;
+      document.getElementById('ex-retry-batch')?.addEventListener('click', () => loadNextBatch());
+      return;
+    }
+    if (!hasMore && loadedItems.length > 0) {
+      feedFooter.innerHTML = `
+        <div class="inline-flex items-center gap-2 px-4 py-2 rounded-full bg-slate-100 dark:bg-slate-900 border border-slate-200 dark:border-slate-800 text-xs text-slate-600 dark:text-slate-400">
+          <span>You've reached the end — all ${loadedItems.length} ${loadedItems.length === 1 ? 'publication' : 'publications'} loaded.</span>
+        </div>
+      `;
+      return;
+    }
+    feedFooter.innerHTML = '';
+  };
+
+  // Windowed DOM virtualization activates automatically for very long feeds (>48 items)
+  // keeping DOM size bounded while preserving smooth continuous scrolling.
+  const renderVirtualizedWindow = (force = false) => {
+    if (loadedItems.length <= VIRTUALIZE_THRESHOLD) {
+      if (topSpacer) topSpacer.style.height = '0px';
+      if (bottomSpacer) bottomSpacer.style.height = '0px';
+      if (force) {
+        grid.innerHTML = loadedItems.map(renderContentCard).join('');
+      }
+      return;
+    }
+
+    const cols = getGridCols();
+    const totalRows = Math.ceil(loadedItems.length / cols);
+    const gridTopDoc = (topSpacer ? topSpacer.getBoundingClientRect().top : grid.getBoundingClientRect().top) + window.scrollY;
+    const relScrollTop = Math.max(0, window.scrollY - gridTopDoc);
+    const viewportH = window.innerHeight || 800;
+
+    const firstVisibleRow = Math.floor(relScrollTop / ESTIMATED_ROW_HEIGHT);
+    const visibleRowCount = Math.ceil(viewportH / ESTIMATED_ROW_HEIGHT);
+    const startRow = Math.max(0, firstVisibleRow - BUFFER_ROWS);
+    const endRow = Math.min(totalRows, firstVisibleRow + visibleRowCount + BUFFER_ROWS);
+
+    const rangeKey = `${cols}:${startRow}:${endRow}:${loadedItems.length}`;
+    if (!force && rangeKey === lastVirtRange) return;
+    lastVirtRange = rangeKey;
+
+    const startIdx = startRow * cols;
+    const endIdx = Math.min(loadedItems.length, endRow * cols);
+    if (topSpacer) topSpacer.style.height = `${startRow * ESTIMATED_ROW_HEIGHT}px`;
+    if (bottomSpacer) bottomSpacer.style.height = `${Math.max(0, (totalRows - endRow) * ESTIMATED_ROW_HEIGHT)}px`;
+    grid.innerHTML = loadedItems.slice(startIdx, endIdx).map(renderContentCard).join('');
+  };
+
+  const persistCurrentState = () => {
+    saveExploreFeedState(getCacheKey(), {
+      items: loadedItems,
+      nextCursor,
+      hasMore,
+      totalCount,
+      scrollY: window.scrollY,
+    });
+  };
+
+  const onWindowScrollOrResize = () => {
+    persistCurrentState();
+    if (loadedItems.length <= VIRTUALIZE_THRESHOLD) return;
+    if (rafVirtPending) return;
+    rafVirtPending = true;
+    requestAnimationFrame(() => {
+      rafVirtPending = false;
+      renderVirtualizedWindow(false);
+    });
+  };
+
+  async function loadNextBatch(isInitial = false) {
+    if (isFetching || (!isInitial && !hasMore)) return;
+    isFetching = true;
+    const myFetchId = ++activeFetchId;
+
+    if (activeAbort) {
+      try {
+        activeAbort.abort();
+      } catch {}
+    }
+    activeAbort = typeof AbortController !== 'undefined' ? new AbortController() : null;
+
+    if (isInitial) {
+      if (topSpacer) topSpacer.style.height = '0px';
+      if (bottomSpacer) bottomSpacer.style.height = '0px';
+      grid.innerHTML = renderCardSkeletons(6);
+      batchSkeleton?.classList.add('hidden');
+      renderFeedFooter('');
+    } else {
+      batchSkeleton?.classList.remove('hidden');
+      renderFeedFooter('');
+    }
+
     try {
       const qs = new URLSearchParams();
       if (state.q) qs.set('q', state.q);
@@ -662,13 +881,36 @@ export async function renderExplorePage(container, preset = {}) {
       if (state.language && state.language !== 'all') qs.set('language', state.language);
       if (state.pricing && state.pricing !== 'all') qs.set('pricing', state.pricing);
       qs.set('sort', state.sort);
-      qs.set('page', String(state.page));
-      qs.set('limit', '12');
+      qs.set('limit', String(BATCH_SIZE));
+      if (!isInitial && nextCursor) {
+        qs.set('cursor', nextCursor);
+      }
 
-      const res = await apiFetch(`/api/catalog/contents?${qs.toString()}`);
-      meta.textContent = `Showing ${res.items.length} of ${res.total} matching ${res.total === 1 ? 'publication' : 'publications'}`;
+      const res = await apiFetch(`/api/catalog/contents?${qs.toString()}`, {
+        signal: activeAbort?.signal,
+      });
 
-      if (!res.items.length) {
+      // Ignore stale responses if user changed filters mid-flight
+      if (myFetchId !== activeFetchId) return;
+
+      if (typeof res.total === 'number') {
+        totalCount = res.total;
+      }
+      hasMore = Boolean(res.hasMore && res.nextCursor);
+      nextCursor = res.nextCursor || null;
+
+      const freshItems = [];
+      for (const item of res.items || []) {
+        if (!seenIds.has(item.id)) {
+          seenIds.add(item.id);
+          loadedItems.push(item);
+          freshItems.push(item);
+        }
+      }
+
+      updateMetaText();
+
+      if (isInitial && loadedItems.length === 0) {
         grid.innerHTML = `
           <div class="col-span-full bg-white dark:bg-[#111A2E] border border-slate-200 dark:border-slate-800 rounded-xl p-12 text-center">
             <h3 class="font-display text-xl font-semibold text-slate-900 dark:text-white mb-2">No matching publications found</h3>
@@ -679,36 +921,72 @@ export async function renderExplorePage(container, preset = {}) {
         document.getElementById('ex-empty-reset')?.addEventListener('click', () => {
           document.getElementById('ex-reset-btn')?.click();
         });
-        pag.innerHTML = '';
+        renderFeedFooter('');
         return;
       }
 
-      grid.innerHTML = res.items.map(renderContentCard).join('');
-
-      if (res.totalPages > 1) {
-        let btns = '';
-        for (let p = 1; p <= res.totalPages; p++) {
-          btns += `<button type="button" data-page="${p}" class="ex-page-btn px-3.5 py-2 text-xs font-mono font-semibold rounded-lg border transition-colors ${
-            p === res.page
-              ? 'bg-[#0F2547] text-white border-[#0F2547] dark:bg-sky-500 dark:text-slate-950 dark:border-sky-500'
-              : 'bg-white dark:bg-[#111A2E] text-slate-700 dark:text-slate-300 border-slate-200 dark:border-slate-800 hover:border-slate-400'
-          }">${p}</button>`;
-        }
-        pag.innerHTML = btns;
-        pag.querySelectorAll('.ex-page-btn').forEach((btn) => {
-          btn.addEventListener('click', () => {
-            state.page = Number(btn.dataset.page);
-            runQuery();
-            window.scrollTo({ top: 0, behavior: 'smooth' });
-          });
-        });
-      } else {
-        pag.innerHTML = '';
+      if (loadedItems.length > VIRTUALIZE_THRESHOLD) {
+        renderVirtualizedWindow(true);
+      } else if (isInitial) {
+        grid.innerHTML = loadedItems.map(renderContentCard).join('');
+      } else if (freshItems.length > 0) {
+        grid.insertAdjacentHTML('beforeend', freshItems.map(renderContentCard).join(''));
       }
+
+      renderFeedFooter('');
+      persistCurrentState();
     } catch (err) {
-      grid.innerHTML = `<div class="col-span-full p-6 rounded-xl border border-red-200 dark:border-red-900 text-red-700 dark:text-red-300 text-sm">${esc(err.message)}</div>`;
+      if (err?.name === 'AbortError' || myFetchId !== activeFetchId) return;
+      if (isInitial) {
+        grid.innerHTML = `<div class="col-span-full p-6 rounded-xl border border-red-200 dark:border-red-900 text-red-700 dark:text-red-300 text-sm">${esc(err.message)}</div>`;
+      } else {
+        renderFeedFooter(err.message || 'Could not load more publications.');
+      }
+    } finally {
+      if (myFetchId === activeFetchId) {
+        isFetching = false;
+        batchSkeleton?.classList.add('hidden');
+      }
     }
   }
+
+  function resetAndFetch() {
+    loadedItems = [];
+    seenIds = new Set();
+    nextCursor = null;
+    hasMore = true;
+    totalCount = null;
+    lastVirtRange = '';
+    isFetching = false;
+    loadNextBatch(true);
+  }
+
+  // IntersectionObserver with generous 700px bottom rootMargin prefetches the next batch smoothly
+  // well before the reader reaches the end of the feed.
+  const observer = new IntersectionObserver(
+    (entries) => {
+      if (entries.some((e) => e.isIntersecting) && hasMore && !isFetching && loadedItems.length > 0) {
+        loadNextBatch(false);
+      }
+    },
+    { root: null, rootMargin: '0px 0px 700px 0px', threshold: 0 }
+  );
+  observer.observe(sentinel);
+
+  window.addEventListener('scroll', onWindowScrollOrResize, { passive: true });
+  window.addEventListener('resize', onWindowScrollOrResize, { passive: true });
+
+  activeExploreCleanup = () => {
+    persistCurrentState();
+    observer.disconnect();
+    window.removeEventListener('scroll', onWindowScrollOrResize);
+    window.removeEventListener('resize', onWindowScrollOrResize);
+    if (activeAbort) {
+      try {
+        activeAbort.abort();
+      } catch {}
+    }
+  };
 
   document.getElementById('explore-filter-form')?.addEventListener('submit', (e) => {
     e.preventDefault();
@@ -719,20 +997,17 @@ export async function renderExplorePage(container, preset = {}) {
     }
     state.language = document.getElementById('ex-language')?.value || 'all';
     state.sort = document.getElementById('ex-sort')?.value || 'latest';
-    state.page = 1;
-    runQuery();
+    resetAndFetch();
   });
 
   document.getElementById('ex-sort')?.addEventListener('change', () => {
     state.sort = document.getElementById('ex-sort').value;
-    state.page = 1;
-    runQuery();
+    resetAndFetch();
   });
 
   document.querySelectorAll('.ex-pricing-btn').forEach((btn) => {
     btn.addEventListener('click', () => {
       state.pricing = btn.dataset.pricing;
-      state.page = 1;
       document.querySelectorAll('.ex-pricing-btn').forEach((b) => {
         const active = b.dataset.pricing === state.pricing;
         b.className = `ex-pricing-btn min-h-[36px] px-3 py-1.5 text-xs font-semibold rounded-md transition-colors text-center whitespace-nowrap shrink-0 ${
@@ -741,7 +1016,7 @@ export async function renderExplorePage(container, preset = {}) {
             : 'text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white'
         }`;
       });
-      runQuery();
+      resetAndFetch();
     });
   });
 
@@ -753,16 +1028,32 @@ export async function renderExplorePage(container, preset = {}) {
     state.language = 'all';
     state.pricing = 'all';
     state.sort = 'latest';
-    state.page = 1;
     document.getElementById('ex-q').value = '';
     document.getElementById('ex-category').value = '';
     if (!preset.lockType) document.getElementById('ex-type').value = '';
     document.getElementById('ex-language').value = 'all';
     document.getElementById('ex-sort').value = 'latest';
-    runQuery();
+    resetAndFetch();
   });
 
-  await runQuery();
+  // Instant restore when navigating Back to Explore (preserves loaded batches + exact scroll position!)
+  const cachedFeed = getExploreFeedState(getCacheKey());
+  if (cachedFeed && cachedFeed.items?.length > 0) {
+    loadedItems = [...cachedFeed.items];
+    seenIds = new Set(loadedItems.map((i) => i.id));
+    nextCursor = cachedFeed.nextCursor;
+    hasMore = cachedFeed.hasMore;
+    totalCount = cachedFeed.totalCount;
+    updateMetaText();
+    renderVirtualizedWindow(true);
+    renderFeedFooter('');
+    if (cachedFeed.scrollY > 0) {
+      requestAnimationFrame(() => window.scrollTo({ top: cachedFeed.scrollY, behavior: 'instant' }));
+    }
+    return;
+  }
+
+  await loadNextBatch(true);
 }
 
 export async function renderCategoriesPage(container) {

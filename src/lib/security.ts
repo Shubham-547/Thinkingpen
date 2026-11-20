@@ -1,10 +1,21 @@
 import crypto from 'node:crypto';
 import path from 'node:path';
 
-const SESSION_SECRET =
-  process.env.SESSION_SECRET ||
-  process.env.SQL_PASSWORD ||
-  'scholarpress-dev-session-secret-key-change-in-prod';
+const SESSION_SECRET = (() => {
+  const configured = (process.env.SESSION_SECRET || '').trim();
+  if (configured && configured.length >= 16) return configured;
+  if (process.env.NODE_ENV === 'production') {
+    console.warn(
+      '[SECURITY WARNING] SESSION_SECRET is unset or shorter than 16 chars in production; generating an ephemeral per-boot CSPRNG secret.'
+    );
+    return crypto.randomBytes(48).toString('hex');
+  }
+  // Stable dev-only secret derived from local workspace path (never reusing DB passwords)
+  return crypto
+    .createHash('sha256')
+    .update(`scholarpress-local-dev:${process.cwd()}`)
+    .digest('hex');
+})();
 
 export function hashPassword(password: string): string {
   const salt = crypto.randomBytes(16).toString('hex');
@@ -20,6 +31,38 @@ export function verifyPassword(password: string, storedHash: string): boolean {
   const keyBuf = Buffer.from(keyHex, 'hex');
   if (derived.length !== keyBuf.length) return false;
   return crypto.timingSafeEqual(derived, keyBuf);
+}
+
+/**
+ * Non-blocking async scrypt password hashing (runs on libuv threadpool so concurrent logins never block Express).
+ */
+export function hashPasswordAsync(password: string): Promise<string> {
+  const salt = crypto.randomBytes(16).toString('hex');
+  return new Promise((resolve, reject) => {
+    crypto.scrypt(password, salt, 64, (err, derived) => {
+      if (err) reject(err);
+      else resolve(`${salt}:${derived.toString('hex')}`);
+    });
+  });
+}
+
+/**
+ * Non-blocking async scrypt password verification with timing-safe comparison.
+ */
+export function verifyPasswordAsync(password: string, storedHash: string): Promise<boolean> {
+  const parts = storedHash.split(':');
+  if (parts.length !== 2) return Promise.resolve(false);
+  const [salt, keyHex] = parts;
+  const keyBuf = Buffer.from(keyHex, 'hex');
+  return new Promise((resolve) => {
+    crypto.scrypt(password, salt, 64, (err, derived) => {
+      if (err || derived.length !== keyBuf.length) {
+        resolve(false);
+        return;
+      }
+      resolve(crypto.timingSafeEqual(derived, keyBuf));
+    });
+  });
 }
 
 export interface SessionPayload {
@@ -64,6 +107,48 @@ export function verifySessionToken(token: string): SessionPayload | null {
   } catch {
     return null;
   }
+}
+
+/**
+ * Short-lived HMAC-signed file access token scoped strictly to (fileId, userId) for inline media/PDF rendering
+ * without exposing long-lived session tokens in URLs or server logs.
+ */
+export function createSignedFileToken(fileId: number, userId: number, ttlSeconds = 900): string {
+  const exp = Math.floor(Date.now() / 1000) + ttlSeconds;
+  const body = `${fileId}.${userId}.${exp}`;
+  const sig = crypto.createHmac('sha256', `${SESSION_SECRET}:file`).update(body).digest('base64url');
+  return `sf1.${body}.${sig}`;
+}
+
+export function verifySignedFileToken(
+  token: string,
+  expectedFileId: number
+): { fileId: number; userId: number } | null {
+  if (!token || !token.startsWith('sf1.')) return null;
+  const parts = token.split('.');
+  if (parts.length !== 5) return null;
+  const [, fileIdStr, userIdStr, expStr, sig] = parts;
+  const fileId = Number(fileIdStr);
+  const userId = Number(userIdStr);
+  const exp = Number(expStr);
+  if (
+    !Number.isInteger(fileId) ||
+    !Number.isInteger(userId) ||
+    fileId !== expectedFileId ||
+    !Number.isFinite(exp) ||
+    Math.floor(Date.now() / 1000) > exp
+  ) {
+    return null;
+  }
+  const body = `${fileIdStr}.${userIdStr}.${expStr}`;
+  const expectedSig = crypto
+    .createHmac('sha256', `${SESSION_SECRET}:file`)
+    .update(body)
+    .digest('base64url');
+  const a = Buffer.from(sig);
+  const b = Buffer.from(expectedSig);
+  if (a.length !== b.length || !crypto.timingSafeEqual(a, b)) return null;
+  return { fileId, userId };
 }
 
 export function generateRandomToken(bytes = 24): string {

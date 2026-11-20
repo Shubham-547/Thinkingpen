@@ -164,13 +164,21 @@ export const contents = pgTable(
   (table) => [
     index('idx_contents_creator').on(table.creatorId),
     index('idx_contents_category').on(table.categoryId),
+    index('idx_contents_subject').on(table.subjectId),
     index('idx_contents_status').on(table.status),
     index('idx_contents_type').on(table.contentType),
     index('idx_contents_deleted_at').on(table.deletedAt),
+    // Composite indexes for cursor-based infinite scroll feeds & creator studio listings
+    index('idx_contents_feed_latest').on(table.status, table.deletedAt, table.publishedAt, table.id),
+    index('idx_contents_feed_popular').on(table.status, table.deletedAt, table.viewsCount, table.id),
+    index('idx_contents_feed_rating').on(table.status, table.deletedAt, table.avgRating, table.id),
+    index('idx_contents_feed_price').on(table.status, table.deletedAt, table.priceInr, table.id),
+    index('idx_contents_feed_cat_latest').on(table.status, table.deletedAt, table.categoryId, table.publishedAt, table.id),
+    index('idx_contents_creator_active').on(table.creatorId, table.deletedAt, table.updatedAt),
   ]
 );
 
-// 7. Content Files (protected PDFs, videos, attachments)
+// 7. Content Files (protected PDFs, videos, attachments, thumbnails, direct object storage metadata)
 export const contentFiles = pgTable(
   'content_files',
   {
@@ -178,16 +186,24 @@ export const contentFiles = pgTable(
     contentId: integer('content_id')
       .references(() => contents.id, { onDelete: 'cascade' })
       .notNull(),
-    fileType: text('file_type').notNull(), // 'pdf' | 'video' | 'document' | 'cover'
+    fileType: text('file_type').notNull(), // 'pdf' | 'video' | 'document' | 'cover' | 'image'
     originalName: text('original_name').notNull(),
     storagePath: text('storage_path').notNull(),
+    storageProvider: text('storage_provider').notNull().default('local'), // 'local' | 's3' | 'external'
+    storageKey: text('storage_key'),
+    thumbPath: text('thumb_path'),
+    sha256Hash: text('sha256_hash'),
     mimeType: text('mime_type').notNull(),
     sizeBytes: integer('size_bytes').notNull().default(0),
     isPreview: boolean('is_preview').notNull().default(false),
     externalVideoUrl: text('external_video_url'),
     createdAt: timestamp('created_at').defaultNow().notNull(),
   },
-  (table) => [index('idx_content_files_content').on(table.contentId)]
+  (table) => [
+    index('idx_content_files_content').on(table.contentId),
+    index('idx_content_files_content_type').on(table.contentId, table.fileType),
+    index('idx_content_files_dedup').on(table.contentId, table.sha256Hash),
+  ]
 );
 
 // 8. Content Tags
@@ -287,6 +303,7 @@ export const commissionRecords = pgTable(
   (table) => [
     index('idx_commission_creator').on(table.creatorId),
     index('idx_commission_payment').on(table.paymentId),
+    index('idx_commission_status_created').on(table.status, table.createdAt),
   ]
 );
 
@@ -326,6 +343,7 @@ export const withdrawals = pgTable(
   (table) => [
     index('idx_withdrawals_creator').on(table.creatorId),
     index('idx_withdrawals_status').on(table.status),
+    index('idx_withdrawals_status_created').on(table.status, table.createdAt),
   ]
 );
 
@@ -400,7 +418,10 @@ export const comments = pgTable(
     isHidden: boolean('is_hidden').notNull().default(false),
     createdAt: timestamp('created_at').defaultNow().notNull(),
   },
-  (table) => [index('idx_comments_content').on(table.contentId)]
+  (table) => [
+    index('idx_comments_content').on(table.contentId),
+    index('idx_comments_content_visible').on(table.contentId, table.isHidden, table.createdAt),
+  ]
 );
 
 // 18. Ratings & Reviews
@@ -424,6 +445,7 @@ export const reviews = pgTable(
   (table) => [
     uniqueIndex('uq_reviews_user_content').on(table.userId, table.contentId),
     index('idx_reviews_content').on(table.contentId),
+    index('idx_reviews_content_visible').on(table.contentId, table.isHidden, table.createdAt),
   ]
 );
 
@@ -461,7 +483,10 @@ export const notifications = pgTable(
     isRead: boolean('is_read').notNull().default(false),
     createdAt: timestamp('created_at').defaultNow().notNull(),
   },
-  (table) => [index('idx_notifications_user').on(table.userId)]
+  (table) => [
+    index('idx_notifications_user').on(table.userId),
+    index('idx_notifications_user_unread').on(table.userId, table.isRead, table.createdAt),
+  ]
 );
 
 // 21. Reports & Copyright Complaints
@@ -515,17 +540,21 @@ export const auditLogs = pgTable(
 );
 
 // 24. Auth Tokens (Email Verification & Password Reset)
-export const authTokens = pgTable('auth_tokens', {
-  id: serial('id').primaryKey(),
-  userId: integer('user_id')
-    .references(() => users.id, { onDelete: 'cascade' })
-    .notNull(),
-  token: text('token').notNull().unique(),
-  type: text('type').notNull(), // 'email_verify' | 'password_reset'
-  expiresAt: timestamp('expires_at').notNull(),
-  usedAt: timestamp('used_at'),
-  createdAt: timestamp('created_at').defaultNow().notNull(),
-});
+export const authTokens = pgTable(
+  'auth_tokens',
+  {
+    id: serial('id').primaryKey(),
+    userId: integer('user_id')
+      .references(() => users.id, { onDelete: 'cascade' })
+      .notNull(),
+    token: text('token').notNull().unique(),
+    type: text('type').notNull(), // 'email_verify' | 'password_reset'
+    expiresAt: timestamp('expires_at').notNull(),
+    usedAt: timestamp('used_at'),
+    createdAt: timestamp('created_at').defaultNow().notNull(),
+  },
+  (table) => [index('idx_auth_tokens_user_type').on(table.userId, table.type)]
+);
 
 // 25. Contact Inquiries
 export const contactMessages = pgTable('contact_messages', {

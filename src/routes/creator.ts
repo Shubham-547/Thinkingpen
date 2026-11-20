@@ -23,6 +23,14 @@ import {
 } from '../db/schema.ts';
 import { invalidateCatalogCache } from '../lib/cache.ts';
 import {
+  computeFileSha256,
+  createPresignedObjectUrl,
+  enqueueThumbnailGeneration,
+  getChunksRoot,
+  isObjectStorageConfigured,
+  validateUploadedFileMagicBytes,
+} from '../lib/media.ts';
+import {
   ALLOWED_UPLOAD_MIMES,
   createAutoPreview,
   estimateReadingTime,
@@ -36,6 +44,16 @@ import { resolveCommissionRate } from '../lib/payments.ts';
 import { requireAuth, requireCreator, type AuthRequest } from '../middleware/auth.ts';
 
 const router = Router();
+
+function parsePositiveInt(val: unknown): number | null {
+  const n = Number(val);
+  return Number.isInteger(n) && n > 0 ? n : null;
+}
+
+const chunkUpload = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: 4 * 1024 * 1024 }, // 4 MB max per resumable chunk
+});
 
 const storageRoot = getStorageRoot();
 if (!fs.existsSync(storageRoot)) {
@@ -387,7 +405,8 @@ router.get('/history', requireAuth, requireCreator, async (req: AuthRequest, res
 // GET /api/creator/contents/:id (for editing own content)
 router.get('/contents/:id', requireAuth, requireCreator, async (req: AuthRequest, res) => {
   try {
-    const id = Number(req.params.id);
+    const id = parsePositiveInt(req.params.id);
+    if (!id) return res.status(400).json({ error: 'Invalid content ID.' });
     const [item] = await db.select().from(contents).where(eq(contents.id, id)).limit(1);
     if (!item) return res.status(404).json({ error: 'Content not found.' });
     if (item.creatorId !== req.user!.id && req.user!.role !== 'admin') {
@@ -582,7 +601,8 @@ router.post('/contents', requireAuth, requireCreator, async (req: AuthRequest, r
 // PUT /api/creator/contents/:id
 router.put('/contents/:id', requireAuth, requireCreator, async (req: AuthRequest, res) => {
   try {
-    const id = Number(req.params.id);
+    const id = parsePositiveInt(req.params.id);
+    if (!id) return res.status(400).json({ error: 'Invalid content ID.' });
     const [existing] = await db.select().from(contents).where(eq(contents.id, id)).limit(1);
     if (!existing) return res.status(404).json({ error: 'Content not found.' });
     if (existing.creatorId !== req.user!.id && req.user!.role !== 'admin') {
@@ -777,7 +797,8 @@ router.put('/contents/:id', requireAuth, requireCreator, async (req: AuthRequest
 // DELETE /api/creator/contents/:id (Soft-delete into 15-day Recycle Bin & Creator History)
 router.delete('/contents/:id', requireAuth, requireCreator, async (req: AuthRequest, res) => {
   try {
-    const id = Number(req.params.id);
+    const id = parsePositiveInt(req.params.id);
+    if (!id) return res.status(400).json({ error: 'Invalid content ID.' });
     const [existing] = await db.select().from(contents).where(eq(contents.id, id)).limit(1);
     if (!existing) return res.status(404).json({ error: 'Content not found.' });
     if (existing.creatorId !== req.user!.id && req.user!.role !== 'admin') {
@@ -844,7 +865,8 @@ router.delete('/contents/:id', requireAuth, requireCreator, async (req: AuthRequ
 // POST /api/creator/contents/:id/recover (Restore soft-deleted content within 15 days)
 router.post('/contents/:id/recover', requireAuth, requireCreator, async (req: AuthRequest, res) => {
   try {
-    const id = Number(req.params.id);
+    const id = parsePositiveInt(req.params.id);
+    if (!id) return res.status(400).json({ error: 'Invalid content ID.' });
     const [existing] = await db.select().from(contents).where(eq(contents.id, id)).limit(1);
     if (!existing) return res.status(404).json({ error: 'Content not found or already permanently purged.' });
     if (existing.creatorId !== req.user!.id && req.user!.role !== 'admin') {
@@ -906,7 +928,8 @@ router.post('/contents/:id/recover', requireAuth, requireCreator, async (req: Au
 // DELETE /api/creator/contents/:id/permanent (Optional immediate permanent wipe from Recycle Bin)
 router.delete('/contents/:id/permanent', requireAuth, requireCreator, async (req: AuthRequest, res) => {
   try {
-    const id = Number(req.params.id);
+    const id = parsePositiveInt(req.params.id);
+    if (!id) return res.status(400).json({ error: 'Invalid content ID.' });
     const [existing] = await db.select().from(contents).where(eq(contents.id, id)).limit(1);
     if (!existing) return res.status(404).json({ error: 'Content not found.' });
     if (existing.creatorId !== req.user!.id && req.user!.role !== 'admin') {
@@ -951,7 +974,330 @@ router.delete('/contents/:id/permanent', requireAuth, requireCreator, async (req
   }
 });
 
-// POST /api/creator/contents/:id/files (Secure file upload for PDFs, videos, cover images, docs)
+// POST /api/creator/uploads/presign (Direct-to-S3/R2/GCS presigned upload or resumable chunked fallback + duplicate check)
+router.post('/uploads/presign', requireAuth, requireCreator, async (req: AuthRequest, res) => {
+  try {
+    const contentId = parsePositiveInt(req.body?.contentId);
+    const fileName = String(req.body?.fileName || '').trim().slice(0, 180);
+    const mimeType = String(req.body?.mimeType || '').trim().toLowerCase();
+    const sizeBytes = Number(req.body?.sizeBytes || 0);
+    const sha256Hash = String(req.body?.sha256Hash || '').trim().toLowerCase();
+
+    if (!contentId || !fileName || !mimeType || !Number.isFinite(sizeBytes) || sizeBytes <= 0) {
+      return res.status(400).json({ error: 'Invalid upload initialization parameters.' });
+    }
+
+    const rule = ALLOWED_UPLOAD_MIMES[mimeType];
+    if (!rule) {
+      return res.status(400).json({ error: `Unsupported file type: ${mimeType}` });
+    }
+    if (sizeBytes > rule.maxBytes) {
+      return res.status(400).json({
+        error: `File exceeds maximum size limit (${Math.round(rule.maxBytes / (1024 * 1024))} MB) for ${mimeType}.`,
+      });
+    }
+
+    const [content] = await db.select().from(contents).where(eq(contents.id, contentId)).limit(1);
+    if (!content) return res.status(404).json({ error: 'Content item not found.' });
+    if (content.creatorId !== req.user!.id && req.user!.role !== 'admin') {
+      return res.status(403).json({ error: 'Unauthorized to upload files to this content.' });
+    }
+
+    // Duplicate upload prevention using SHA-256 hash
+    if (/^[a-f0-9]{64}$/.test(sha256Hash)) {
+      const [existing] = await db
+        .select()
+        .from(contentFiles)
+        .where(and(eq(contentFiles.contentId, contentId), eq(contentFiles.sha256Hash, sha256Hash)))
+        .limit(1);
+      if (existing) {
+        if (req.body?.setAsCover) {
+          await db
+            .update(contents)
+            .set({ coverImageUrl: `/api/catalog/files/${existing.id}`, updatedAt: new Date() })
+            .where(eq(contents.id, contentId));
+          invalidateCatalogCache();
+        }
+        return res.json({
+          mode: 'duplicate',
+          duplicate: true,
+          file: { ...existing, accessUrl: `/api/catalog/files/${existing.id}` },
+        });
+      }
+    }
+
+    const ext = path.extname(fileName).toLowerCase().replace(/[^a-z0-9.]/g, '').slice(0, 10);
+    const uploadId = `${Date.now()}-${crypto.randomBytes(10).toString('hex')}`;
+
+    if (isObjectStorageConfigured()) {
+      const objectKey = `contents/${contentId}/${uploadId}${ext}`;
+      const signed = createPresignedObjectUrl({
+        method: 'PUT',
+        objectKey,
+        contentType: mimeType,
+        expiresInSeconds: 900,
+      });
+      if (signed) {
+        return res.json({
+          mode: 'presigned',
+          uploadId,
+          objectKey,
+          uploadUrl: signed.url,
+          publicUrl: signed.publicUrl,
+          expiresAt: signed.expiresAt,
+          contentType: mimeType,
+        });
+      }
+    }
+
+    return res.json({
+      mode: 'chunked',
+      uploadId,
+      chunkSizeBytes: 2 * 1024 * 1024, // 2 MB chunks for resilient mobile uploads
+    });
+  } catch (error) {
+    console.error('Presign upload error:', error);
+    return res.status(500).json({ error: 'Unable to initialize upload.' });
+  }
+});
+
+// POST /api/creator/uploads/complete (Register completed direct-to-S3/R2/GCS object upload)
+router.post('/uploads/complete', requireAuth, requireCreator, async (req: AuthRequest, res) => {
+  try {
+    const contentId = parsePositiveInt(req.body?.contentId);
+    const objectKey = String(req.body?.objectKey || '').trim();
+    const originalName = String(req.body?.originalName || 'file').trim().slice(0, 180);
+    const mimeType = String(req.body?.mimeType || '').trim().toLowerCase();
+    const sizeBytes = Number(req.body?.sizeBytes || 0);
+    const sha256Hash = /^[a-f0-9]{64}$/.test(String(req.body?.sha256Hash || ''))
+      ? String(req.body.sha256Hash)
+      : null;
+
+    if (!contentId || !objectKey || !objectKey.startsWith(`contents/${contentId}/`) || objectKey.includes('..')) {
+      return res.status(400).json({ error: 'Invalid completed object reference.' });
+    }
+    const rule = ALLOWED_UPLOAD_MIMES[mimeType];
+    if (!rule || !Number.isFinite(sizeBytes) || sizeBytes <= 0 || sizeBytes > rule.maxBytes) {
+      return res.status(400).json({ error: 'Invalid file type or size.' });
+    }
+
+    const [content] = await db.select().from(contents).where(eq(contents.id, contentId)).limit(1);
+    if (!content) return res.status(404).json({ error: 'Content item not found.' });
+    if (content.creatorId !== req.user!.id && req.user!.role !== 'admin') {
+      return res.status(403).json({ error: 'Unauthorized.' });
+    }
+
+    const setAsCover = Boolean(req.body?.setAsCover);
+    const isPreview = Boolean(req.body?.isPreview) || setAsCover || rule.fileType === 'cover';
+
+    const [savedFile] = await db
+      .insert(contentFiles)
+      .values({
+        contentId,
+        fileType: setAsCover ? 'cover' : rule.fileType,
+        originalName,
+        storagePath: objectKey,
+        storageProvider: 's3',
+        storageKey: objectKey,
+        sha256Hash,
+        mimeType,
+        sizeBytes,
+        isPreview,
+      })
+      .returning();
+
+    if (setAsCover) {
+      await db
+        .update(contents)
+        .set({ coverImageUrl: `/api/catalog/files/${savedFile.id}`, updatedAt: new Date() })
+        .where(eq(contents.id, contentId));
+      invalidateCatalogCache();
+    }
+
+    return res.status(201).json({
+      file: { ...savedFile, accessUrl: `/api/catalog/files/${savedFile.id}` },
+    });
+  } catch (error) {
+    console.error('Complete presigned upload error:', error);
+    return res.status(500).json({ error: 'Unable to finalize direct upload.' });
+  }
+});
+
+// POST /api/creator/uploads/chunk (Resumable chunk receiver for large files on local/persistent storage)
+router.post(
+  '/uploads/chunk',
+  requireAuth,
+  requireCreator,
+  chunkUpload.single('chunk'),
+  async (req: AuthRequest, res) => {
+    try {
+      const uploadId = String(req.body?.uploadId || '').trim();
+      const chunkIndex = Number(req.body?.chunkIndex);
+      if (!/^[a-zA-Z0-9-]{8,64}$/.test(uploadId) || !Number.isInteger(chunkIndex) || chunkIndex < 0 || chunkIndex > 100) {
+        return res.status(400).json({ error: 'Invalid chunk parameters.' });
+      }
+      if (!req.file?.buffer?.length) {
+        return res.status(400).json({ error: 'Empty upload chunk.' });
+      }
+
+      const dir = path.join(getChunksRoot(), `${req.user!.id}_${uploadId}`);
+      if (!fs.existsSync(dir)) {
+        fs.mkdirSync(dir, { recursive: true });
+      }
+      fs.writeFileSync(path.join(dir, `${String(chunkIndex).padStart(5, '0')}.part`), req.file.buffer);
+      return res.json({ received: true, chunkIndex });
+    } catch (error) {
+      console.error('Chunk upload error:', error);
+      return res.status(500).json({ error: 'Unable to store upload chunk.' });
+    }
+  }
+);
+
+// POST /api/creator/uploads/chunk/complete (Assemble chunks, validate magic bytes + SHA-256, enqueue thumbnail)
+router.post('/uploads/chunk/complete', requireAuth, requireCreator, async (req: AuthRequest, res) => {
+  const uploadId = String(req.body?.uploadId || '').trim();
+  const dir = path.join(getChunksRoot(), `${req.user!.id}_${uploadId}`);
+  const cleanupDir = () => {
+    try {
+      if (fs.existsSync(dir)) fs.rmSync(dir, { recursive: true, force: true });
+    } catch {}
+  };
+
+  try {
+    const contentId = parsePositiveInt(req.body?.contentId);
+    const totalChunks = Number(req.body?.totalChunks);
+    const originalName = String(req.body?.originalName || 'upload').trim().slice(0, 180);
+    const mimeType = String(req.body?.mimeType || '').trim().toLowerCase();
+
+    if (
+      !contentId ||
+      !/^[a-zA-Z0-9-]{8,64}$/.test(uploadId) ||
+      !Number.isInteger(totalChunks) ||
+      totalChunks <= 0 ||
+      totalChunks > 100
+    ) {
+      cleanupDir();
+      return res.status(400).json({ error: 'Invalid chunk assembly parameters.' });
+    }
+
+    const rule = ALLOWED_UPLOAD_MIMES[mimeType];
+    if (!rule) {
+      cleanupDir();
+      return res.status(400).json({ error: `Unsupported file type: ${mimeType}` });
+    }
+
+    const [content] = await db.select().from(contents).where(eq(contents.id, contentId)).limit(1);
+    if (!content) {
+      cleanupDir();
+      return res.status(404).json({ error: 'Content item not found.' });
+    }
+    if (content.creatorId !== req.user!.id && req.user!.role !== 'admin') {
+      cleanupDir();
+      return res.status(403).json({ error: 'Unauthorized.' });
+    }
+
+    const ext = path.extname(originalName).toLowerCase().replace(/[^a-z0-9.]/g, '').slice(0, 10);
+    const finalName = `${Date.now()}-${crypto.randomBytes(10).toString('hex')}${ext}`;
+    const finalPath = path.join(storageRoot, finalName);
+
+    let totalSize = 0;
+    const ws = fs.createWriteStream(finalPath);
+    try {
+      for (let i = 0; i < totalChunks; i += 1) {
+        const partPath = path.join(dir, `${String(i).padStart(5, '0')}.part`);
+        if (!fs.existsSync(partPath)) {
+          throw new Error(`Missing chunk ${i}`);
+        }
+        const chunkBuf = fs.readFileSync(partPath);
+        totalSize += chunkBuf.length;
+        if (totalSize > rule.maxBytes) {
+          throw new Error('File exceeds maximum allowed size.');
+        }
+        ws.write(chunkBuf);
+      }
+      await new Promise<void>((resolve, reject) => {
+        ws.on('finish', resolve);
+        ws.on('error', reject);
+        ws.end();
+      });
+    } catch (assembleErr) {
+      ws.destroy();
+      if (fs.existsSync(finalPath)) fs.unlinkSync(finalPath);
+      cleanupDir();
+      return res.status(400).json({
+        error: assembleErr instanceof Error ? assembleErr.message : 'Chunk assembly failed.',
+      });
+    }
+    cleanupDir();
+
+    const sigCheck = await validateUploadedFileMagicBytes(finalPath, mimeType);
+    if (!sigCheck.valid) {
+      if (fs.existsSync(finalPath)) fs.unlinkSync(finalPath);
+      return res.status(400).json({
+        error: sigCheck.reason || 'Uploaded file failed binary content verification.',
+      });
+    }
+
+    const sha256Hash = await computeFileSha256(finalPath);
+    const [existingDup] = await db
+      .select()
+      .from(contentFiles)
+      .where(and(eq(contentFiles.contentId, contentId), eq(contentFiles.sha256Hash, sha256Hash)))
+      .limit(1);
+
+    const setAsCover = Boolean(req.body?.setAsCover);
+    if (existingDup) {
+      if (fs.existsSync(finalPath)) fs.unlinkSync(finalPath);
+      if (setAsCover) {
+        await db
+          .update(contents)
+          .set({ coverImageUrl: `/api/catalog/files/${existingDup.id}`, updatedAt: new Date() })
+          .where(eq(contents.id, contentId));
+        invalidateCatalogCache();
+      }
+      return res.status(200).json({
+        duplicate: true,
+        file: { ...existingDup, accessUrl: `/api/catalog/files/${existingDup.id}` },
+      });
+    }
+
+    const isPreview = Boolean(req.body?.isPreview) || setAsCover || rule.fileType === 'cover';
+    const [savedFile] = await db
+      .insert(contentFiles)
+      .values({
+        contentId,
+        fileType: setAsCover ? 'cover' : rule.fileType,
+        originalName,
+        storagePath: finalName,
+        storageProvider: 'local',
+        sha256Hash,
+        mimeType,
+        sizeBytes: totalSize,
+        isPreview,
+      })
+      .returning();
+
+    enqueueThumbnailGeneration(savedFile.id, finalName, mimeType);
+
+    if (setAsCover) {
+      await db
+        .update(contents)
+        .set({ coverImageUrl: `/api/catalog/files/${savedFile.id}`, updatedAt: new Date() })
+        .where(eq(contents.id, contentId));
+      invalidateCatalogCache();
+    }
+
+    return res.status(201).json({
+      file: { ...savedFile, accessUrl: `/api/catalog/files/${savedFile.id}` },
+    });
+  } catch (error) {
+    cleanupDir();
+    console.error('Complete chunk upload error:', error);
+    return res.status(500).json({ error: 'Unable to finalize chunked upload.' });
+  }
+});
+
+// POST /api/creator/contents/:id/files (Secure file upload with magic-byte validation, SHA-256 deduplication, async thumbnail job)
 router.post(
   '/contents/:id/files',
   requireAuth,
@@ -959,7 +1305,11 @@ router.post(
   upload.single('file'),
   async (req: AuthRequest, res) => {
     try {
-      const contentId = Number(req.params.id);
+      const contentId = parsePositiveInt(req.params.id);
+      if (!contentId) {
+        if (req.file && fs.existsSync(req.file.path)) fs.unlinkSync(req.file.path);
+        return res.status(400).json({ error: 'Invalid content ID.' });
+      }
       const [content] = await db
         .select()
         .from(contents)
@@ -967,11 +1317,11 @@ router.post(
         .limit(1);
 
       if (!content) {
-        if (req.file) fs.unlinkSync(req.file.path);
+        if (req.file && fs.existsSync(req.file.path)) fs.unlinkSync(req.file.path);
         return res.status(404).json({ error: 'Content item not found.' });
       }
       if (content.creatorId !== req.user!.id && req.user!.role !== 'admin') {
-        if (req.file) fs.unlinkSync(req.file.path);
+        if (req.file && fs.existsSync(req.file.path)) fs.unlinkSync(req.file.path);
         return res.status(403).json({ error: 'Unauthorized to upload files to this content.' });
       }
       if (!req.file) {
@@ -986,6 +1336,41 @@ router.post(
         });
       }
 
+      // Verify actual binary magic bytes (blocks spoofed MIME headers)
+      const sigCheck = await validateUploadedFileMagicBytes(req.file.path, req.file.mimetype);
+      if (!sigCheck.valid) {
+        fs.unlinkSync(req.file.path);
+        return res.status(400).json({
+          error: sigCheck.reason || 'Uploaded file failed binary content verification.',
+        });
+      }
+
+      // Compute streaming SHA-256 hash to prevent duplicate uploads for the same publication
+      const sha256Hash = await computeFileSha256(req.file.path);
+      const [existingDup] = await db
+        .select()
+        .from(contentFiles)
+        .where(and(eq(contentFiles.contentId, contentId), eq(contentFiles.sha256Hash, sha256Hash)))
+        .limit(1);
+
+      if (existingDup) {
+        fs.unlinkSync(req.file.path);
+        if (req.body?.setAsCover === 'true') {
+          await db
+            .update(contents)
+            .set({ coverImageUrl: `/api/catalog/files/${existingDup.id}`, updatedAt: new Date() })
+            .where(eq(contents.id, contentId));
+          invalidateCatalogCache();
+        }
+        return res.status(200).json({
+          duplicate: true,
+          file: {
+            ...existingDup,
+            accessUrl: `/api/catalog/files/${existingDup.id}`,
+          },
+        });
+      }
+
       const isPreview = req.body?.isPreview === 'true' || rule.fileType === 'cover';
 
       const [savedFile] = await db
@@ -995,11 +1380,16 @@ router.post(
           fileType: req.body?.setAsCover === 'true' ? 'cover' : rule.fileType,
           originalName: req.file.originalname,
           storagePath: req.file.filename,
+          storageProvider: 'local',
+          sha256Hash,
           mimeType: req.file.mimetype,
           sizeBytes: req.file.size,
           isPreview,
         })
         .returning();
+
+      // Non-blocking background thumbnail generation (480w WebP + AVIF)
+      enqueueThumbnailGeneration(savedFile.id, req.file.filename, req.file.mimetype);
 
       if (req.body?.setAsCover === 'true') {
         await db
@@ -1016,13 +1406,18 @@ router.post(
         },
       });
     } catch (error) {
+      if (req.file?.path && fs.existsSync(req.file.path)) {
+        try {
+          fs.unlinkSync(req.file.path);
+        } catch {}
+      }
       console.error('File upload error:', error);
       return res.status(500).json({ error: 'File upload failed.' });
     }
   }
 );
 
-// POST /api/creator/contents/:id/files/batch (Upload up to 20 images, videos, PDFs, or docs together from gallery)
+// POST /api/creator/contents/:id/files/batch (Upload up to 20 images/videos/PDFs with magic-byte checks, deduplication, async thumbnails)
 router.post(
   '/contents/:id/files/batch',
   requireAuth,
@@ -1041,7 +1436,11 @@ router.post(
     };
 
     try {
-      const contentId = Number(req.params.id);
+      const contentId = parsePositiveInt(req.params.id);
+      if (!contentId) {
+        cleanupUploaded();
+        return res.status(400).json({ error: 'Invalid content ID.' });
+      }
       const [content] = await db
         .select()
         .from(contents)
@@ -1063,6 +1462,7 @@ router.post(
       const isPreview = req.body?.isPreview === 'true';
       const savedList = [];
 
+      // Validate size and binary magic-byte signatures for every file before inserting any row
       for (const f of uploadedFiles) {
         const rule = ALLOWED_UPLOAD_MIMES[f.mimetype];
         if (!rule || f.size > rule.maxBytes) {
@@ -1071,10 +1471,34 @@ router.post(
             error: `"${f.originalname}" exceeds size limit or unsupported format (${f.mimetype}).`,
           });
         }
+        const sigCheck = await validateUploadedFileMagicBytes(f.path, f.mimetype);
+        if (!sigCheck.valid) {
+          cleanupUploaded();
+          return res.status(400).json({
+            error: `"${f.originalname}" failed security verification: ${sigCheck.reason || 'invalid file signature'}.`,
+          });
+        }
       }
 
       for (const f of uploadedFiles) {
         const rule = ALLOWED_UPLOAD_MIMES[f.mimetype];
+        const sha256Hash = await computeFileSha256(f.path);
+        const [existingDup] = await db
+          .select()
+          .from(contentFiles)
+          .where(and(eq(contentFiles.contentId, contentId), eq(contentFiles.sha256Hash, sha256Hash)))
+          .limit(1);
+
+        if (existingDup) {
+          if (fs.existsSync(f.path)) fs.unlinkSync(f.path);
+          savedList.push({
+            ...existingDup,
+            duplicate: true,
+            accessUrl: `/api/catalog/files/${existingDup.id}`,
+          });
+          continue;
+        }
+
         const [savedFile] = await db
           .insert(contentFiles)
           .values({
@@ -1082,11 +1506,15 @@ router.post(
             fileType: rule.fileType,
             originalName: f.originalname,
             storagePath: f.filename,
+            storageProvider: 'local',
+            sha256Hash,
             mimeType: f.mimetype,
             sizeBytes: f.size,
             isPreview,
           })
           .returning();
+
+        enqueueThumbnailGeneration(savedFile.id, f.filename, f.mimetype);
         savedList.push({
           ...savedFile,
           accessUrl: `/api/catalog/files/${savedFile.id}`,
@@ -1145,7 +1573,8 @@ router.post(
 // DELETE /api/creator/files/:fileId
 router.delete('/files/:fileId', requireAuth, requireCreator, async (req: AuthRequest, res) => {
   try {
-    const fileId = Number(req.params.fileId);
+    const fileId = parsePositiveInt(req.params.fileId);
+    if (!fileId) return res.status(400).json({ error: 'Invalid file ID.' });
     const [file] = await db
       .select()
       .from(contentFiles)
@@ -1248,10 +1677,12 @@ router.post('/withdrawals', requireAuth, requireCreator, async (req: AuthRequest
     }
 
     const result = await db.transaction(async (tx) => {
+      // Lock creator wallet row with FOR UPDATE to prevent concurrent double-withdrawal races
       const [wallet] = await tx
         .select()
         .from(creatorWallets)
         .where(eq(creatorWallets.creatorId, creatorId))
+        .for('update')
         .limit(1);
 
       const available = Number(wallet?.availableBalanceInr || 0);

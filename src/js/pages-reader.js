@@ -73,8 +73,15 @@ export async function renderContentDetailPage(container, slug) {
 
     const withAuthParam = (url) => {
       if (!url) return '';
+      if (url.includes('ft=')) return url;
       if (!authToken) return url;
       return `${url}${url.includes('?') ? '&' : '?'}token=${encodeURIComponent(authToken)}`;
+    };
+
+    const withThumbWidth = (url, width = 480) => {
+      const authed = withAuthParam(url);
+      if (!authed) return '';
+      return `${authed}${authed.includes('?') ? '&' : '?'}w=${width}`;
     };
 
     let isBookmarked = Boolean(data.userState?.isBookmarked);
@@ -272,11 +279,13 @@ export async function renderContentDetailPage(container, slug) {
                             <div class="grid grid-cols-2 sm:grid-cols-3 gap-3">
                               ${imageFiles
                                 .map((imgFile, i) => {
-                                  const imgSrc = withAuthParam(imgFile.accessUrl);
+                                  const imgFullSrc = withAuthParam(imgFile.accessUrl);
+                                  const imgThumbSrc = withThumbWidth(imgFile.accessUrl, 480);
+                                  const dlUrl = `${imgFile.accessUrl}${imgFile.accessUrl.includes('?') ? '&' : '?'}download=1`;
                                   return `
-                                    <button type="button" data-gallery-src="${esc(imgSrc)}" data-gallery-name="${esc(imgFile.originalName)}" data-gallery-dl="${esc(withAuthParam(`${imgFile.accessUrl}?download=1`))}" class="rd-gallery-item group text-left rounded-lg overflow-hidden border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-[#0B1120] hover:border-[#0F2547] dark:hover:border-sky-400 transition-colors">
+                                    <button type="button" data-gallery-src="${esc(imgFullSrc)}" data-gallery-name="${esc(imgFile.originalName)}" data-gallery-dl="${esc(withAuthParam(dlUrl))}" class="rd-gallery-item group text-left rounded-lg overflow-hidden border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-[#0B1120] hover:border-[#0F2547] dark:hover:border-sky-400 transition-colors">
                                       <div class="aspect-[4/3] w-full overflow-hidden bg-slate-100 dark:bg-slate-900">
-                                        <img src="${esc(imgSrc)}" alt="${esc(imgFile.originalName || `Photo ${i + 1}`)}" loading="lazy" class="w-full h-full object-cover group-hover:scale-[1.03] transition-transform duration-200" />
+                                        <img src="${esc(imgThumbSrc)}" data-full-src="${esc(imgFullSrc)}" alt="${esc(imgFile.originalName || `Photo ${i + 1}`)}" loading="lazy" decoding="async" class="w-full h-full object-cover group-hover:scale-[1.03] transition-transform duration-200" />
                                       </div>
                                       <div class="px-2.5 py-1.5 text-[11px] text-slate-600 dark:text-slate-300 truncate">${esc(imgFile.originalName)}</div>
                                     </button>

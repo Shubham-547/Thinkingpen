@@ -28,6 +28,9 @@ router.post('/create-order', requireAuth, async (req: AuthRequest, res) => {
   try {
     const userId = req.user!.id;
     const contentId = Number(req.body?.contentId);
+    if (!Number.isInteger(contentId) || contentId <= 0) {
+      return res.status(400).json({ error: 'Invalid publication ID.' });
+    }
 
     const [content] = await db
       .select()
@@ -274,6 +277,9 @@ router.post('/webhook/razorpay', async (req, res) => {
 router.get('/receipt/:paymentId', requireAuth, async (req: AuthRequest, res) => {
   try {
     const paymentId = Number(req.params.paymentId);
+    if (!Number.isInteger(paymentId) || paymentId <= 0) {
+      return res.status(400).json({ error: 'Invalid payment receipt ID.' });
+    }
     const [row] = await db
       .select({
         payment: payments,

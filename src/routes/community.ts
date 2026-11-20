@@ -20,10 +20,16 @@ import { requireAuth, type AuthRequest } from '../middleware/auth.ts';
 
 const router = Router();
 
+function parsePositiveInt(val: unknown): number | null {
+  const n = Number(val);
+  return Number.isInteger(n) && n > 0 ? n : null;
+}
+
 // Toggle bookmark
 router.post('/bookmarks/:contentId', requireAuth, async (req: AuthRequest, res) => {
   try {
-    const contentId = Number(req.params.contentId);
+    const contentId = parsePositiveInt(req.params.contentId);
+    if (!contentId) return res.status(400).json({ error: 'Invalid content ID.' });
     const userId = req.user!.id;
 
     const [existing] = await db
@@ -48,7 +54,8 @@ router.post('/bookmarks/:contentId', requireAuth, async (req: AuthRequest, res) 
 // Toggle like
 router.post('/likes/:contentId', requireAuth, async (req: AuthRequest, res) => {
   try {
-    const contentId = Number(req.params.contentId);
+    const contentId = parsePositiveInt(req.params.contentId);
+    if (!contentId) return res.status(400).json({ error: 'Invalid content ID.' });
     const userId = req.user!.id;
 
     const [existing] = await db
@@ -81,7 +88,8 @@ router.post('/likes/:contentId', requireAuth, async (req: AuthRequest, res) => {
 // Toggle follow creator
 router.post('/follow/:creatorId', requireAuth, async (req: AuthRequest, res) => {
   try {
-    const creatorId = Number(req.params.creatorId);
+    const creatorId = parsePositiveInt(req.params.creatorId);
+    if (!creatorId) return res.status(400).json({ error: 'Invalid creator ID.' });
     const followerId = req.user!.id;
 
     if (creatorId === followerId) {
@@ -127,9 +135,10 @@ router.post('/follow/:creatorId', requireAuth, async (req: AuthRequest, res) => 
 // Post comment or reply
 router.post('/comments/:contentId', requireAuth, async (req: AuthRequest, res) => {
   try {
-    const contentId = Number(req.params.contentId);
+    const contentId = parsePositiveInt(req.params.contentId);
+    if (!contentId) return res.status(400).json({ error: 'Invalid content ID.' });
     const body = String(req.body?.body || '').trim();
-    const parentId = req.body?.parentId ? Number(req.body.parentId) : null;
+    const parentId = req.body?.parentId ? parsePositiveInt(req.body.parentId) : null;
 
     if (body.length < 2 || body.length > 2000) {
       return res.status(400).json({ error: 'Comment must be between 2 and 2000 characters.' });
@@ -197,7 +206,8 @@ router.post('/comments/:contentId', requireAuth, async (req: AuthRequest, res) =
 // Submit rating & review (verified purchasers only for paid content)
 router.post('/reviews/:contentId', requireAuth, async (req: AuthRequest, res) => {
   try {
-    const contentId = Number(req.params.contentId);
+    const contentId = parsePositiveInt(req.params.contentId);
+    if (!contentId) return res.status(400).json({ error: 'Invalid content ID.' });
     const rating = Number(req.body?.rating);
     const title = String(req.body?.title || '').trim().slice(0, 120);
     const body = String(req.body?.body || '').trim();
@@ -252,17 +262,17 @@ router.post('/reviews/:contentId', requireAuth, async (req: AuthRequest, res) =>
       })
       .returning();
 
-    // Recompute aggregate average rating & count
-    const allReviews = await db
-      .select({ rating: reviews.rating })
+    // Recompute aggregate average rating & count directly inside PostgreSQL
+    const [ratingAgg] = await db
+      .select({
+        totalCount: sql<number>`COUNT(*)::int`,
+        avgRating: sql<number>`COALESCE(AVG(${reviews.rating}), 0)`,
+      })
       .from(reviews)
       .where(and(eq(reviews.contentId, contentId), eq(reviews.isHidden, false)));
 
-    const totalCount = allReviews.length;
-    const avg =
-      totalCount > 0
-        ? allReviews.reduce((acc, r) => acc + r.rating, 0) / totalCount
-        : 0;
+    const totalCount = Number(ratingAgg?.totalCount || 0);
+    const avg = Number(ratingAgg?.avgRating || 0);
 
     await db
       .update(contents)
@@ -286,7 +296,8 @@ router.post('/reviews/:contentId', requireAuth, async (req: AuthRequest, res) =>
 // Report inappropriate or copyrighted content
 router.post('/reports/:contentId', requireAuth, async (req: AuthRequest, res) => {
   try {
-    const contentId = Number(req.params.contentId);
+    const contentId = parsePositiveInt(req.params.contentId);
+    if (!contentId) return res.status(400).json({ error: 'Invalid content ID.' });
     const reportType = ['inappropriate', 'copyright', 'spam', 'other'].includes(
       req.body?.reportType
     )
@@ -350,103 +361,106 @@ router.post('/reports/:contentId', requireAuth, async (req: AuthRequest, res) =>
   }
 });
 
-// GET /api/community/user-dashboard
+// GET /api/community/user-dashboard (Parallelized + bounded limits)
 router.get('/user-dashboard', requireAuth, async (req: AuthRequest, res) => {
   try {
     const userId = req.user!.id;
 
-    const purchasedItems = await db
-      .select({
-        purchaseId: purchases.id,
-        pricePaidInr: purchases.pricePaidInr,
-        status: purchases.status,
-        purchasedAt: purchases.purchasedAt,
-        paymentId: purchases.paymentId,
-        receiptNumber: payments.receiptNumber,
-        providerOrderId: payments.providerOrderId,
-        paymentStatus: payments.status,
-        contentId: contents.id,
-        title: contents.title,
-        slug: contents.slug,
-        coverImageUrl: contents.coverImageUrl,
-        contentType: contents.contentType,
-        language: contents.language,
-        categoryName: categories.name,
-        creatorName: users.name,
-      })
-      .from(purchases)
-      .innerJoin(contents, eq(purchases.contentId, contents.id))
-      .innerJoin(users, eq(contents.creatorId, users.id))
-      .leftJoin(categories, eq(contents.categoryId, categories.id))
-      .leftJoin(payments, eq(purchases.paymentId, payments.id))
-      .where(eq(purchases.userId, userId))
-      .orderBy(desc(purchases.purchasedAt));
-
-    const bookmarkedItems = await db
-      .select({
-        bookmarkId: bookmarks.id,
-        bookmarkedAt: bookmarks.createdAt,
-        contentId: contents.id,
-        title: contents.title,
-        slug: contents.slug,
-        shortDescription: contents.shortDescription,
-        coverImageUrl: contents.coverImageUrl,
-        contentType: contents.contentType,
-        priceInr: contents.priceInr,
-        isFree: contents.isFree,
-        avgRating: contents.avgRating,
-        categoryName: categories.name,
-        creatorName: users.name,
-      })
-      .from(bookmarks)
-      .innerJoin(contents, eq(bookmarks.contentId, contents.id))
-      .innerJoin(users, eq(contents.creatorId, users.id))
-      .leftJoin(categories, eq(contents.categoryId, categories.id))
-      .where(eq(bookmarks.userId, userId))
-      .orderBy(desc(bookmarks.createdAt));
-
-    const followingCreators = await db
-      .select({
-        creatorId: users.id,
-        name: users.name,
-        displayName: creatorProfiles.displayName,
-        tagline: creatorProfiles.tagline,
-        expertise: creatorProfiles.expertise,
-        verified: creatorProfiles.verified,
-        followerCount: creatorProfiles.followerCount,
-        followedAt: followers.createdAt,
-      })
-      .from(followers)
-      .innerJoin(users, eq(followers.creatorId, users.id))
-      .leftJoin(creatorProfiles, eq(creatorProfiles.userId, users.id))
-      .where(eq(followers.followerId, userId))
-      .orderBy(desc(followers.createdAt));
-
-    const userNotifications = await db
-      .select()
-      .from(notifications)
-      .where(eq(notifications.userId, userId))
-      .orderBy(desc(notifications.createdAt))
-      .limit(50);
-
-    const paymentHistory = await db
-      .select({
-        id: payments.id,
-        receiptNumber: payments.receiptNumber,
-        providerOrderId: payments.providerOrderId,
-        providerPaymentId: payments.providerPaymentId,
-        amountInr: payments.amountInr,
-        status: payments.status,
-        mode: payments.mode,
-        refundReason: payments.refundReason,
-        createdAt: payments.createdAt,
-        contentTitle: contents.title,
-        contentSlug: contents.slug,
-      })
-      .from(payments)
-      .innerJoin(contents, eq(payments.contentId, contents.id))
-      .where(eq(payments.userId, userId))
-      .orderBy(desc(payments.createdAt));
+    const [purchasedItems, bookmarkedItems, followingCreators, userNotifications, paymentHistory] =
+      await Promise.all([
+        db
+          .select({
+            purchaseId: purchases.id,
+            pricePaidInr: purchases.pricePaidInr,
+            status: purchases.status,
+            purchasedAt: purchases.purchasedAt,
+            paymentId: purchases.paymentId,
+            receiptNumber: payments.receiptNumber,
+            providerOrderId: payments.providerOrderId,
+            paymentStatus: payments.status,
+            contentId: contents.id,
+            title: contents.title,
+            slug: contents.slug,
+            coverImageUrl: contents.coverImageUrl,
+            contentType: contents.contentType,
+            language: contents.language,
+            categoryName: categories.name,
+            creatorName: users.name,
+          })
+          .from(purchases)
+          .innerJoin(contents, eq(purchases.contentId, contents.id))
+          .innerJoin(users, eq(contents.creatorId, users.id))
+          .leftJoin(categories, eq(contents.categoryId, categories.id))
+          .leftJoin(payments, eq(purchases.paymentId, payments.id))
+          .where(eq(purchases.userId, userId))
+          .orderBy(desc(purchases.purchasedAt))
+          .limit(100),
+        db
+          .select({
+            bookmarkId: bookmarks.id,
+            bookmarkedAt: bookmarks.createdAt,
+            contentId: contents.id,
+            title: contents.title,
+            slug: contents.slug,
+            shortDescription: contents.shortDescription,
+            coverImageUrl: contents.coverImageUrl,
+            contentType: contents.contentType,
+            priceInr: contents.priceInr,
+            isFree: contents.isFree,
+            avgRating: contents.avgRating,
+            categoryName: categories.name,
+            creatorName: users.name,
+          })
+          .from(bookmarks)
+          .innerJoin(contents, eq(bookmarks.contentId, contents.id))
+          .innerJoin(users, eq(contents.creatorId, users.id))
+          .leftJoin(categories, eq(contents.categoryId, categories.id))
+          .where(eq(bookmarks.userId, userId))
+          .orderBy(desc(bookmarks.createdAt))
+          .limit(100),
+        db
+          .select({
+            creatorId: users.id,
+            name: users.name,
+            displayName: creatorProfiles.displayName,
+            tagline: creatorProfiles.tagline,
+            expertise: creatorProfiles.expertise,
+            verified: creatorProfiles.verified,
+            followerCount: creatorProfiles.followerCount,
+            followedAt: followers.createdAt,
+          })
+          .from(followers)
+          .innerJoin(users, eq(followers.creatorId, users.id))
+          .leftJoin(creatorProfiles, eq(creatorProfiles.userId, users.id))
+          .where(eq(followers.followerId, userId))
+          .orderBy(desc(followers.createdAt))
+          .limit(100),
+        db
+          .select()
+          .from(notifications)
+          .where(eq(notifications.userId, userId))
+          .orderBy(desc(notifications.createdAt))
+          .limit(50),
+        db
+          .select({
+            id: payments.id,
+            receiptNumber: payments.receiptNumber,
+            providerOrderId: payments.providerOrderId,
+            providerPaymentId: payments.providerPaymentId,
+            amountInr: payments.amountInr,
+            status: payments.status,
+            mode: payments.mode,
+            refundReason: payments.refundReason,
+            createdAt: payments.createdAt,
+            contentTitle: contents.title,
+            contentSlug: contents.slug,
+          })
+          .from(payments)
+          .innerJoin(contents, eq(payments.contentId, contents.id))
+          .where(eq(payments.userId, userId))
+          .orderBy(desc(payments.createdAt))
+          .limit(100),
+      ]);
 
     return res.json({
       purchases: purchasedItems,

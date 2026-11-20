@@ -16,6 +16,7 @@ import {
   resolveVideoEmbed,
   showToast,
   store,
+  uploadFileResilient,
 } from './api.js';
 
 export async function renderCreatorDashboardPage(container, activeTab = 'overview', editId = null) {
@@ -1489,11 +1490,28 @@ function wireContentEditor(container, editPayload, commRate) {
     const incoming = Array.from(e.target.files || []);
     if (!incoming.length) return;
     const accepted = incoming.slice(0, BATCH_PICK_LIMIT);
-    queuedUploadFiles.push(...accepted);
-    if (incoming.length > BATCH_PICK_LIMIT) {
-      showToast(`Added ${accepted.length} files. Click Attach again to add more.`, 'info');
-    } else {
-      showToast(`${accepted.length} file${accepted.length > 1 ? 's' : ''} added.`, 'success');
+    let addedCount = 0;
+    let dupCount = 0;
+    for (const f of accepted) {
+      const isDup = queuedUploadFiles.some(
+        (q) => q.name === f.name && q.size === f.size && q.lastModified === f.lastModified
+      );
+      if (isDup) {
+        dupCount += 1;
+        continue;
+      }
+      queuedUploadFiles.push(f);
+      addedCount += 1;
+    }
+    if (dupCount > 0 && addedCount === 0) {
+      showToast('Already attached — duplicate file skipped.', 'info');
+    } else if (incoming.length > BATCH_PICK_LIMIT) {
+      showToast(`Added ${addedCount} files. Click Attach again to add more.`, 'info');
+    } else if (addedCount > 0) {
+      showToast(
+        `${addedCount} file${addedCount > 1 ? 's' : ''} added${dupCount ? ` (${dupCount} duplicate skipped)` : ''}.`,
+        'success'
+      );
     }
     fileInputEl.value = '';
     renderQueuedFiles();
@@ -1644,26 +1662,59 @@ function wireContentEditor(container, editPayload, commRate) {
     });
   });
 
-  // Upload queued files in chunks of 20 so creators can attach unlimited total files across clicks
+  // Resilient uploader with real-time % progress bar, SHA-256 deduplication, direct-to-S3/R2 presigned URLs,
+  // and 2 MB resumable chunking + auto-retry for large files.
   const uploadAttachedFilesBatch = async (contentId) => {
     if (!queuedUploadFiles.length) return null;
-    let totalUploaded = 0;
-    for (let i = 0; i < queuedUploadFiles.length; i += BATCH_PICK_LIMIT) {
-      const chunk = queuedUploadFiles.slice(i, i + BATCH_PICK_LIMIT);
-      const fd = new FormData();
-      for (const f of chunk) {
-        fd.append('files', f);
-      }
-      fd.append('isPreview', 'false');
-      const res = await apiFetch(`/api/creator/contents/${contentId}/files/batch`, {
-        method: 'POST',
-        body: fd,
-      });
-      totalUploaded += Number(res?.count || chunk.length);
+
+    let progressBox = document.getElementById('ed-upload-progress-box');
+    if (!progressBox && queueWrapEl) {
+      progressBox = document.createElement('div');
+      progressBox.id = 'ed-upload-progress-box';
+      progressBox.className =
+        'mt-3 p-3 rounded-lg border border-indigo-200 dark:border-slate-700 bg-indigo-50/60 dark:bg-slate-900/70 space-y-1.5 text-xs';
+      queueWrapEl.appendChild(progressBox);
     }
+
+    const total = queuedUploadFiles.length;
+    let uploadedCount = 0;
+    let duplicateCount = 0;
+
+    for (let i = 0; i < total; i += 1) {
+      const file = queuedUploadFiles[i];
+      const updateBar = (pct) => {
+        if (!progressBox) return;
+        const overall = Math.round(((i + pct / 100) / total) * 100);
+        progressBox.innerHTML = `
+          <div class="flex items-center justify-between gap-2 font-medium text-slate-800 dark:text-slate-200">
+            <span class="truncate">Uploading ${i + 1}/${total}: ${esc(file.name)}</span>
+            <span class="font-mono tabular-nums shrink-0">${overall}%</span>
+          </div>
+          <div class="h-1.5 w-full rounded-full bg-slate-200 dark:bg-slate-800 overflow-hidden">
+            <div class="h-full bg-[#5a1fd8] dark:bg-sky-400 transition-all duration-150" style="width:${overall}%"></div>
+          </div>
+        `;
+      };
+      updateBar(2);
+      const res = await uploadFileResilient({
+        contentId,
+        file,
+        isPreview: false,
+        onProgress: updateBar,
+      });
+      if (res?.duplicate) duplicateCount += 1;
+      uploadedCount += 1;
+    }
+
+    if (progressBox) progressBox.remove();
     queuedUploadFiles = [];
     renderQueuedFiles();
-    return { count: totalUploaded, message: `${totalUploaded} file${totalUploaded === 1 ? '' : 's'} uploaded successfully.` };
+    return {
+      count: uploadedCount,
+      message: `${uploadedCount} file${uploadedCount === 1 ? '' : 's'} uploaded${
+        duplicateCount ? ` (${duplicateCount} existing reused)` : ''
+      }.`,
+    };
   };
 
   document.getElementById('ed-upload-file-btn')?.addEventListener('click', async () => {

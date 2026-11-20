@@ -12,25 +12,26 @@ import {
   store,
   subscribeStore,
 } from './js/api.js';
-import { signOutFirebase, subscribeFirebaseAuth } from './js/firebase.js';
 import {
-  renderCategoriesPage,
-  renderCreatorPublicProfilePage,
-  renderCreatorsDirectoryPage,
-  renderExplorePage,
-  renderHomePage,
-  renderStaticPage,
-} from './js/pages-public.js';
-import { cleanupReaderProgress, renderContentDetailPage } from './js/pages-reader.js';
-import {
-  renderAuthPage,
-  renderBecomeCreatorPage,
-  renderCompleteProfilePage,
-  renderUserDashboardPage,
-} from './js/pages-auth-user.js';
-import { renderCreatorDashboardPage } from './js/pages-creator.js';
-import { renderAdminDashboardPage } from './js/pages-admin.js';
+  hasStoredFirebaseHint,
+  signOutFirebase,
+  subscribeFirebaseAuth,
+} from './js/firebase.js';
 import { notifyRouteChange, startActivityTracker } from './js/tracker.js';
+
+// Route-level dynamic code splitting caches (loads Admin, Creator Studio, Reader, Auth chunks strictly on demand)
+let loadedPublicMod = null;
+let loadedReaderMod = null;
+const loadPublicPages = () =>
+  loadedPublicMod ? Promise.resolve(loadedPublicMod) : import('./js/pages-public.js').then((m) => (loadedPublicMod = m));
+const loadReaderPages = () =>
+  loadedReaderMod ? Promise.resolve(loadedReaderMod) : import('./js/pages-reader.js').then((m) => (loadedReaderMod = m));
+const loadAuthUserPages = () => import('./js/pages-auth-user.js');
+const loadCreatorPages = () => import('./js/pages-creator.js');
+const loadAdminPages = () => import('./js/pages-admin.js');
+
+const routeScrollPositions = new Map();
+let lastHashKey = window.location.hash || '#/';
 
 function getRoutePath() {
   const raw = window.location.hash.replace(/^#/, '') || '/';
@@ -485,8 +486,23 @@ function wireHeaderEvents() {
   });
 }
 
+let routeSeq = 0;
+
 async function routeCurrentView() {
-  cleanupReaderProgress();
+  const mySeq = ++routeSeq;
+  // Save previous route scroll position so navigating Back restores exact reading/feed position
+  const nextHashKey = window.location.hash || '#/';
+  if (lastHashKey && lastHashKey !== nextHashKey) {
+    routeScrollPositions.set(lastHashKey, window.scrollY);
+  }
+  lastHashKey = nextHashKey;
+
+  if (loadedReaderMod?.cleanupReaderProgress) {
+    loadedReaderMod.cleanupReaderProgress();
+  }
+  if (loadedPublicMod?.cleanupExploreObservers) {
+    loadedPublicMod.cleanupExploreObservers();
+  }
   renderHeaderAndFooter();
 
   const main = document.getElementById('page-root');
@@ -506,7 +522,20 @@ async function routeCurrentView() {
     return;
   }
 
-  window.scrollTo({ top: 0 });
+  const isExploreFeedRoute = [
+    '/explore',
+    '/notes',
+    '/study-materials',
+    '/pdf-library',
+    '/articles',
+    '/videos',
+    '/poems-stories',
+  ].includes(path);
+
+  if (!isExploreFeedRoute) {
+    window.scrollTo({ top: 0 });
+  }
+
   if (!path.startsWith('/content/')) {
     const labelMap = {
       '/': 'Home Page',
@@ -529,10 +558,16 @@ async function routeCurrentView() {
   }
 
   if (path === '/' || path === '') {
+    const { renderHomePage } = await loadPublicPages();
+    if (mySeq !== routeSeq) return;
     await renderHomePage(main);
   } else if (path === '/explore') {
+    const { renderExplorePage } = await loadPublicPages();
+    if (mySeq !== routeSeq) return;
     await renderExplorePage(main);
   } else if (path === '/notes') {
+    const { renderExplorePage } = await loadPublicPages();
+    if (mySeq !== routeSeq) return;
     await renderExplorePage(main, {
       title: 'Educational Notes',
       subtitle: 'Annotated lecture notes, exam revision booklets, and chapter summaries.',
@@ -540,6 +575,8 @@ async function routeCurrentView() {
       lockType: true,
     });
   } else if (path === '/study-materials') {
+    const { renderExplorePage } = await loadPublicPages();
+    if (mySeq !== routeSeq) return;
     await renderExplorePage(main, {
       title: 'Study Materials',
       subtitle: 'Notes, PDF documents, e-books, tutorials, and research papers.',
@@ -547,6 +584,8 @@ async function routeCurrentView() {
       lockType: true,
     });
   } else if (path === '/pdf-library') {
+    const { renderExplorePage } = await loadPublicPages();
+    if (mySeq !== routeSeq) return;
     await renderExplorePage(main, {
       title: 'PDF Document Library',
       subtitle: 'Downloadable monographs, solved question sets, and academic handbooks.',
@@ -554,6 +593,8 @@ async function routeCurrentView() {
       lockType: true,
     });
   } else if (path === '/articles') {
+    const { renderExplorePage } = await loadPublicPages();
+    if (mySeq !== routeSeq) return;
     await renderExplorePage(main, {
       title: 'Articles & Essays',
       subtitle: 'Deep-dive explanatory articles and scholarly commentary.',
@@ -561,6 +602,8 @@ async function routeCurrentView() {
       lockType: true,
     });
   } else if (path === '/videos') {
+    const { renderExplorePage } = await loadPublicPages();
+    if (mySeq !== routeSeq) return;
     await renderExplorePage(main, {
       title: 'Video Lectures & Recorded Classes',
       subtitle: 'Recorded courses, conceptual walkthroughs, and tutorial sessions.',
@@ -568,6 +611,8 @@ async function routeCurrentView() {
       lockType: true,
     });
   } else if (path === '/poems-stories') {
+    const { renderExplorePage } = await loadPublicPages();
+    if (mySeq !== routeSeq) return;
     await renderExplorePage(main, {
       title: 'Poems & Short Stories',
       subtitle: 'Original verse anthologies, short fiction, and literary craft essays.',
@@ -575,56 +620,82 @@ async function routeCurrentView() {
       lockType: true,
     });
   } else if (path === '/categories') {
+    const { renderCategoriesPage } = await loadPublicPages();
+    if (mySeq !== routeSeq) return;
     await renderCategoriesPage(main);
   } else if (path === '/creators') {
+    const { renderCreatorsDirectoryPage } = await loadPublicPages();
+    if (mySeq !== routeSeq) return;
     await renderCreatorsDirectoryPage(main);
   } else if (path.startsWith('/creator-profile/')) {
     const id = path.split('/')[2];
+    const { renderCreatorPublicProfilePage } = await loadPublicPages();
+    if (mySeq !== routeSeq) return;
     await renderCreatorPublicProfilePage(main, id);
   } else if (path.startsWith('/content/')) {
     const slug = path.slice('/content/'.length);
+    const { renderContentDetailPage } = await loadReaderPages();
+    if (mySeq !== routeSeq) return;
     await renderContentDetailPage(main, slug);
-  } else if (path === '/about') {
-    renderStaticPage(main, 'about');
-  } else if (path === '/contact') {
-    renderStaticPage(main, 'contact');
-  } else if (path === '/terms') {
-    renderStaticPage(main, 'terms');
-  } else if (path === '/privacy') {
-    renderStaticPage(main, 'privacy');
-  } else if (path === '/copyright') {
-    renderStaticPage(main, 'copyright');
-  } else if (path === '/login') {
-    renderAuthPage(main, 'login');
-  } else if (path === '/signup') {
-    renderAuthPage(main, 'signup');
-  } else if (path === '/forgot-password') {
-    renderAuthPage(main, 'forgot');
-  } else if (path === '/reset-password') {
-    renderAuthPage(main, 'reset');
-  } else if (path === '/verify-email') {
-    renderAuthPage(main, 'verify');
+  } else if (['/about', '/contact', '/terms', '/privacy', '/copyright'].includes(path)) {
+    const { renderStaticPage } = await loadPublicPages();
+    if (mySeq !== routeSeq) return;
+    renderStaticPage(main, path.slice(1));
+  } else if (['/login', '/signup', '/forgot-password', '/reset-password', '/verify-email'].includes(path)) {
+    const modeMap = {
+      '/login': 'login',
+      '/signup': 'signup',
+      '/forgot-password': 'forgot',
+      '/reset-password': 'reset',
+      '/verify-email': 'verify',
+    };
+    const { renderAuthPage } = await loadAuthUserPages();
+    if (mySeq !== routeSeq) return;
+    renderAuthPage(main, modeMap[path]);
   } else if (path === '/complete-profile') {
+    const { renderCompleteProfilePage } = await loadAuthUserPages();
+    if (mySeq !== routeSeq) return;
     renderCompleteProfilePage(main);
   } else if (path === '/become-creator') {
+    const { renderBecomeCreatorPage } = await loadAuthUserPages();
+    if (mySeq !== routeSeq) return;
     renderBecomeCreatorPage(main);
   } else if (path === '/dashboard' || path.startsWith('/dashboard/')) {
     const tab = path.split('/')[2] || 'overview';
+    const { renderUserDashboardPage } = await loadAuthUserPages();
+    if (mySeq !== routeSeq) return;
     await renderUserDashboardPage(main, tab);
   } else if (path.startsWith('/creator/edit/')) {
     const editId = path.split('/')[3];
+    const { renderCreatorDashboardPage } = await loadCreatorPages();
+    if (mySeq !== routeSeq) return;
     await renderCreatorDashboardPage(main, 'upload', editId);
   } else if (path === '/creator' || path.startsWith('/creator/')) {
     const tab = path.split('/')[2] || 'overview';
+    const { renderCreatorDashboardPage } = await loadCreatorPages();
+    if (mySeq !== routeSeq) return;
     await renderCreatorDashboardPage(main, tab);
   } else if (path === '/admin' || path.startsWith('/admin/')) {
     const parts = path.split('/');
     const tab = parts[2] || 'overview';
     const subParam = parts[3] ? decodeURIComponent(parts.slice(3).join('/')) : null;
+    const { renderAdminDashboardPage } = await loadAdminPages();
+    if (mySeq !== routeSeq) return;
     await renderAdminDashboardPage(main, tab, subParam);
   } else {
     window.location.hash = '#/';
+    const { renderHomePage } = await loadPublicPages();
+    if (mySeq !== routeSeq) return;
     await renderHomePage(main);
+  }
+
+  // Restore saved scroll position for non-Explore routes if previously visited via Back
+  if (!isExploreFeedRoute && routeScrollPositions.has(nextHashKey)) {
+    const savedY = routeScrollPositions.get(nextHashKey);
+    routeScrollPositions.delete(nextHashKey);
+    if (savedY > 0) {
+      requestAnimationFrame(() => window.scrollTo({ top: savedY, behavior: 'instant' }));
+    }
   }
 }
 
@@ -684,49 +755,58 @@ async function bootstrap() {
     }
   }
 
-  // Subscribe to Firebase Auth state (Google Sign-In persistence)
-  subscribeFirebaseAuth(async (firebaseUser) => {
-    const prevUserId = store.user?.id || null;
-    if (firebaseUser && !store.sessionToken) {
-      try {
-        const idToken = await firebaseUser.getIdToken();
-        const res = await apiFetch('/api/auth/firebase-sync', {
-          method: 'POST',
-          headers: { Authorization: `Bearer ${idToken}` },
-        });
-        store.user = res.user;
-        notifyStore();
-      } catch (err) {
-        if (err?.data?.accountBlocked) {
-          try {
-            sessionStorage.setItem('sp_last_block_notice', JSON.stringify(err.data));
-          } catch {}
-          await signOutFirebase();
-          store.user = null;
+  // Lazy-load Firebase Auth SDK ONLY if user has a prior Google Sign-In session or is opening a protected route
+  const shouldHydrateFirebase =
+    !store.sessionToken && (hasStoredFirebaseHint() || needsAuthBeforeRender);
+
+  if (shouldHydrateFirebase) {
+    subscribeFirebaseAuth(async (firebaseUser) => {
+      const prevUserId = store.user?.id || null;
+      if (firebaseUser && !store.sessionToken) {
+        try {
+          const idToken = await firebaseUser.getIdToken();
+          const res = await apiFetch('/api/auth/firebase-sync', {
+            method: 'POST',
+            headers: { Authorization: `Bearer ${idToken}` },
+          });
+          store.user = res.user;
           notifyStore();
-          window.location.hash = '#/login';
+        } catch (err) {
+          if (err?.data?.accountBlocked) {
+            try {
+              sessionStorage.setItem('sp_last_block_notice', JSON.stringify(err.data));
+            } catch {}
+            await signOutFirebase();
+            store.user = null;
+            notifyStore();
+            window.location.hash = '#/login';
+          }
         }
       }
-    }
-    if (store.user && store.user.id !== lastMetaUserId) {
-      lastMetaUserId = store.user.id;
-      loadGlobalCatalogMeta();
-    }
-    if (!initialRouted) {
-      await finishAuthProtectedRoute();
-    } else if (store.user?.id !== prevUserId) {
-      renderHeaderAndFooter();
-      const currPath = getRoutePath();
-      if (
-        currPath.startsWith('/content/') ||
-        !isPublicRoute(currPath) ||
-        currPath === '/login' ||
-        currPath === '/signup'
-      ) {
-        routeCurrentView();
+      if (store.user && store.user.id !== lastMetaUserId) {
+        lastMetaUserId = store.user.id;
+        loadGlobalCatalogMeta();
       }
-    }
-  });
+      if (!initialRouted) {
+        await finishAuthProtectedRoute();
+      } else if (store.user?.id !== prevUserId) {
+        renderHeaderAndFooter();
+        const currPath = getRoutePath();
+        if (
+          currPath.startsWith('/content/') ||
+          !isPublicRoute(currPath) ||
+          currPath === '/login' ||
+          currPath === '/signup'
+        ) {
+          routeCurrentView();
+        }
+      }
+    }).catch(() => {
+      if (!initialRouted) finishAuthProtectedRoute();
+    });
+  } else if (!initialRouted) {
+    await finishAuthProtectedRoute();
+  }
 
   // Safety fallback for auth-protected routes only if Firebase is slow
   if (needsAuthBeforeRender) {
@@ -761,10 +841,13 @@ document.addEventListener('click', (e) => {
     e.preventDefault();
     e.stopPropagation();
     const title = thumbImg.dataset.zoomTitle || thumbImg.getAttribute('alt') || 'Image';
+    // Load full-resolution artwork ONLY when the user opens the Full-Screen Image Viewer
+    const fullResolutionSrc =
+      thumbImg.dataset.fullSrc || thumbImg.currentSrc || thumbImg.getAttribute('src');
     openImageLightbox({
       images: [
         {
-          src: thumbImg.currentSrc || thumbImg.getAttribute('src'),
+          src: fullResolutionSrc,
           title,
         },
       ],

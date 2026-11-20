@@ -32,7 +32,13 @@ import {
 } from '../lib/mailer.ts';
 import { clampCommission, refundCapturedPayment } from '../lib/payments.ts';
 import { slugify } from '../lib/security.ts';
-import { isSuperAdminEmail, requireAdmin, requireAuth, type AuthRequest } from '../middleware/auth.ts';
+import {
+  invalidateUserAuthCache,
+  isSuperAdminEmail,
+  requireAdmin,
+  requireAuth,
+  type AuthRequest,
+} from '../middleware/auth.ts';
 
 const router = Router();
 router.use(requireAuth, requireAdmin);
@@ -77,96 +83,65 @@ router.get('/overview', async (req: AuthRequest, res) => {
     }
 
     const [
-      [totalUsersRow],
-      [activeUsersRow],
-      [totalCreatorsRow],
-      [publishedContentRow],
-      [freeContentRow],
-      [paidContentRow],
-      [pendingApprovalsRow],
-      [openReportsRow],
-      [blockedUsersRow],
-      [deletedAccountsRow],
-      [purchasesRow],
-      creditedCommissions,
-      pendingWithdrawalsList,
+      [userAgg],
+      [contentAgg],
+      miscAgg,
+      [commissionAgg],
+      monthlyRows,
+      [pendingWithdrawalsAgg],
+      popularCategories,
+      topContent,
+      topCreators,
     ] = await Promise.all([
-      db.select({ value: count() }).from(users),
-      db.select({ value: count() }).from(users).where(eq(users.status, 'active')),
-      db.select({ value: count() }).from(creatorProfiles),
       db
-        .select({ value: count() })
-        .from(contents)
-        .where(and(eq(contents.status, 'approved'), isNull(contents.deletedAt))),
+        .select({
+          totalUsers: sql<number>`COUNT(*)::int`,
+          activeUsers: sql<number>`COUNT(*) FILTER (WHERE ${users.status} = 'active')::int`,
+          blockedUsers: sql<number>`COUNT(*) FILTER (WHERE ${users.status} IN ('blocked', 'suspended'))::int`,
+        })
+        .from(users),
       db
-        .select({ value: count() })
-        .from(contents)
-        .where(and(eq(contents.status, 'approved'), eq(contents.isFree, true), isNull(contents.deletedAt))),
+        .select({
+          publishedContent: sql<number>`COUNT(*) FILTER (WHERE ${contents.status} = 'approved' AND ${contents.deletedAt} IS NULL)::int`,
+          freeContent: sql<number>`COUNT(*) FILTER (WHERE ${contents.status} = 'approved' AND ${contents.isFree} = true AND ${contents.deletedAt} IS NULL)::int`,
+          paidContent: sql<number>`COUNT(*) FILTER (WHERE ${contents.status} = 'approved' AND ${contents.isFree} = false AND ${contents.deletedAt} IS NULL)::int`,
+          pendingApprovals: sql<number>`COUNT(*) FILTER (WHERE ${contents.status} = 'pending' AND ${contents.deletedAt} IS NULL)::int`,
+        })
+        .from(contents),
+      db.execute(sql`
+        SELECT
+          (SELECT COUNT(*)::int FROM creator_profiles) AS total_creators,
+          (SELECT COUNT(*)::int FROM reports WHERE status = 'open') AS open_reports,
+          (SELECT COUNT(*)::int FROM deleted_account_logs) AS deleted_accounts,
+          (SELECT COUNT(*)::int FROM purchases WHERE status = 'active') AS total_purchases
+      `),
       db
-        .select({ value: count() })
-        .from(contents)
-        .where(and(eq(contents.status, 'approved'), eq(contents.isFree, false), isNull(contents.deletedAt))),
+        .select({
+          grossTransactionValue: sql<number>`COALESCE(SUM(${commissionRecords.grossAmountInr}), 0)`,
+          totalPlatformCommission: sql<number>`COALESCE(SUM(${commissionRecords.platformCommissionInr}), 0)`,
+          totalCreatorEarnings: sql<number>`COALESCE(SUM(${commissionRecords.creatorEarningsInr}), 0)`,
+        })
+        .from(commissionRecords)
+        .where(and(eq(commissionRecords.status, 'credited'), ...dateFilters)),
       db
-        .select({ value: count() })
-        .from(contents)
-        .where(and(eq(contents.status, 'pending'), isNull(contents.deletedAt))),
-      db.select({ value: count() }).from(reports).where(eq(reports.status, 'open')),
-      db
-        .select({ value: count() })
-        .from(users)
-        .where(inArray(users.status, ['blocked', 'suspended'])),
-      db.select({ value: count() }).from(deletedAccountLogs),
-      db.select({ value: count() }).from(purchases).where(eq(purchases.status, 'active')),
-      db
-        .select()
+        .select({
+          month: sql<string>`TO_CHAR(DATE_TRUNC('month', ${commissionRecords.createdAt}), 'YYYY-MM')`,
+          gross: sql<number>`COALESCE(SUM(${commissionRecords.grossAmountInr}), 0)`,
+          commission: sql<number>`COALESCE(SUM(${commissionRecords.platformCommissionInr}), 0)`,
+          creatorEarnings: sql<number>`COALESCE(SUM(${commissionRecords.creatorEarningsInr}), 0)`,
+          count: sql<number>`COUNT(*)::int`,
+        })
         .from(commissionRecords)
         .where(and(eq(commissionRecords.status, 'credited'), ...dateFilters))
-        .orderBy(desc(commissionRecords.createdAt)),
-      db.select().from(withdrawals).where(eq(withdrawals.status, 'pending')),
-    ]);
-
-    const grossTransactionValue = creditedCommissions.reduce(
-      (sum, r) => sum + Number(r.grossAmountInr),
-      0
-    );
-    const totalPlatformCommission = creditedCommissions.reduce(
-      (sum, r) => sum + Number(r.platformCommissionInr),
-      0
-    );
-    const totalCreatorEarnings = creditedCommissions.reduce(
-      (sum, r) => sum + Number(r.creatorEarningsInr),
-      0
-    );
-    const pendingWithdrawalsAmount = pendingWithdrawalsList.reduce(
-      (sum, w) => sum + Number(w.amountInr),
-      0
-    );
-
-    // Monthly revenue breakdown (group credited commissions by YYYY-MM)
-    const monthlyMap = new Map<
-      string,
-      { month: string; gross: number; commission: number; creatorEarnings: number; count: number }
-    >();
-    for (const c of creditedCommissions) {
-      const key = new Date(c.createdAt).toISOString().slice(0, 7);
-      const curr = monthlyMap.get(key) || {
-        month: key,
-        gross: 0,
-        commission: 0,
-        creatorEarnings: 0,
-        count: 0,
-      };
-      curr.gross += Number(c.grossAmountInr);
-      curr.commission += Number(c.platformCommissionInr);
-      curr.creatorEarnings += Number(c.creatorEarningsInr);
-      curr.count += 1;
-      monthlyMap.set(key, curr);
-    }
-    const monthlyRevenue = Array.from(monthlyMap.values()).sort((a, b) =>
-      a.month.localeCompare(b.month)
-    );
-
-    const [popularCategories, topContent, topCreators] = await Promise.all([
+        .groupBy(sql`TO_CHAR(DATE_TRUNC('month', ${commissionRecords.createdAt}), 'YYYY-MM')`)
+        .orderBy(sql`TO_CHAR(DATE_TRUNC('month', ${commissionRecords.createdAt}), 'YYYY-MM') ASC`),
+      db
+        .select({
+          pendingCount: sql<number>`COUNT(*)::int`,
+          pendingAmount: sql<number>`COALESCE(SUM(${withdrawals.amountInr}), 0)`,
+        })
+        .from(withdrawals)
+        .where(eq(withdrawals.status, 'pending')),
       db
         .select({
           id: categories.id,
@@ -220,24 +195,33 @@ router.get('/overview', async (req: AuthRequest, res) => {
         .limit(6),
     ]);
 
+    const miscRow = (miscAgg as unknown as { rows?: Array<Record<string, unknown>> })?.rows?.[0] || {};
+    const monthlyRevenue = monthlyRows.map((m) => ({
+      month: m.month,
+      gross: Number(Number(m.gross || 0).toFixed(2)),
+      commission: Number(Number(m.commission || 0).toFixed(2)),
+      creatorEarnings: Number(Number(m.creatorEarnings || 0).toFixed(2)),
+      count: Number(m.count || 0),
+    }));
+
     return res.json({
       metrics: {
-        totalUsers: Number(totalUsersRow?.value || 0),
-        activeUsers: Number(activeUsersRow?.value || 0),
-        blockedUsers: Number(blockedUsersRow?.value || 0),
-        deletedAccountsCount: Number(deletedAccountsRow?.value || 0),
-        totalCreators: Number(totalCreatorsRow?.value || 0),
-        publishedContent: Number(publishedContentRow?.value || 0),
-        freeContent: Number(freeContentRow?.value || 0),
-        paidContent: Number(paidContentRow?.value || 0),
-        pendingApprovals: Number(pendingApprovalsRow?.value || 0),
-        openReports: Number(openReportsRow?.value || 0),
-        totalPurchases: Number(purchasesRow?.value || 0),
-        grossTransactionValue: Number(grossTransactionValue.toFixed(2)),
-        totalPlatformCommission: Number(totalPlatformCommission.toFixed(2)),
-        totalCreatorEarnings: Number(totalCreatorEarnings.toFixed(2)),
-        pendingWithdrawalsCount: pendingWithdrawalsList.length,
-        pendingWithdrawalsAmount: Number(pendingWithdrawalsAmount.toFixed(2)),
+        totalUsers: Number(userAgg?.totalUsers || 0),
+        activeUsers: Number(userAgg?.activeUsers || 0),
+        blockedUsers: Number(userAgg?.blockedUsers || 0),
+        deletedAccountsCount: Number(miscRow.deleted_accounts || 0),
+        totalCreators: Number(miscRow.total_creators || 0),
+        publishedContent: Number(contentAgg?.publishedContent || 0),
+        freeContent: Number(contentAgg?.freeContent || 0),
+        paidContent: Number(contentAgg?.paidContent || 0),
+        pendingApprovals: Number(contentAgg?.pendingApprovals || 0),
+        openReports: Number(miscRow.open_reports || 0),
+        totalPurchases: Number(miscRow.total_purchases || 0),
+        grossTransactionValue: Number(Number(commissionAgg?.grossTransactionValue || 0).toFixed(2)),
+        totalPlatformCommission: Number(Number(commissionAgg?.totalPlatformCommission || 0).toFixed(2)),
+        totalCreatorEarnings: Number(Number(commissionAgg?.totalCreatorEarnings || 0).toFixed(2)),
+        pendingWithdrawalsCount: Number(pendingWithdrawalsAgg?.pendingCount || 0),
+        pendingWithdrawalsAmount: Number(Number(pendingWithdrawalsAgg?.pendingAmount || 0).toFixed(2)),
       },
       mailerConfigured: isMailerConfigured(),
       monthlyRevenue,
@@ -901,6 +885,7 @@ router.patch('/users/:id', async (req: AuthRequest, res) => {
       .returning();
 
     if (!updatedUser) return res.status(404).json({ error: 'User not found.' });
+    invalidateUserAuthCache(targetId, targetUser.email);
 
     if (req.body?.role === 'creator' || req.body?.role === 'admin') {
       await db
@@ -1055,6 +1040,7 @@ router.delete('/users/:id', async (req: AuthRequest, res) => {
 
     // 3. Permanently wipe user and all cascaded child records from PostgreSQL
     await db.delete(users).where(eq(users.id, targetId));
+    invalidateUserAuthCache(targetId, targetUser.email);
 
     // 4. Also remove Firebase Auth identity if account used Google Sign-In
     if (targetUser.uid && !targetUser.uid.startsWith('local-')) {
