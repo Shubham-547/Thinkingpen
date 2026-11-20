@@ -5,6 +5,7 @@ import {
   formatDate,
   formatInr,
   getAuthToken,
+  openImageLightbox,
   openModal,
   renderContentCard,
   renderCoverImage,
@@ -240,6 +241,7 @@ export async function renderContentDetailPage(container, slug) {
                                 <button type="button" id="pdf-zoom-out" class="min-w-[34px] min-h-[34px] px-2.5 py-1 rounded border border-slate-200 dark:border-slate-700 hover:bg-slate-100 dark:hover:bg-slate-800">−</button>
                                 <span id="pdf-zoom-label" class="font-mono tabular-nums w-12 text-center">100%</span>
                                 <button type="button" id="pdf-zoom-in" class="min-w-[34px] min-h-[34px] px-2.5 py-1 rounded border border-slate-200 dark:border-slate-700 hover:bg-slate-100 dark:hover:bg-slate-800">+</button>
+                                <button type="button" id="pdf-fullscreen-btn" class="min-h-[34px] px-2.5 py-1 rounded border border-slate-200 dark:border-slate-700 hover:bg-slate-100 dark:hover:bg-slate-800 font-semibold text-[#0F2547] dark:text-sky-400 whitespace-nowrap">Full Screen</button>
                               </div>
                             </div>
                             ${pdfFiles
@@ -554,27 +556,41 @@ export async function renderContentDetailPage(container, slug) {
       });
     });
 
-    // Wire Photo Gallery Lightbox Modal
-    container.querySelectorAll('.rd-gallery-item').forEach((btn) => {
+    // Wire Full-Screen Multi-Page Photo Gallery Lightbox
+    const galleryBtns = Array.from(container.querySelectorAll('.rd-gallery-item'));
+    galleryBtns.forEach((btn, idx) => {
       btn.addEventListener('click', () => {
-        const src = btn.dataset.gallerySrc;
-        const name = btn.dataset.galleryName || 'Gallery Photo';
-        const dl = btn.dataset.galleryDl;
-        openModal({
-          title: name,
-          widthClass: 'max-w-4xl',
-          bodyHtml: `
-            <div class="space-y-3">
-              <div class="rounded-lg overflow-hidden bg-slate-100 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 flex items-center justify-center">
-                <img src="${esc(src)}" alt="${esc(name)}" class="max-h-[72vh] w-auto object-contain" />
-              </div>
-              <div class="flex items-center justify-between text-xs text-slate-500">
-                <span class="truncate">${esc(name)}</span>
-                ${dl ? `<a href="${esc(dl)}" class="font-semibold text-[#0F2547] dark:text-sky-400 hover:underline whitespace-nowrap shrink-0">Download Photo</a>` : ''}
-              </div>
-            </div>
-          `,
-        });
+        const inlineImgs = Array.from(container.querySelectorAll('#rd-unlocked-content .reading-prose img'))
+          .filter((img) => img.getAttribute('src'))
+          .map((img, i) => ({
+            src: img.currentSrc || img.getAttribute('src'),
+            title: img.getAttribute('alt') || `Content Page ${i + 1}`,
+          }));
+        const attachedPhotos = galleryBtns
+          .filter((b) => b.dataset.gallerySrc)
+          .map((b, i) => ({
+            src: b.dataset.gallerySrc,
+            title: b.dataset.galleryName || `Gallery Photo ${i + 1}`,
+            downloadHref: b.dataset.galleryDl || '',
+          }));
+        const allImages = [...attachedPhotos, ...inlineImgs];
+        openImageLightbox({ images: allImages, startIndex: idx });
+      });
+    });
+
+    // Wire PDF Full Screen viewer modal
+    document.getElementById('pdf-fullscreen-btn')?.addEventListener('click', () => {
+      const frame = document.getElementById('pdf-viewer-frame');
+      const src = frame?.getAttribute('src');
+      if (!src) return;
+      openModal({
+        title: frame.getAttribute('title') || 'PDF Document Viewer',
+        widthClass: 'max-w-6xl',
+        bodyHtml: `
+          <div class="w-full h-[80vh] rounded-lg overflow-hidden border border-slate-200 dark:border-slate-800 bg-slate-100 dark:bg-slate-950">
+            <iframe src="${esc(src)}" class="w-full h-full border-0" title="Full Screen PDF Reader"></iframe>
+          </div>
+        `,
       });
     });
 

@@ -338,9 +338,189 @@ export function closeModal() {
   if (root) root.innerHTML = '';
 }
 
+/**
+ * Full-screen gallery lightbox viewer for thumbnails, cover pages, inline full-content pages, and photo galleries.
+ * Supports zoom in/out (50%-300%), tap/click zoom toggle, keyboard arrows/ESC, swipe gestures, and multi-page navigation.
+ */
+export function openImageLightbox({ images = [], startIndex = 0 } = {}) {
+  const validImages = (images || []).filter((img) => img && img.src);
+  if (!validImages.length) return;
+
+  document.getElementById('sp-image-lightbox')?.remove();
+
+  let currentIdx = Math.max(0, Math.min(startIndex, validImages.length - 1));
+  let zoom = 100;
+  let touchStartX = null;
+
+  const overlay = document.createElement('div');
+  overlay.id = 'sp-image-lightbox';
+  overlay.setAttribute('role', 'dialog');
+  overlay.setAttribute('aria-modal', 'true');
+  overlay.setAttribute('aria-label', 'Full-screen image viewer');
+  overlay.className =
+    'fixed inset-0 z-[90] bg-slate-950/95 backdrop-blur-sm flex flex-col select-none';
+
+  const renderView = () => {
+    const item = validImages[currentIdx];
+    const hasMulti = validImages.length > 1;
+    overlay.innerHTML = `
+      <div class="flex items-center justify-between gap-2 px-3 sm:px-5 py-3 bg-slate-950/80 border-b border-white/10 text-white shrink-0">
+        <div class="flex items-center gap-2.5 min-w-0">
+          ${
+            hasMulti
+              ? `<span class="px-2 py-0.5 rounded-md bg-white/15 text-[11px] font-mono tabular-nums shrink-0">${currentIdx + 1} / ${validImages.length}</span>`
+              : ''
+          }
+          <span class="text-xs sm:text-sm font-medium truncate text-slate-100">${esc(item.title || 'Photo Preview')}</span>
+        </div>
+        <div class="flex items-center gap-1.5 shrink-0">
+          <button type="button" id="sp-lb-zoom-out" title="Zoom Out (-)" class="min-w-[34px] min-h-[34px] px-2 rounded-lg bg-white/10 hover:bg-white/20 text-white text-sm font-bold transition-colors">−</button>
+          <button type="button" id="sp-lb-zoom-reset" title="Reset Zoom" class="min-h-[34px] px-2 rounded-lg bg-white/10 hover:bg-white/20 text-white text-xs font-mono tabular-nums transition-colors">${zoom}%</button>
+          <button type="button" id="sp-lb-zoom-in" title="Zoom In (+)" class="min-w-[34px] min-h-[34px] px-2 rounded-lg bg-white/10 hover:bg-white/20 text-white text-sm font-bold transition-colors">+</button>
+          <button type="button" id="sp-lb-close" aria-label="Close photo viewer" class="ml-1 min-w-[36px] min-h-[36px] flex items-center justify-center rounded-lg bg-white/15 hover:bg-red-600 text-white transition-colors">
+            <svg class="w-5 h-5" fill="none" stroke="currentColor" stroke-width="2.2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M6 18L18 6M6 6l12 12"/></svg>
+          </button>
+        </div>
+      </div>
+
+      <div id="sp-lb-stage" class="relative flex-1 overflow-auto flex items-center justify-center p-3 sm:p-6">
+        ${
+          hasMulti
+            ? `<button type="button" id="sp-lb-prev" aria-label="Previous photo" class="fixed left-2 sm:left-5 top-1/2 -translate-y-1/2 z-20 w-10 h-10 sm:w-12 sm:h-12 rounded-full bg-slate-900/80 hover:bg-white hover:text-slate-950 text-white border border-white/20 flex items-center justify-center shadow-xl transition-colors">
+                 <svg class="w-5 h-5 sm:w-6 sm:h-6" fill="none" stroke="currentColor" stroke-width="2.4" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M15 19l-7-7 7-7"/></svg>
+               </button>
+               <button type="button" id="sp-lb-next" aria-label="Next photo" class="fixed right-2 sm:right-5 top-1/2 -translate-y-1/2 z-20 w-10 h-10 sm:w-12 sm:h-12 rounded-full bg-slate-900/80 hover:bg-white hover:text-slate-950 text-white border border-white/20 flex items-center justify-center shadow-xl transition-colors">
+                 <svg class="w-5 h-5 sm:w-6 sm:h-6" fill="none" stroke="currentColor" stroke-width="2.4" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M9 5l7 7-7 7"/></svg>
+               </button>`
+            : ''
+        }
+        <img
+          id="sp-lb-img"
+          src="${esc(item.src)}"
+          alt="${esc(item.title || 'Expanded photo')}"
+          referrerpolicy="no-referrer"
+          style="${
+            zoom === 100
+              ? 'max-height:78vh; max-width:92vw;'
+              : `width:${zoom}%; max-width:none; height:auto;`
+          }"
+          class="rounded-lg shadow-2xl object-contain transition-all duration-150 ${zoom > 100 ? 'cursor-zoom-out' : 'cursor-zoom-in'}"
+        />
+      </div>
+
+      <div class="flex flex-wrap items-center justify-between gap-2 px-3 sm:px-5 py-2.5 bg-slate-950/85 border-t border-white/10 text-xs text-slate-300 shrink-0">
+        <span class="text-[11px] text-slate-400">Click photo to zoom${hasMulti ? ' · Use arrows or swipe to view pages' : ''} · ESC to close</span>
+        <div class="flex items-center gap-2">
+          ${
+            item.downloadHref
+              ? `<a href="${esc(item.downloadHref)}" class="px-3 py-1.5 rounded-lg bg-white/10 hover:bg-white/20 text-white font-semibold transition-colors whitespace-nowrap">Download</a>`
+              : ''
+          }
+          ${
+            item.openHref
+              ? `<a href="${esc(item.openHref)}" id="sp-lb-open-content" class="px-3.5 py-1.5 rounded-lg bg-[#5a1fd8] hover:bg-[#4a14c4] text-white font-semibold transition-colors whitespace-nowrap">Open Content Details →</a>`
+              : ''
+          }
+        </div>
+      </div>
+    `;
+
+    overlay.querySelector('#sp-lb-close')?.addEventListener('click', close);
+    overlay.querySelector('#sp-lb-open-content')?.addEventListener('click', close);
+    overlay.querySelector('#sp-lb-zoom-in')?.addEventListener('click', () => {
+      zoom = Math.min(300, zoom + 35);
+      renderView();
+    });
+    overlay.querySelector('#sp-lb-zoom-out')?.addEventListener('click', () => {
+      zoom = Math.max(50, zoom - 35);
+      renderView();
+    });
+    overlay.querySelector('#sp-lb-zoom-reset')?.addEventListener('click', () => {
+      zoom = 100;
+      renderView();
+    });
+    overlay.querySelector('#sp-lb-img')?.addEventListener('click', (e) => {
+      e.stopPropagation();
+      zoom = zoom === 100 ? 185 : 100;
+      renderView();
+    });
+    overlay.querySelector('#sp-lb-stage')?.addEventListener('click', (e) => {
+      if (e.target.id === 'sp-lb-stage') close();
+    });
+    overlay.querySelector('#sp-lb-prev')?.addEventListener('click', (e) => {
+      e.stopPropagation();
+      currentIdx = (currentIdx - 1 + validImages.length) % validImages.length;
+      zoom = 100;
+      renderView();
+    });
+    overlay.querySelector('#sp-lb-next')?.addEventListener('click', (e) => {
+      e.stopPropagation();
+      currentIdx = (currentIdx + 1) % validImages.length;
+      zoom = 100;
+      renderView();
+    });
+  };
+
+  const onKeyDown = (e) => {
+    if (e.key === 'Escape') close();
+    else if (e.key === 'ArrowRight' && validImages.length > 1) {
+      currentIdx = (currentIdx + 1) % validImages.length;
+      zoom = 100;
+      renderView();
+    } else if (e.key === 'ArrowLeft' && validImages.length > 1) {
+      currentIdx = (currentIdx - 1 + validImages.length) % validImages.length;
+      zoom = 100;
+      renderView();
+    } else if (e.key === '+' || e.key === '=') {
+      zoom = Math.min(300, zoom + 35);
+      renderView();
+    } else if (e.key === '-') {
+      zoom = Math.max(50, zoom - 35);
+      renderView();
+    }
+  };
+
+  const onTouchStart = (e) => {
+    if (zoom === 100 && e.touches?.length === 1) {
+      touchStartX = e.touches[0].clientX;
+    }
+  };
+  const onTouchEnd = (e) => {
+    if (touchStartX === null || validImages.length <= 1) return;
+    const dx = (e.changedTouches?.[0]?.clientX ?? touchStartX) - touchStartX;
+    touchStartX = null;
+    if (Math.abs(dx) > 48) {
+      currentIdx =
+        dx < 0
+          ? (currentIdx + 1) % validImages.length
+          : (currentIdx - 1 + validImages.length) % validImages.length;
+      zoom = 100;
+      renderView();
+    }
+  };
+
+  const prevOverflow = document.body.style.overflow;
+  document.body.style.overflow = 'hidden';
+
+  const close = () => {
+    document.removeEventListener('keydown', onKeyDown);
+    overlay.removeEventListener('touchstart', onTouchStart);
+    overlay.removeEventListener('touchend', onTouchEnd);
+    document.body.style.overflow = prevOverflow;
+    overlay.remove();
+  };
+
+  document.addEventListener('keydown', onKeyDown);
+  overlay.addEventListener('touchstart', onTouchStart, { passive: true });
+  overlay.addEventListener('touchend', onTouchEnd, { passive: true });
+
+  document.body.appendChild(overlay);
+  renderView();
+}
+
 export function renderCoverImage(urlOrItem, titleArg, aspectClass = 'aspect-[4/3]') {
   const isObj = urlOrItem && typeof urlOrItem === 'object';
-  const url = isObj ? urlOrItem.coverImageUrl : urlOrItem;
+  const url = isObj ? urlOrItem.coverImageUrl || urlOrItem.coverUrl : urlOrItem;
   const title = isObj ? urlOrItem.title : titleArg;
   const finalAspect = isObj && typeof titleArg === 'string' ? titleArg : aspectClass;
 
@@ -358,10 +538,11 @@ export function renderCoverImage(urlOrItem, titleArg, aspectClass = 'aspect-[4/3
       <img
         src="${esc(url)}"
         alt="${esc(title)}"
+        data-zoom-title="${esc(title)}"
         referrerpolicy="no-referrer"
         loading="lazy"
         decoding="async"
-        class="w-full h-full object-cover transition-transform duration-300 group-hover:scale-[1.03]"
+        class="sp-zoom-img cursor-zoom-in w-full h-full object-cover transition-transform duration-300 group-hover:scale-[1.03]"
         onerror="this.style.display='none'; this.nextElementSibling.style.display='flex';"
       />
       <div style="display:none" class="absolute inset-0 ${fallbackBg} p-4 flex-col justify-between text-white">

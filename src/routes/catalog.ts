@@ -151,7 +151,13 @@ router.get('/categories', requireAuth, async (_req, res) => {
 
     const [cats, subjs, counts] = await Promise.all([
       db.select().from(categories).orderBy(asc(categories.displayOrder), asc(categories.name)),
-      db.select().from(subjects).orderBy(asc(subjects.name)),
+      db
+        .select()
+        .from(subjects)
+        .orderBy(
+          sql`CASE WHEN LOWER(${subjects.name}) = 'other' THEN 1 ELSE 0 END`,
+          asc(subjects.id)
+        ),
       db
         .select({ categoryId: contents.categoryId, total: count() })
         .from(contents)

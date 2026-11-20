@@ -6,6 +6,7 @@ import {
   loadStoredSessionToken,
   logoutAll,
   notifyStore,
+  openImageLightbox,
   refreshCurrentUser,
   showToast,
   store,
@@ -732,5 +733,74 @@ async function bootstrap() {
     setTimeout(finishAuthProtectedRoute, 650);
   }
 }
+
+// Global Gallery Lightbox Delegation:
+// Clicking any content thumbnail (Home, Explore, Search, Profile, Cover Preview)
+// OR any image/page inside Full Content (.reading-prose img) opens the full-screen zoomable Gallery Viewer.
+document.addEventListener('click', (e) => {
+  const target = e.target;
+  if (!(target instanceof Element)) return;
+  // Ignore clicks inside the lightbox itself or rich-text editor while creator is editing
+  if (target.closest('#sp-image-lightbox') || target.closest('.sp-rte-editor')) return;
+
+  // 1) Thumbnail / Cover photo click anywhere (including overlay play badge on thumbnail links)
+  let thumbImg = target.closest('img.sp-zoom-img');
+  if (!thumbImg) {
+    const thumbOverlay = target.closest('.sp-thumb-overlay');
+    if (thumbOverlay) {
+      thumbImg = thumbOverlay.parentElement?.querySelector('img.sp-zoom-img') || null;
+    }
+  }
+  if (thumbImg && thumbImg.getAttribute('src')) {
+    e.preventDefault();
+    e.stopPropagation();
+    const linkParent = thumbImg.closest('a[href]');
+    const openHref = linkParent?.getAttribute('href') || '';
+    const title = thumbImg.dataset.zoomTitle || thumbImg.getAttribute('alt') || 'Cover Photo';
+    openImageLightbox({
+      images: [
+        {
+          src: thumbImg.currentSrc || thumbImg.getAttribute('src'),
+          title,
+          openHref: openHref && openHref !== window.location.hash ? openHref : '',
+        },
+      ],
+      startIndex: 0,
+    });
+    return;
+  }
+
+  // 2) Any photo or page image inside Full Content (.reading-prose img)
+  const proseImg = target.closest('.reading-prose img');
+  if (proseImg && proseImg.getAttribute('src')) {
+    e.preventDefault();
+    e.stopPropagation();
+    const scope = proseImg.closest('#rd-unlocked-content') || proseImg.closest('.reading-prose') || document;
+    const allProseImgs = Array.from(scope.querySelectorAll('.reading-prose img')).filter((img) =>
+      img.getAttribute('src')
+    );
+    const galleryBtns = Array.from(scope.querySelectorAll('.rd-gallery-item'));
+    const galleryItems = [
+      ...allProseImgs.map((img, i) => ({
+        el: img,
+        src: img.currentSrc || img.getAttribute('src'),
+        title: img.getAttribute('alt') || `Page ${i + 1}`,
+      })),
+      ...galleryBtns
+        .filter((b) => b.dataset.gallerySrc)
+        .map((b, i) => ({
+          el: b,
+          src: b.dataset.gallerySrc,
+          title: b.dataset.galleryName || `Gallery Photo ${i + 1}`,
+          downloadHref: b.dataset.galleryDl || '',
+        })),
+    ];
+    const clickedIdx = Math.max(
+      0,
+      galleryItems.findIndex((it) => it.el === proseImg)
+    );
+    openImageLightbox({ images: galleryItems, startIndex: clickedIdx });
+  }
+});
 
 bootstrap();

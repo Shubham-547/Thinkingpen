@@ -8,6 +8,7 @@ import {
   formatInr,
   formatRelativeAge,
   LANGUAGES,
+  loadGlobalCatalogMeta,
   notifyStore,
   openModal,
   PRESET_COVERS,
@@ -34,6 +35,9 @@ export async function renderCreatorDashboardPage(container, activeTab = 'overvie
       apiFetch('/api/creator/dashboard'),
       activeTab === 'upload' && editId ? apiFetch(`/api/creator/contents/${editId}`) : Promise.resolve(null),
       activeTab === 'history' ? apiFetch('/api/creator/history') : Promise.resolve(null),
+      activeTab === 'upload' && (!store.categories?.length || !store.subjects?.length)
+        ? loadGlobalCatalogMeta()
+        : Promise.resolve(null),
     ]);
 
     const deletedCount = Number(data.analytics?.deletedCount || 0);
@@ -635,19 +639,84 @@ function renderContentEditorHtml(editPayload, commRate) {
               ${LANGUAGES.map((l) => `<option value="${esc(l)}" ${(item?.language || 'English') === l ? 'selected' : ''}>${esc(l)}</option>`).join('')}
             </select>
           </div>
-          <div>
+          <div class="relative" id="ed-category-picker">
             <label class="block text-xs font-semibold text-slate-600 dark:text-slate-300 mb-1">Category</label>
-            <select name="categoryId" id="ed-category" class="w-full px-3 py-2.5 text-sm rounded-lg border border-slate-300 dark:border-slate-700 bg-slate-50 dark:bg-[#0B1120]">
-              <option value="">Select category...</option>
-              ${store.categories.map((c) => `<option value="${c.id}" ${item?.categoryId === c.id ? 'selected' : ''}>${esc(c.name)}</option>`).join('')}
-            </select>
+            <input type="hidden" name="categoryId" id="ed-category" value="${item?.categoryId || ''}" />
+            <button
+              type="button"
+              id="ed-category-trigger"
+              aria-haspopup="listbox"
+              aria-expanded="false"
+              class="w-full px-3.5 py-2.5 text-sm text-left rounded-lg border border-slate-300 dark:border-slate-700 bg-slate-50 dark:bg-[#0B1120] flex items-center justify-between gap-2 hover:border-indigo-400 dark:hover:border-sky-500 transition-colors"
+            >
+              <span id="ed-category-label" class="truncate text-slate-800 dark:text-slate-100">
+                ${esc(store.categories.find((c) => c.id === item?.categoryId)?.name || 'Select category...')}
+              </span>
+              <svg class="w-4 h-4 text-slate-400 shrink-0" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M19 9l-7 7-7-7"/></svg>
+            </button>
+            <div
+              id="ed-category-menu"
+              class="hidden absolute left-0 right-0 mt-1.5 z-40 bg-white dark:bg-[#0F1A30] border border-slate-200 dark:border-slate-700 rounded-xl shadow-xl overflow-hidden"
+            >
+              <div class="p-2 border-b border-slate-100 dark:border-slate-800 bg-slate-50/70 dark:bg-[#0B1120]">
+                <input
+                  type="search"
+                  id="ed-category-search"
+                  placeholder="Search category..."
+                  class="w-full px-2.5 py-1.5 text-xs rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-[#111A2E] outline-none focus:border-[#5a1fd8] dark:focus:border-sky-400"
+                />
+              </div>
+              <div id="ed-category-list" role="listbox" class="max-h-56 overflow-y-auto overscroll-contain divide-y divide-slate-100/70 dark:divide-slate-800/70"></div>
+            </div>
+            <div id="ed-category-other-wrap" class="hidden mt-2">
+              <input
+                type="text"
+                id="ed-category-other-text"
+                maxlength="80"
+                placeholder="Write custom category name (optional)..."
+                class="w-full px-3 py-2 text-xs rounded-lg border border-indigo-200 dark:border-slate-700 bg-white dark:bg-[#0B1120]"
+              />
+            </div>
           </div>
-          <div>
+
+          <div class="relative" id="ed-subject-picker">
             <label class="block text-xs font-semibold text-slate-600 dark:text-slate-300 mb-1">Subject</label>
-            <select name="subjectId" id="ed-subject" class="w-full px-3 py-2.5 text-sm rounded-lg border border-slate-300 dark:border-slate-700 bg-slate-50 dark:bg-[#0B1120]">
-              <option value="">Select subject...</option>
-              ${store.subjects.map((s) => `<option value="${s.id}" data-cat="${s.categoryId}" ${item?.subjectId === s.id ? 'selected' : ''}>${esc(s.name)}</option>`).join('')}
-            </select>
+            <input type="hidden" name="subjectId" id="ed-subject" value="${item?.subjectId || ''}" />
+            <button
+              type="button"
+              id="ed-subject-trigger"
+              aria-haspopup="listbox"
+              aria-expanded="false"
+              class="w-full px-3.5 py-2.5 text-sm text-left rounded-lg border border-slate-300 dark:border-slate-700 bg-slate-50 dark:bg-[#0B1120] flex items-center justify-between gap-2 hover:border-indigo-400 dark:hover:border-sky-500 transition-colors"
+            >
+              <span id="ed-subject-label" class="truncate text-slate-800 dark:text-slate-100">
+                ${esc(store.subjects.find((s) => s.id === item?.subjectId)?.name || 'Select subject...')}
+              </span>
+              <svg class="w-4 h-4 text-slate-400 shrink-0" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M19 9l-7 7-7-7"/></svg>
+            </button>
+            <div
+              id="ed-subject-menu"
+              class="hidden absolute left-0 right-0 mt-1.5 z-40 bg-white dark:bg-[#0F1A30] border border-slate-200 dark:border-slate-700 rounded-xl shadow-xl overflow-hidden"
+            >
+              <div class="p-2 border-b border-slate-100 dark:border-slate-800 bg-slate-50/70 dark:bg-[#0B1120]">
+                <input
+                  type="search"
+                  id="ed-subject-search"
+                  placeholder="Search subject..."
+                  class="w-full px-2.5 py-1.5 text-xs rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-[#111A2E] outline-none focus:border-[#5a1fd8] dark:focus:border-sky-400"
+                />
+              </div>
+              <div id="ed-subject-list" role="listbox" class="max-h-56 overflow-y-auto overscroll-contain divide-y divide-slate-100/70 dark:divide-slate-800/70"></div>
+            </div>
+            <div id="ed-subject-other-wrap" class="hidden mt-2">
+              <input
+                type="text"
+                id="ed-subject-other-text"
+                maxlength="80"
+                placeholder="Write custom subject name (optional)..."
+                class="w-full px-3 py-2 text-xs rounded-lg border border-indigo-200 dark:border-slate-700 bg-white dark:bg-[#0B1120]"
+              />
+            </div>
           </div>
           <div class="md:col-span-2">
             <label class="block text-xs font-semibold text-slate-600 dark:text-slate-300 mb-1">Short Description</label>
@@ -676,7 +745,7 @@ function renderContentEditorHtml(editPayload, commRate) {
                 <span>Upload Cover Photo</span>
               </button>
               <input type="file" id="ed-cover-file-input" accept="image/jpeg,image/png,image/webp,image/gif" class="hidden" />
-              <img id="ed-cover-preview" src="${esc(item?.coverImageUrl || PRESET_COVERS[0].url)}" alt="Selected cover preview" class="w-16 h-12 rounded-md object-cover border border-slate-200 dark:border-slate-700 shrink-0" />
+              <img id="ed-cover-preview" src="${esc(item?.coverImageUrl || PRESET_COVERS[0].url)}" alt="Selected cover preview" data-zoom-title="Selected Cover Preview" class="sp-zoom-img cursor-zoom-in w-16 h-12 rounded-md object-cover border border-slate-200 dark:border-slate-700 shrink-0" />
             </div>
             <div class="flex-1 w-full min-w-0">
               <input type="hidden" id="ed-cover-value" value="${esc(item?.coverImageUrl || PRESET_COVERS[0].url)}" />
@@ -883,19 +952,213 @@ function wireContentEditor(container, editPayload, commRate) {
   document.getElementById('ed-mode-free')?.addEventListener('click', () => setFreeMode(true));
   document.getElementById('ed-mode-paid')?.addEventListener('click', () => setFreeMode(false));
 
-  // Filter subjects by selected category
-  const catSel = document.getElementById('ed-category');
-  const subjSel = document.getElementById('ed-subject');
-  const filterSubjects = () => {
-    const cid = catSel?.value;
-    if (!subjSel) return;
-    Array.from(subjSel.options).forEach((opt) => {
-      if (!opt.value) return;
-      opt.hidden = Boolean(cid && opt.dataset.cat !== cid);
+  // Scrollable Category & Subject Pickers (with "Other" always last + live search & custom Other label)
+  const catHiddenEl = document.getElementById('ed-category');
+  const subjHiddenEl = document.getElementById('ed-subject');
+  const catTrigger = document.getElementById('ed-category-trigger');
+  const catLabel = document.getElementById('ed-category-label');
+  const catMenu = document.getElementById('ed-category-menu');
+  const catSearch = document.getElementById('ed-category-search');
+  const catList = document.getElementById('ed-category-list');
+  const catOtherWrap = document.getElementById('ed-category-other-wrap');
+
+  const subjTrigger = document.getElementById('ed-subject-trigger');
+  const subjLabel = document.getElementById('ed-subject-label');
+  const subjMenu = document.getElementById('ed-subject-menu');
+  const subjSearch = document.getElementById('ed-subject-search');
+  const subjList = document.getElementById('ed-subject-list');
+  const subjOtherWrap = document.getElementById('ed-subject-other-wrap');
+
+  const sortWithOtherLast = (arr) =>
+    [...(arr || [])].sort((a, b) => {
+      const aOther = String(a?.name || '').trim().toLowerCase() === 'other' ? 1 : 0;
+      const bOther = String(b?.name || '').trim().toLowerCase() === 'other' ? 1 : 0;
+      if (aOther !== bOther) return aOther - bOther;
+      const aOrd = Number(a?.displayOrder ?? a?.id ?? 0);
+      const bOrd = Number(b?.displayOrder ?? b?.id ?? 0);
+      return aOrd - bOrd;
+    });
+
+  const sortedCategories = sortWithOtherLast(store.categories || []);
+  const getSubjectsForCategory = (cid) => {
+    const numCid = Number(cid || 0);
+    const list = numCid
+      ? (store.subjects || []).filter((s) => Number(s.categoryId) === numCid)
+      : store.subjects || [];
+    return sortWithOtherLast(list);
+  };
+
+  const closeMenus = () => {
+    catMenu?.classList.add('hidden');
+    subjMenu?.classList.add('hidden');
+    catTrigger?.setAttribute('aria-expanded', 'false');
+    subjTrigger?.setAttribute('aria-expanded', 'false');
+  };
+
+  const renderCategoryOptions = (filterText = '') => {
+    if (!catList) return;
+    const q = filterText.trim().toLowerCase();
+    const currentId = Number(catHiddenEl?.value || 0);
+    const filtered = sortedCategories.filter((c) => !q || c.name.toLowerCase().includes(q));
+    if (!filtered.length) {
+      catList.innerHTML = `<div class="px-3.5 py-3 text-xs text-slate-500">No matching category.</div>`;
+      return;
+    }
+    catList.innerHTML = filtered
+      .map((c) => {
+        const selected = Number(c.id) === currentId;
+        const isOther = c.name.trim().toLowerCase() === 'other';
+        return `
+          <button
+            type="button"
+            role="option"
+            aria-selected="${selected}"
+            data-cat-id="${c.id}"
+            data-cat-name="${esc(c.name)}"
+            class="ed-cat-opt w-full px-3.5 py-2.5 text-left text-sm flex items-center justify-between gap-2 transition-colors ${
+              selected
+                ? 'bg-indigo-50 dark:bg-sky-950/60 text-[#5a1fd8] dark:text-sky-300 font-semibold'
+                : 'text-slate-800 dark:text-slate-100 hover:bg-slate-50 dark:hover:bg-slate-800/70'
+            } ${isOther ? 'border-t-2 border-slate-200 dark:border-slate-700 font-medium' : ''}"
+          >
+            <span class="truncate">${esc(c.name)}</span>
+            ${selected ? '<span class="text-xs font-bold shrink-0">✓</span>' : ''}
+          </button>
+        `;
+      })
+      .join('');
+
+    catList.querySelectorAll('.ed-cat-opt').forEach((btn) => {
+      btn.addEventListener('click', () => {
+        const cid = btn.dataset.catId || '';
+        const cname = btn.dataset.catName || 'Select category...';
+        if (catHiddenEl) catHiddenEl.value = cid;
+        if (catLabel) catLabel.textContent = cname;
+        const isOtherCat = cname.trim().toLowerCase() === 'other';
+        catOtherWrap?.classList.toggle('hidden', !isOtherCat);
+
+        // Reset subject if current subject does not belong to newly chosen category
+        const matchingSubjs = getSubjectsForCategory(cid);
+        const curSubjId = Number(subjHiddenEl?.value || 0);
+        const stillValid = matchingSubjs.some((s) => Number(s.id) === curSubjId);
+        if (!stillValid) {
+          if (isOtherCat && matchingSubjs.length === 1) {
+            if (subjHiddenEl) subjHiddenEl.value = String(matchingSubjs[0].id);
+            if (subjLabel) subjLabel.textContent = matchingSubjs[0].name;
+            subjOtherWrap?.classList.remove('hidden');
+          } else {
+            if (subjHiddenEl) subjHiddenEl.value = '';
+            if (subjLabel) subjLabel.textContent = 'Select subject...';
+            subjOtherWrap?.classList.add('hidden');
+          }
+        }
+        renderSubjectOptions(subjSearch?.value || '');
+        closeMenus();
+      });
     });
   };
-  catSel?.addEventListener('change', filterSubjects);
-  filterSubjects();
+
+  const renderSubjectOptions = (filterText = '') => {
+    if (!subjList) return;
+    const cid = catHiddenEl?.value || '';
+    const q = filterText.trim().toLowerCase();
+    const currentSubjId = Number(subjHiddenEl?.value || 0);
+    const pool = getSubjectsForCategory(cid);
+    const filtered = pool.filter((s) => !q || s.name.toLowerCase().includes(q));
+    if (!filtered.length) {
+      subjList.innerHTML = `<div class="px-3.5 py-3 text-xs text-slate-500">${cid ? 'No matching subject in this category.' : 'Select a category first or search subjects.'}</div>`;
+      return;
+    }
+    subjList.innerHTML = filtered
+      .map((s) => {
+        const selected = Number(s.id) === currentSubjId;
+        const isOther = s.name.trim().toLowerCase() === 'other';
+        return `
+          <button
+            type="button"
+            role="option"
+            aria-selected="${selected}"
+            data-subj-id="${s.id}"
+            data-subj-name="${esc(s.name)}"
+            data-subj-cat="${s.categoryId}"
+            class="ed-subj-opt w-full px-3.5 py-2.5 text-left text-sm flex items-center justify-between gap-2 transition-colors ${
+              selected
+                ? 'bg-indigo-50 dark:bg-sky-950/60 text-[#5a1fd8] dark:text-sky-300 font-semibold'
+                : 'text-slate-800 dark:text-slate-100 hover:bg-slate-50 dark:hover:bg-slate-800/70'
+            } ${isOther ? 'border-t-2 border-slate-200 dark:border-slate-700 font-medium' : ''}"
+          >
+            <span class="truncate">${esc(s.name)}</span>
+            ${selected ? '<span class="text-xs font-bold shrink-0">✓</span>' : ''}
+          </button>
+        `;
+      })
+      .join('');
+
+    subjList.querySelectorAll('.ed-subj-opt').forEach((btn) => {
+      btn.addEventListener('click', () => {
+        const sid = btn.dataset.subjId || '';
+        const sname = btn.dataset.subjName || 'Select subject...';
+        const scat = btn.dataset.subjCat || '';
+        if (subjHiddenEl) subjHiddenEl.value = sid;
+        if (subjLabel) subjLabel.textContent = sname;
+        subjOtherWrap?.classList.toggle('hidden', sname.trim().toLowerCase() !== 'other');
+        // Auto-sync parent category if user picked a subject directly
+        if (!catHiddenEl?.value && scat) {
+          const parentCat = sortedCategories.find((c) => Number(c.id) === Number(scat));
+          if (parentCat) {
+            if (catHiddenEl) catHiddenEl.value = String(parentCat.id);
+            if (catLabel) catLabel.textContent = parentCat.name;
+            catOtherWrap?.classList.toggle('hidden', parentCat.name.trim().toLowerCase() !== 'other');
+          }
+        }
+        closeMenus();
+      });
+    });
+  };
+
+  catTrigger?.addEventListener('click', (e) => {
+    e.stopPropagation();
+    const opening = catMenu?.classList.contains('hidden');
+    closeMenus();
+    if (opening) {
+      if (catSearch) catSearch.value = '';
+      renderCategoryOptions('');
+      catMenu?.classList.remove('hidden');
+      catTrigger?.setAttribute('aria-expanded', 'true');
+      setTimeout(() => catSearch?.focus(), 20);
+    }
+  });
+
+  subjTrigger?.addEventListener('click', (e) => {
+    e.stopPropagation();
+    const opening = subjMenu?.classList.contains('hidden');
+    closeMenus();
+    if (opening) {
+      if (subjSearch) subjSearch.value = '';
+      renderSubjectOptions('');
+      subjMenu?.classList.remove('hidden');
+      subjTrigger?.setAttribute('aria-expanded', 'true');
+      setTimeout(() => subjSearch?.focus(), 20);
+    }
+  });
+
+  catSearch?.addEventListener('input', () => renderCategoryOptions(catSearch.value));
+  subjSearch?.addEventListener('input', () => renderSubjectOptions(subjSearch.value));
+  catMenu?.addEventListener('click', (e) => e.stopPropagation());
+  subjMenu?.addEventListener('click', (e) => e.stopPropagation());
+  document.addEventListener('click', closeMenus);
+
+  // Sync initial Other input visibility in edit mode
+  const initialCat = sortedCategories.find((c) => Number(c.id) === Number(catHiddenEl?.value || 0));
+  if (initialCat && initialCat.name.trim().toLowerCase() === 'other') {
+    catOtherWrap?.classList.remove('hidden');
+  }
+  const initialSubj = (store.subjects || []).find((s) => Number(s.id) === Number(subjHiddenEl?.value || 0));
+  if (initialSubj && initialSubj.name.trim().toLowerCase() === 'other') {
+    subjOtherWrap?.classList.remove('hidden');
+  }
+  renderCategoryOptions('');
+  renderSubjectOptions('');
 
   // Cover preset picker + direct Cover Photo upload
   const coverValEl = document.getElementById('ed-cover-value');
@@ -1453,7 +1716,13 @@ function wireContentEditor(container, editPayload, commRate) {
       contentType: document.getElementById('ed-type')?.value || 'Notes',
       isFree,
       priceInr: isFree ? 0 : Number(document.getElementById('ed-price')?.value || 0),
-      tags: document.getElementById('ed-tags')?.value || '',
+      tags: [
+        document.getElementById('ed-tags')?.value || '',
+        document.getElementById('ed-category-other-text')?.value.trim() || '',
+        document.getElementById('ed-subject-other-text')?.value.trim() || '',
+      ]
+        .filter(Boolean)
+        .join(', '),
       externalVideoUrl: document.getElementById('ed-video-url')?.value.trim() || '',
       ownershipConfirmed: Boolean(document.getElementById('ed-ownership')?.checked),
       action,

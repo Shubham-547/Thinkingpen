@@ -46,7 +46,7 @@ function renderHomeTrendingCard(item) {
         ${renderCoverImage(item.coverImageUrl, item.title, 'aspect-[16/10]')}
         ${
           isVideo
-            ? `<div class="absolute inset-0 flex items-center justify-center bg-slate-950/15 group-hover:bg-slate-950/25 transition-colors">
+            ? `<div class="sp-thumb-overlay cursor-zoom-in absolute inset-0 flex items-center justify-center bg-slate-950/15 group-hover:bg-slate-950/25 transition-colors">
                  <span class="w-10 h-10 rounded-full bg-white/95 text-[#2d3ec9] flex items-center justify-center shadow-lg">
                    <svg class="w-5 h-5 translate-x-0.5" fill="currentColor" viewBox="0 0 24 24"><path d="M8 5v14l11-7z"></path></svg>
                  </span>

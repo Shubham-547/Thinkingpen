@@ -193,6 +193,12 @@
   border-radius: 0.5rem;
   margin: 1.5rem 0;
   border: 1px solid #e2e8f0;
+  cursor: zoom-in;
+  transition: transform 180ms ease, box-shadow 180ms ease;
+}
+
+.reading-prose img:hover {
+  box-shadow: 0 8px 24px rgba(15, 37, 71, 0.14);
 }
 
 .dark .reading-prose img {
