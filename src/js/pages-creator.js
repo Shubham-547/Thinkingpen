@@ -1438,7 +1438,7 @@ function wireContentEditor(container, editPayload, commRate) {
         const previewUrl = URL.createObjectURL(f);
         card.innerHTML = `
           <div class="aspect-[4/3] rounded overflow-hidden bg-slate-100 dark:bg-slate-900">
-            <img src="${previewUrl}" alt="${esc(f.name)}" class="w-full h-full object-cover" />
+            <img src="${previewUrl}" alt="${esc(f.name)}" data-zoom-title="${esc(f.name)}" class="sp-zoom-img cursor-zoom-in w-full h-full object-cover" />
           </div>
           <div class="text-[11px] font-medium truncate text-slate-800 dark:text-slate-200" title="${esc(f.name)}">${esc(f.name)}</div>
           <div class="text-[10px] font-mono text-slate-500">IMAGE · ${formatBytes(f.size)}</div>

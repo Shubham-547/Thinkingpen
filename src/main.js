@@ -734,16 +734,22 @@ async function bootstrap() {
   }
 }
 
-// Global Gallery Lightbox Delegation:
-// Clicking any content thumbnail (Home, Explore, Search, Profile, Cover Preview)
-// OR any image/page inside Full Content (.reading-prose img) opens the full-screen zoomable Gallery Viewer.
+// Global Full-Screen Image Viewer Delegation:
+// Clicking any cover page, content page, thumbnail, or preview image anywhere on the site
+// opens the pure-black gesture-driven full-screen image viewer (pinch zoom, pan, swipe, double-tap).
 document.addEventListener('click', (e) => {
   const target = e.target;
   if (!(target instanceof Element)) return;
-  // Ignore clicks inside the lightbox itself or rich-text editor while creator is editing
-  if (target.closest('#sp-image-lightbox') || target.closest('.sp-rte-editor')) return;
+  // Ignore clicks inside the viewer itself, interactive buttons (like remove-file X), or active rich-text editor
+  if (
+    target.closest('#sp-image-lightbox') ||
+    target.closest('.sp-rte-editor') ||
+    target.closest('[data-no-lightbox]')
+  ) {
+    return;
+  }
 
-  // 1) Thumbnail / Cover photo click anywhere (including overlay play badge on thumbnail links)
+  // 1) Thumbnail / Cover photo click anywhere (Home, Explore, Search, Reader Cover, Profile, Cover Preview)
   let thumbImg = target.closest('img.sp-zoom-img');
   if (!thumbImg) {
     const thumbOverlay = target.closest('.sp-thumb-overlay');
@@ -754,15 +760,12 @@ document.addEventListener('click', (e) => {
   if (thumbImg && thumbImg.getAttribute('src')) {
     e.preventDefault();
     e.stopPropagation();
-    const linkParent = thumbImg.closest('a[href]');
-    const openHref = linkParent?.getAttribute('href') || '';
-    const title = thumbImg.dataset.zoomTitle || thumbImg.getAttribute('alt') || 'Cover Photo';
+    const title = thumbImg.dataset.zoomTitle || thumbImg.getAttribute('alt') || 'Image';
     openImageLightbox({
       images: [
         {
           src: thumbImg.currentSrc || thumbImg.getAttribute('src'),
           title,
-          openHref: openHref && openHref !== window.location.hash ? openHref : '',
         },
       ],
       startIndex: 0,
@@ -770,7 +773,7 @@ document.addEventListener('click', (e) => {
     return;
   }
 
-  // 2) Any photo or page image inside Full Content (.reading-prose img)
+  // 2) Any photo or content page image inside Full Content (.reading-prose img)
   const proseImg = target.closest('.reading-prose img');
   if (proseImg && proseImg.getAttribute('src')) {
     e.preventDefault();
@@ -781,19 +784,18 @@ document.addEventListener('click', (e) => {
     );
     const galleryBtns = Array.from(scope.querySelectorAll('.rd-gallery-item'));
     const galleryItems = [
-      ...allProseImgs.map((img, i) => ({
-        el: img,
-        src: img.currentSrc || img.getAttribute('src'),
-        title: img.getAttribute('alt') || `Page ${i + 1}`,
-      })),
       ...galleryBtns
         .filter((b) => b.dataset.gallerySrc)
         .map((b, i) => ({
           el: b,
           src: b.dataset.gallerySrc,
-          title: b.dataset.galleryName || `Gallery Photo ${i + 1}`,
-          downloadHref: b.dataset.galleryDl || '',
+          title: b.dataset.galleryName || `Photo ${i + 1}`,
         })),
+      ...allProseImgs.map((img, i) => ({
+        el: img,
+        src: img.currentSrc || img.getAttribute('src'),
+        title: img.getAttribute('alt') || `Page ${i + 1}`,
+      })),
     ];
     const clickedIdx = Math.max(
       0,
