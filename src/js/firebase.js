@@ -34,19 +34,65 @@ async function ensureFirebaseLoaded() {
       const auth = authMod.getAuth(app);
       const googleAuthProvider = new authMod.GoogleAuthProvider();
       googleAuthProvider.setCustomParameters({ prompt: 'select_account' });
-      loadedFirebase = { auth, authMod, googleAuthProvider };
+
+      const facebookAuthProvider = new authMod.FacebookAuthProvider();
+      facebookAuthProvider.addScope('email');
+      facebookAuthProvider.setCustomParameters({ display: 'popup' });
+
+      const twitterAuthProvider = new authMod.TwitterAuthProvider();
+
+      loadedFirebase = {
+        auth,
+        authMod,
+        googleAuthProvider,
+        facebookAuthProvider,
+        twitterAuthProvider,
+      };
       return loadedFirebase;
     });
   }
   return firebasePromise;
 }
 
-export async function signInWithGoogle() {
-  const { auth, authMod, googleAuthProvider } = await ensureFirebaseLoaded();
-  const result = await authMod.signInWithPopup(auth, googleAuthProvider);
+async function runPopupSignIn(providerKey) {
+  const loaded = await ensureFirebaseLoaded();
+  const provider = loaded[providerKey];
+  const result = await loaded.authMod.signInWithPopup(loaded.auth, provider);
   setFirebaseHint(true);
   const idToken = await result.user.getIdToken(true);
   return { firebaseUser: result.user, idToken };
+}
+
+export async function signInWithGoogle() {
+  return runPopupSignIn('googleAuthProvider');
+}
+
+export async function signInWithFacebook() {
+  return runPopupSignIn('facebookAuthProvider');
+}
+
+export async function signInWithTwitter() {
+  return runPopupSignIn('twitterAuthProvider');
+}
+
+export function formatFirebaseAuthError(err, providerLabel = 'Social') {
+  const code = err?.code || '';
+  if (code === 'auth/popup-closed-by-user' || code === 'auth/cancelled-popup-request') {
+    return `${providerLabel} sign-in popup was closed before completing.`;
+  }
+  if (code === 'auth/popup-blocked') {
+    return `Popup was blocked by your browser. Please allow popups for this site and try ${providerLabel} sign-in again.`;
+  }
+  if (code === 'auth/account-exists-with-different-credential') {
+    return `An account already exists with this email using a different sign-in method. Please sign in with your original method.`;
+  }
+  if (code === 'auth/operation-not-allowed') {
+    return `${providerLabel} sign-in is not enabled yet in Firebase Authentication. Enable ${providerLabel} under Firebase Console → Authentication → Sign-in method (with your ${providerLabel} App ID & Secret).`;
+  }
+  if (code === 'auth/unauthorized-domain') {
+    return `This domain is not authorized in Firebase Authentication. Add the current hostname under Firebase Console → Authentication → Settings → Authorized domains.`;
+  }
+  return err?.message || `${providerLabel} sign-in failed. Please try again.`;
 }
 
 export async function signOutFirebase() {

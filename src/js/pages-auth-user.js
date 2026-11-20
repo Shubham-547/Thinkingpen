@@ -13,7 +13,13 @@ import {
   showToast,
   store,
 } from './api.js';
-import { signInWithGoogle, signOutFirebase } from './firebase.js';
+import {
+  formatFirebaseAuthError,
+  signInWithFacebook,
+  signInWithGoogle,
+  signInWithTwitter,
+  signOutFirebase,
+} from './firebase.js';
 
 function formatRemainingDuration(untilIso) {
   if (!untilIso) return null;
@@ -148,11 +154,886 @@ function wireUsernameAvailabilityCheck(inputEl, feedbackEl) {
   });
 }
 
+function renderScholarPressBookNibLogo(sizeCls = 'w-14 h-12', gid = 'Desk') {
+  return `
+    <svg class="${sizeCls} shrink-0" viewBox="0 0 84 72" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+      <defs>
+        <linearGradient id="spNibBookL${gid}" x1="8" y1="30" x2="40" y2="62" gradientUnits="userSpaceOnUse">
+          <stop stop-color="#60A5FA"/>
+          <stop offset="1" stop-color="#1D4ED8"/>
+        </linearGradient>
+        <linearGradient id="spNibBookR${gid}" x1="44" y1="30" x2="76" y2="62" gradientUnits="userSpaceOnUse">
+          <stop stop-color="#3B82F6"/>
+          <stop offset="1" stop-color="#1E40AF"/>
+        </linearGradient>
+      </defs>
+      <!-- Fountain pen nib rising from open book -->
+      <path d="M42 6L33 26L42 40L51 26L42 6Z" fill="#FFFFFF"/>
+      <path d="M42 6V24" stroke="#0B2252" stroke-width="2" stroke-linecap="round"/>
+      <circle cx="42" cy="25.5" r="2.6" fill="#0B2252"/>
+      <!-- Open hardcover book pages -->
+      <path d="M8 29C20 26 32 30 42 41V61C31 53 19 50 8 53V29Z" fill="url(#spNibBookL${gid})" stroke="#FFFFFF" stroke-width="2.2" stroke-linejoin="round"/>
+      <path d="M76 29C64 26 52 30 42 41V61C53 53 65 50 76 53V29Z" fill="url(#spNibBookR${gid})" stroke="#FFFFFF" stroke-width="2.2" stroke-linejoin="round"/>
+      <!-- Crisp page lines -->
+      <path d="M14 36C22 34.5 30 37 37 44" stroke="#E0F2FE" stroke-width="1.8" stroke-linecap="round"/>
+      <path d="M14 43C22 41.5 30 44 37 50.5" stroke="#BAE6FD" stroke-width="1.6" stroke-linecap="round"/>
+      <path d="M70 36C62 34.5 54 37 47 44" stroke="#E0F2FE" stroke-width="1.8" stroke-linecap="round"/>
+      <path d="M70 43C62 41.5 54 44 47 50.5" stroke="#BAE6FD" stroke-width="1.6" stroke-linecap="round"/>
+      <!-- Base curved book spine shadow -->
+      <path d="M6 56C20 52 33 55 42 63C51 55 64 52 78 56" stroke="#FFFFFF" stroke-opacity="0.9" stroke-width="2.2" stroke-linecap="round"/>
+    </svg>
+  `;
+}
+
+function renderDesktopBooksPenCupSvg() {
+  return `
+    <svg class="w-[186px] xl:w-[205px] h-auto select-none pointer-events-none drop-shadow-[0_14px_24px_rgba(3,12,34,0.45)]" viewBox="0 0 220 190" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+      <defs>
+        <linearGradient id="spCupBody" x1="65" y1="74" x2="150" y2="140" gradientUnits="userSpaceOnUse">
+          <stop stop-color="#FFFFFF"/>
+          <stop offset="0.65" stop-color="#E6EEF9"/>
+          <stop offset="1" stop-color="#C6D6EE"/>
+        </linearGradient>
+        <linearGradient id="spBookTop" x1="20" y1="132" x2="195" y2="154" gradientUnits="userSpaceOnUse">
+          <stop stop-color="#2563EB"/>
+          <stop offset="1" stop-color="#1E3A8A"/>
+        </linearGradient>
+        <linearGradient id="spBookBot" x1="12" y1="154" x2="205" y2="180" gradientUnits="userSpaceOnUse">
+          <stop stop-color="#1D4ED8"/>
+          <stop offset="1" stop-color="#0F2557"/>
+        </linearGradient>
+      </defs>
+      <!-- Pencils & fountain pen inside cup -->
+      <g transform="rotate(-15 86 74)">
+        <rect x="78" y="24" width="9" height="58" rx="3" fill="#2563EB"/>
+        <polygon points="78,24 82.5,11 87,24" fill="#FDE68A"/>
+        <polygon points="81,15 82.5,11 84,15" fill="#1E3A8A"/>
+      </g>
+      <g transform="rotate(-4 102 72)">
+        <rect x="97" y="18" width="10" height="62" rx="3" fill="#60A5FA"/>
+        <rect x="97" y="18" width="10" height="8" rx="2" fill="#E0F2FE"/>
+      </g>
+      <g transform="rotate(9 120 72)">
+        <rect x="115" y="15" width="11" height="66" rx="4" fill="#1E3A8A"/>
+        <rect x="115" y="34" width="11" height="3.5" fill="#F59E0B"/>
+        <polygon points="116,15 120.5,4 125,15" fill="#FBBF24"/>
+      </g>
+      <g transform="rotate(20 135 76)">
+        <rect x="131" y="24" width="9" height="56" rx="3" fill="#3B82F6"/>
+        <polygon points="131,24 135.5,13 140,24" fill="#FEF3C7"/>
+        <polygon points="134,17 135.5,13 137,17" fill="#1D4ED8"/>
+      </g>
+      <!-- Ceramic white pen cup -->
+      <ellipse cx="110" cy="76" rx="40" ry="8" fill="#1E3A8A"/>
+      <path d="M70 76H150L145 137C144.5 142 129 146 110 146C91 146 75.5 142 75 137L70 76Z" fill="url(#spCupBody)"/>
+      <ellipse cx="110" cy="76" rx="40" ry="7" stroke="#FFFFFF" stroke-width="2" fill="#DBEAFE" fill-opacity="0.35"/>
+      <!-- Mini ScholarPress emblem on cup -->
+      <path d="M110 92L106 102L110 109L114 102L110 92Z" fill="#0F2557"/>
+      <path d="M92 104C99 102 105 104 110 110V122C104 117 98 116 92 118V104Z" fill="#1D4ED8"/>
+      <path d="M128 104C121 102 115 104 110 110V122C116 117 122 116 128 118V104Z" fill="#2563EB"/>
+      <path d="M96 108C101 107 105 108 108 112M124 108C119 107 115 108 112 112" stroke="#FFFFFF" stroke-width="1.3" stroke-linecap="round"/>
+      <!-- Top stacked hardcover book -->
+      <path d="M24 137L120 128L198 140L106 154L24 137Z" fill="url(#spBookTop)"/>
+      <path d="M24 137L106 154V166L24 148V137Z" fill="#1E40AF"/>
+      <path d="M106 154L196 141V151L106 165V154Z" fill="#F8FAFC"/>
+      <path d="M108 158L193 145.5M108 161.5L193 149" stroke="#CBD5E1" stroke-width="1.1"/>
+      <!-- Bottom stacked hardcover book -->
+      <path d="M14 156L112 149L206 162L104 177L14 156Z" fill="url(#spBookBot)"/>
+      <path d="M14 156L104 177V187L14 166V156Z" fill="#0D2454"/>
+      <path d="M104 177L204 163V173L104 187V177Z" fill="#F1F5F9"/>
+      <path d="M106 181L201 167.5M106 184L201 170.5" stroke="#CBD5E1" stroke-width="1.1"/>
+    </svg>
+  `;
+}
+
+function renderMobileBooksCapPenSvg() {
+  return `
+    <svg class="w-[152px] sm:w-[196px] h-auto shrink-0 select-none pointer-events-none drop-shadow-[0_10px_18px_rgba(15,43,102,0.16)]" viewBox="0 0 220 175" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+      <defs>
+        <linearGradient id="spMobCapTop" x1="56" y1="16" x2="184" y2="62" gradientUnits="userSpaceOnUse">
+          <stop stop-color="#1E4DB7"/>
+          <stop offset="1" stop-color="#0A235A"/>
+        </linearGradient>
+        <linearGradient id="spMobBook1" x1="34" y1="74" x2="188" y2="106" gradientUnits="userSpaceOnUse">
+          <stop stop-color="#2563EB"/>
+          <stop offset="1" stop-color="#0E2D6E"/>
+        </linearGradient>
+        <linearGradient id="spMobBook2" x1="20" y1="106" x2="196" y2="148" gradientUnits="userSpaceOnUse">
+          <stop stop-color="#1D4ED8"/>
+          <stop offset="1" stop-color="#0A2254"/>
+        </linearGradient>
+        <linearGradient id="spMobPen" x1="148" y1="18" x2="196" y2="148" gradientUnits="userSpaceOnUse">
+          <stop stop-color="#1E40AF"/>
+          <stop offset="0.5" stop-color="#091D48"/>
+          <stop offset="1" stop-color="#2563EB"/>
+        </linearGradient>
+      </defs>
+      <!-- Soft translucent blue botanical leaves behind stack -->
+      <path d="M40 132C24 114 14 96 14 78C28 84 42 98 48 122Z" fill="#93C5FD" fill-opacity="0.45"/>
+      <path d="M36 138C18 130 6 118 4 104C20 106 34 116 44 130Z" fill="#60A5FA" fill-opacity="0.35"/>
+      <path d="M182 128C198 112 210 92 212 74C196 82 184 96 176 118Z" fill="#93C5FD" fill-opacity="0.42"/>
+      <!-- Soft surface shadow -->
+      <ellipse cx="108" cy="154" rx="86" ry="12" fill="#1E3A8A" fill-opacity="0.16"/>
+      <!-- Bottom book -->
+      <path d="M24 114L122 100L192 115L94 131L24 114Z" fill="url(#spMobBook2)"/>
+      <path d="M24 114L94 131V153L24 135V114Z" fill="#F8FAFC"/>
+      <path d="M28 121L90 136M28 127L90 142M28 132L90 147" stroke="#CBD5E1" stroke-width="1.3"/>
+      <path d="M24 114L94 131M24 135L94 153" stroke="#1E3A8A" stroke-width="3" stroke-linecap="round"/>
+      <path d="M94 131L192 115V137L94 153V131Z" fill="#123886"/>
+      <path d="M98 138L188 123" stroke="#60A5FA" stroke-opacity="0.45" stroke-width="2" stroke-linecap="round"/>
+      <!-- Top book -->
+      <path d="M38 86L132 74L188 87L96 101L38 86Z" fill="url(#spMobBook1)"/>
+      <path d="M38 86L96 101V120L38 104V86Z" fill="#FFFFFF"/>
+      <path d="M42 92L92 105M42 98L92 111" stroke="#CBD5E1" stroke-width="1.2"/>
+      <path d="M38 86L96 101M38 104L96 120" stroke="#1D4ED8" stroke-width="2.8" stroke-linecap="round"/>
+      <path d="M96 101L188 87V106L96 120V101Z" fill="#1A449E"/>
+      <!-- Graduation Cap sitting on top book -->
+      <path d="M80 54V74C80 81 97 86 116 86C135 86 152 81 152 74V54L116 66L80 54Z" fill="#153B8A"/>
+      <path d="M116 20L52 44L116 66L180 44L116 20Z" fill="url(#spMobCapTop)"/>
+      <path d="M116 22L174 44L116 63" stroke="#93C5FD" stroke-opacity="0.35" stroke-width="1.5"/>
+      <!-- Gold tassel -->
+      <circle cx="116" cy="43" r="3.5" fill="#FBBF24"/>
+      <path d="M116 43C134 45 148 53 151 64V83" stroke="#F59E0B" stroke-width="2.5" stroke-linecap="round"/>
+      <path d="M146 83H156L158 97C154 99 148 99 144 97L146 83Z" fill="#FBBF24"/>
+      <path d="M148 86V96M151 86V97M154 86V96" stroke="#B45309" stroke-width="1"/>
+      <!-- Classic Navy & Gold Fountain Pen leaning on right -->
+      <g transform="rotate(14 176 86)">
+        <rect x="169" y="22" width="15" height="96" rx="7.5" fill="url(#spMobPen)"/>
+        <rect x="169" y="68" width="15" height="4.5" fill="#F59E0B"/>
+        <rect x="174.5" y="28" width="4" height="32" rx="2" fill="#FBBF24"/>
+        <path d="M170 116H183L179.5 130H173.5L170 116Z" fill="#0B2252"/>
+        <path d="M172.5 130H180.5L176.5 151L172.5 130Z" fill="#FBBF24"/>
+        <path d="M176.5 138V151" stroke="#78350F" stroke-width="1.2"/>
+        <circle cx="176.5" cy="138" r="1.4" fill="#78350F"/>
+      </g>
+    </svg>
+  `;
+}
+
+function consumePostLoginRedirect(fallbackHash) {
+  try {
+    const target = sessionStorage.getItem('sp_post_login_redirect');
+    if (target) {
+      sessionStorage.removeItem('sp_post_login_redirect');
+      if (target.startsWith('#/')) return target;
+    }
+  } catch {}
+  return fallbackHash;
+}
+
+const SOCIAL_PROVIDER_ICONS = {
+  google: `<svg class="w-[18px] h-[18px] shrink-0" viewBox="0 0 24 24" aria-hidden="true">
+    <path fill="#4285F4" d="M23.745 12.27c0-.79-.07-1.54-.19-2.27h-11.3v4.51h6.47c-.29 1.48-1.14 2.73-2.4 3.58v3h3.86c2.26-2.09 3.56-5.17 3.56-8.82z"/>
+    <path fill="#34A853" d="M12.255 24c3.24 0 5.95-1.08 7.93-2.91l-3.86-3c-1.08.72-2.45 1.16-4.07 1.16-3.13 0-5.78-2.11-6.73-4.96h-3.98v3.09C3.515 21.3 7.565 24 12.255 24z"/>
+    <path fill="#FBBC05" d="M5.525 14.29c-.25-.72-.38-1.49-.38-2.29s.14-1.57.38-2.29V6.62h-3.98a11.86 11.86 0 000 10.76l3.98-3.09z"/>
+    <path fill="#EA4335" d="M12.255 4.75c1.77 0 3.35.61 4.6 1.8l3.42-3.42C18.205 1.19 15.495 0 12.255 0c-4.69 0-8.74 2.7-10.71 6.62l3.98 3.09c.95-2.85 3.6-4.96 6.73-4.96z"/>
+  </svg>`,
+  facebook: `<svg class="w-[18px] h-[18px] shrink-0" viewBox="0 0 24 24" aria-hidden="true">
+    <path fill="#1877F2" d="M24 12.073C24 5.405 18.627 0 12 0S0 5.405 0 12.073C0 18.1 4.388 23.094 10.125 24v-8.437H7.078v-3.49h3.047V9.41c0-3.025 1.792-4.697 4.533-4.697 1.312 0 2.686.236 2.686.236v2.97h-1.514c-1.491 0-1.956.93-1.956 1.886v2.268h3.328l-.532 3.49h-2.796V24C19.612 23.094 24 18.1 24 12.073z"/>
+  </svg>`,
+  twitter: `<svg class="w-[18px] h-[18px] shrink-0" viewBox="0 0 24 24" aria-hidden="true">
+    <path fill="#1DA1F2" d="M23.953 4.57a10 10 0 01-2.825.775 4.958 4.958 0 002.163-2.723c-.951.555-2.005.959-3.127 1.184a4.92 4.92 0 00-8.384 4.482C7.69 8.095 4.067 6.13 1.64 3.162a4.822 4.822 0 00-.666 2.475c0 1.71.87 3.213 2.188 4.096a4.904 4.904 0 01-2.228-.616v.06a4.923 4.923 0 003.946 4.827 4.996 4.996 0 01-2.212.085 4.936 4.936 0 004.604 3.417 9.867 9.867 0 01-6.102 2.105c-.39 0-.779-.023-1.17-.067a13.995 13.995 0 007.557 2.209c9.053 0 13.998-7.496 13.998-13.985 0-.21 0-.42-.015-.63A9.935 9.935 0 0024 4.59z"/>
+  </svg>`,
+};
+
+async function handleFirebaseSocialAuth({
+  providerFn,
+  providerLabel,
+  buttonEl,
+  allButtons = [],
+  restrictionBanner = null,
+  showStatus = null,
+}) {
+  if (!buttonEl || buttonEl.disabled) return;
+  const originalHtml = buttonEl.innerHTML;
+  const group = allButtons.filter(Boolean);
+  group.forEach((btn) => {
+    btn.disabled = true;
+  });
+  buttonEl.innerHTML = `<span class="inline-block w-4 h-4 rounded-full border-2 border-current border-t-transparent animate-spin shrink-0" aria-hidden="true"></span><span>Connecting to ${esc(providerLabel)}...</span>`;
+  restrictionBanner?.classList.add('hidden');
+
+  try {
+    const { idToken } = await providerFn();
+    setSessionToken(null); // Use verified Firebase ID token
+    const res = await apiFetch('/api/auth/firebase-sync', {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${idToken}` },
+    });
+    store.user = res.user;
+    notifyStore();
+    showToast(`Signed in as ${res.user.name}.`, 'success');
+    const needsProfileSetup = !res.user.username || !res.user.profile?.profileCompleted;
+    if (needsProfileSetup && !res.user.isSuperAdmin) {
+      window.location.hash = '#/complete-profile';
+      return;
+    }
+    const defaultDest = res.user.role === 'admin' ? '#/admin' : '#/dashboard';
+    window.location.hash = consumePostLoginRedirect(defaultDest);
+  } catch (err) {
+    if (err?.data?.accountBlocked || err?.data?.accountDeleted) {
+      await signOutFirebase();
+      renderAccountRestrictionBanner(restrictionBanner, err.data);
+      showToast(err.message || `${providerLabel} sign-in blocked.`, 'error');
+    } else {
+      const friendlyMsg = formatFirebaseAuthError(err, providerLabel);
+      showStatus?.('error', friendlyMsg);
+      showToast(friendlyMsg, 'error');
+    }
+  } finally {
+    buttonEl.innerHTML = originalHtml;
+    group.forEach((btn) => {
+      btn.disabled = false;
+    });
+  }
+}
+
+function renderSignupPage(container) {
+  const highlights = [
+    {
+      title: 'Publish & Share Content',
+      icon: '<path stroke-linecap="round" stroke-linejoin="round" d="M12 6.042A8.967 8.967 0 006 3.75c-1.052 0-2.062.18-3 .512v14.25A8.987 8.987 0 016 18c2.305 0 4.408.867 6 2.292m0-14.25a8.966 8.966 0 016-2.292c1.052 0 2.062.18 3 .512v14.25A8.987 8.987 0 0018 18a8.967 8.967 0 00-6 2.292m0-14.25v14.25"/>',
+    },
+    {
+      title: 'Learn from Experts',
+      icon: '<path stroke-linecap="round" stroke-linejoin="round" d="M4.26 10.147a60.436 60.436 0 00-.491 6.347A48.627 48.627 0 0112 20.904a48.627 48.627 0 018.232-4.41 60.46 60.46 0 00-.491-6.347m-15.482 0a50.57 50.57 0 00-2.658-.813A59.905 59.905 0 0112 3.493a59.902 59.902 0 0110.399 5.84c-.896.248-1.783.52-2.658.814m-15.482 0A50.697 50.697 0 0112 13.489a50.702 50.702 0 017.74-3.342M6.75 15a.75.75 0 100-1.5.75.75 0 000 1.5zm0 0v-3.675A55.378 55.378 0 0112 8.443m-7.007 11.55A5.981 5.981 0 006.75 15.75v-1.5"/>',
+    },
+    {
+      title: 'Be a Part of Our Community',
+      icon: '<path stroke-linecap="round" stroke-linejoin="round" d="M18 18.72a9.094 9.094 0 003.741-.479 3 3 0 00-4.682-2.72m.94 3.198l.001.031c0 .225-.012.447-.037.666A11.944 11.944 0 0112 21c-2.17 0-4.207-.576-5.963-1.584A6.062 6.062 0 016 18.719m12 0a5.971 5.971 0 00-.941-3.197m0 0A5.995 5.995 0 0012 12.75a5.995 5.995 0 00-5.058 2.772m0 0a3 3 0 00-4.681 2.72 8.986 8.986 0 003.74.477m.94-3.197a5.971 5.971 0 00-.94 3.197M15 6.75a3 3 0 11-6 0 3 3 0 016 0zm6 3a2.25 2.25 0 11-4.5 0 2.25 2.25 0 014.5 0zm-13.5 0a2.25 2.25 0 11-4.5 0 2.25 2.25 0 014.5 0z"/>',
+    },
+  ];
+
+  const eyeOpenSvg =
+    '<svg class="w-[18px] h-[18px]" fill="none" stroke="currentColor" stroke-width="1.8" viewBox="0 0 24 24" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" d="M2.036 12.322a1.012 1.012 0 010-.639C3.423 7.51 7.36 4.5 12 4.5c4.638 0 8.573 3.007 9.963 7.178.07.207.07.431 0 .639C20.577 16.49 16.64 19.5 12 19.5c-4.638 0-8.573-3.007-9.963-7.178z"/><path stroke-linecap="round" stroke-linejoin="round" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"/></svg>';
+  const eyeClosedSvg =
+    '<svg class="w-[18px] h-[18px]" fill="none" stroke="currentColor" stroke-width="1.8" viewBox="0 0 24 24" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" d="M3.98 8.223A10.477 10.477 0 001.934 12C3.226 16.338 7.244 19.5 12 19.5c.993 0 1.953-.138 2.863-.395M6.228 6.228A10.45 10.45 0 0112 4.5c4.756 0 8.773 3.162 10.065 7.498a10.523 10.523 0 01-4.293 5.774M6.228 6.228L3 3m3.228 3.228l3.65 3.65m7.894 7.894L21 21m-3.228-3.228l-3.65-3.65m0 0a3 3 0 10-4.243-4.243m4.242 4.242L9.88 9.88"/></svg>';
+
+  container.innerHTML = `
+    <section class="relative min-h-[calc(100vh-4.5rem)] w-full overflow-hidden bg-gradient-to-br from-[#EAF2FF] via-[#F2F7FF] to-[#E6F0FF] text-[#0A1E44] flex flex-col justify-between lg:justify-center lg:py-10 lg:px-6">
+      <!-- Subtle soft blue sweeping background accents (desktop & tablet) -->
+      <div class="pointer-events-none hidden lg:block absolute -top-24 -left-24 w-[420px] h-[420px] rounded-full bg-[#CFE0FF]/45 blur-3xl"></div>
+      <div class="pointer-events-none hidden lg:block absolute -bottom-28 -right-20 w-[460px] h-[460px] rounded-full bg-[#C7DCFF]/50 blur-3xl"></div>
+
+      <!-- Mobile & Tablet Dedicated Light-Blue Academic Hero Banner (< lg, inspired by mobile reference) -->
+      <div class="lg:hidden relative w-full bg-gradient-to-br from-[#EAF3FF] via-[#DAE9FF] to-[#C6DEFF] pt-6 pb-10 px-4 sm:px-8 overflow-hidden">
+        <div class="pointer-events-none absolute -top-12 right-0 w-56 h-56 rounded-full bg-white/45 blur-2xl"></div>
+        <div class="max-w-[560px] mx-auto relative z-10 flex items-center justify-between gap-2 sm:gap-5">
+          <div class="min-w-0 flex-1 pr-1">
+            <h1 class="text-[26px] sm:text-[32px] font-extrabold tracking-tight leading-[1.14] text-[#0A1E44]" style="font-family:'Plus Jakarta Sans',system-ui,sans-serif;">
+              Join <span class="text-[#1646A8]">ScholarPress</span>
+            </h1>
+            <p class="text-[13.5px] sm:text-[15px] text-[#1E355E] leading-[1.45] mt-2.5">
+              <strong class="font-bold text-[#0A1E44]">Create your</strong> account and be a part of our growing knowledge community.
+            </p>
+            <svg class="w-32 sm:w-40 h-3 mt-1.5" viewBox="0 0 160 12" fill="none" aria-hidden="true">
+              <path d="M2 9C48 3 108 2 156 6" stroke="#1646A8" stroke-width="2.5" stroke-linecap="round"/>
+            </svg>
+          </div>
+          <div class="shrink-0 -mr-2 sm:mr-0">
+            ${renderMobileBooksCapPenSvg()}
+          </div>
+        </div>
+        <!-- Soft curved bottom wave on mobile banner -->
+        <svg class="pointer-events-none absolute bottom-0 left-0 w-full h-7 text-[#F2F7FF]" viewBox="0 0 1440 60" preserveAspectRatio="none" aria-hidden="true">
+          <path d="M0,24 C360,64 1080,0 1440,34 L1440,60 L0,60 Z" fill="currentColor"/>
+        </svg>
+      </div>
+
+      <!-- Main Responsive Container: Desktop 2-Column Split Card / Mobile Elevated White Card -->
+      <div class="relative z-10 w-full max-w-[540px] lg:max-w-[1040px] mx-auto px-3.5 sm:px-6 lg:px-0 -mt-5 lg:mt-0 pb-8 lg:pb-0">
+        <div class="grid grid-cols-1 lg:grid-cols-12 items-stretch bg-white rounded-[24px] border border-[#DCE6F7] shadow-[0_22px_56px_-22px_rgba(10,30,68,0.24)] overflow-hidden">
+
+          <!-- DESKTOP LEFT COLUMN: Deep Navy Academic Panel with Library Depth + Books & Pen Cup -->
+          <aside class="hidden lg:flex lg:col-span-6 flex-col justify-between bg-[#06183D] text-white p-9 xl:p-11 relative overflow-hidden">
+            <!-- Subtle blurred academic library backdrop blended into deep navy -->
+            <img
+              src="/src/assets/images/hero_scholar_library_1794993004508-960w.webp"
+              alt=""
+              aria-hidden="true"
+              referrerpolicy="no-referrer"
+              class="pointer-events-none absolute inset-0 w-full h-full object-cover object-right opacity-30 mix-blend-luminosity scale-105 blur-[1.5px]"
+              onerror="this.style.display='none'"
+            />
+            <!-- Rich multi-stop navy scrim preserving 100% crisp text legibility on the left -->
+            <div class="pointer-events-none absolute inset-0 bg-gradient-to-r from-[#051538] via-[#071D4B]/92 to-[#0E3173]/68"></div>
+            <!-- Translucent curved blue sweep at top-right (matching desktop reference) -->
+            <div class="pointer-events-none absolute -top-20 right-[-80px] w-[320px] h-[260px] rounded-full bg-gradient-to-bl from-[#3B82F6]/45 via-[#1D4ED8]/25 to-transparent blur-xl"></div>
+            <svg class="pointer-events-none absolute top-0 right-0 w-[300px] h-[220px] opacity-25" viewBox="0 0 300 220" fill="none" aria-hidden="true">
+              <path d="M120 0H300V180C220 155 155 95 120 0Z" fill="url(#spTopSweep)"/>
+              <defs>
+                <linearGradient id="spTopSweep" x1="120" y1="0" x2="300" y2="180" gradientUnits="userSpaceOnUse">
+                  <stop stop-color="#60A5FA"/>
+                  <stop offset="1" stop-color="#1D4ED8" stop-opacity="0"/>
+                </linearGradient>
+              </defs>
+            </svg>
+
+            <!-- Top Branding + Welcome Copy + Highlights -->
+            <div class="relative z-10">
+              <a href="#/" class="inline-flex items-center gap-3.5 group focus-visible:outline-2 focus-visible:outline-sky-300 rounded-xl">
+                ${renderScholarPressBookNibLogo('w-[62px] h-[54px]', 'Desk')}
+                <div class="leading-none">
+                  <span class="block text-[30px] xl:text-[32px] font-bold tracking-tight text-white" style="font-family:'Plus Jakarta Sans',system-ui,sans-serif;">
+                    ScholarPress
+                  </span>
+                  <span class="flex items-center gap-2 text-[12px] font-medium text-blue-200/90 mt-1.5 tracking-wide">
+                    <span class="w-4 h-px bg-blue-300/60"></span>
+                    <span>Learn · Create · Share</span>
+                    <span class="w-4 h-px bg-blue-300/60"></span>
+                  </span>
+                </div>
+              </a>
+
+              <div class="mt-8">
+                <h1 class="text-[32px] xl:text-[36px] font-extrabold tracking-tight text-white leading-[1.15]" style="font-family:'Plus Jakarta Sans',system-ui,sans-serif;">
+                  Join Our <span class="text-[#5CA4FF]">Knowledge</span><br />Community!
+                </h1>
+                <p class="text-[14.5px] text-blue-100/90 leading-relaxed mt-3.5 max-w-[36ch]">
+                  Create your account and unlock a world of educational content, expert insights and endless learning opportunities.
+                </p>
+              </div>
+
+              <ul class="mt-7 space-y-3.5">
+                ${highlights
+                  .map(
+                    (item) => `
+                  <li class="flex items-center gap-3.5">
+                    <span class="w-9 h-9 rounded-full bg-[#194391]/85 border border-blue-300/25 text-white flex items-center justify-center shrink-0 shadow-sm">
+                      <svg class="w-[18px] h-[18px]" fill="none" stroke="currentColor" stroke-width="1.9" viewBox="0 0 24 24" aria-hidden="true">${item.icon}</svg>
+                    </span>
+                    <span class="text-[14.5px] font-medium text-white/95 leading-snug">${item.title}</span>
+                  </li>
+                `
+                  )
+                  .join('')}
+              </ul>
+            </div>
+
+            <!-- Bottom Row: Script Motto (Left) + Stacked Books & Pen Cup Artwork (Right) -->
+            <div class="relative z-10 mt-8 flex items-end justify-between gap-4">
+              <div class="pb-1">
+                <div class="font-script text-[26px] xl:text-[28px] font-bold text-white/95 leading-none tracking-wide">
+                  Learn &middot; Share &middot; Grow
+                </div>
+                <svg class="w-40 h-4 mt-1" viewBox="0 0 180 16" fill="none" aria-hidden="true">
+                  <path d="M4 12C54 4 118 2 174 7" stroke="url(#spScriptLine)" stroke-width="2.6" stroke-linecap="round"/>
+                  <defs>
+                    <linearGradient id="spScriptLine" x1="4" y1="12" x2="174" y2="7" gradientUnits="userSpaceOnUse">
+                      <stop stop-color="#8B5CF6"/>
+                      <stop offset="0.55" stop-color="#38BDF8"/>
+                      <stop offset="1" stop-color="#60A5FA" stop-opacity="0.25"/>
+                    </linearGradient>
+                  </defs>
+                </svg>
+              </div>
+
+              <div class="-mr-5 -mb-7 xl:-mr-6 xl:-mb-8 shrink-0">
+                ${renderDesktopBooksPenCupSvg()}
+              </div>
+            </div>
+          </aside>
+
+          <!-- RIGHT COLUMN (Desktop) / MAIN WHITE CARD (Mobile) -->
+          <div class="lg:col-span-6 bg-white p-5 sm:p-8 lg:px-11 lg:py-10 flex flex-col justify-center">
+            <div class="w-full max-w-[420px] mx-auto">
+
+              <!-- Mobile Card Header (Circular User-Plus Badge + Title, matching mobile reference) -->
+              <div class="flex lg:hidden items-center gap-3.5 mb-5">
+                <div class="w-14 h-14 rounded-full bg-[#E1ECFF] text-[#0B2A63] flex items-center justify-center shrink-0">
+                  <svg class="w-7 h-7" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24" aria-hidden="true">
+                    <path stroke-linecap="round" stroke-linejoin="round" d="M19 7.5v3m0 0v3m0-3h3m-3 0h-3m-2.25-4.125a3.375 3.375 0 11-6.75 0 3.375 3.375 0 016.75 0zM4 19.235v-.11a6.375 6.375 0 0112.75 0v.109A12.318 12.318 0 0110.374 21c-2.331 0-4.512-.645-6.374-1.766z"/>
+                  </svg>
+                </div>
+                <div class="min-w-0">
+                  <h2 class="text-[22px] sm:text-[24px] font-extrabold tracking-tight text-[#0A1E44] leading-tight" style="font-family:'Plus Jakarta Sans',system-ui,sans-serif;">
+                    Create Account
+                  </h2>
+                  <p class="text-[13.5px] text-[#3B5278] mt-0.5">
+                    Start your journey with ScholarPress
+                  </p>
+                </div>
+              </div>
+
+              <!-- Desktop Centered Form Header (matching desktop reference) -->
+              <div class="hidden lg:block text-center mb-7">
+                <h2 class="text-[30px] xl:text-[32px] font-extrabold tracking-tight text-[#0A1E44] leading-tight" style="font-family:'Plus Jakarta Sans',system-ui,sans-serif;">
+                  Create Your Account
+                </h2>
+                <p class="text-[14.5px] text-[#3B5278] mt-1.5">
+                  Start your journey with ScholarPress
+                </p>
+              </div>
+
+              <!-- Account Restriction & Inline Status Feedback Banners -->
+              <div id="sp-signup-restriction-banner" class="hidden mb-4"></div>
+              <div id="sp-signup-status" class="hidden mb-4 rounded-xl px-4 py-3 text-[13px] leading-relaxed border" role="status" aria-live="polite"></div>
+
+              <form id="sp-signup-ui-form" class="space-y-3.5 sm:space-y-4" novalidate>
+                <!-- 1. Full Name -->
+                <div>
+                  <label for="sp-signup-fullname" class="sr-only">Full Name</label>
+                  <div class="relative">
+                    <span class="pointer-events-none absolute inset-y-0 left-3.5 flex items-center text-[#3B5278]">
+                      <svg class="w-[18px] h-[18px]" fill="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+                        <path fill-rule="evenodd" d="M7.5 6a4.5 4.5 0 119 0 4.5 4.5 0 01-9 0zM3.751 20.105a8.25 8.25 0 0116.498 0 .75.75 0 01-.437.695A18.683 18.683 0 0112 22.5c-2.786 0-5.433-.608-7.812-1.7a.75.75 0 01-.437-.695z" clip-rule="evenodd"/>
+                      </svg>
+                    </span>
+                    <input
+                      id="sp-signup-fullname"
+                      name="fullName"
+                      type="text"
+                      autocomplete="name"
+                      required
+                      placeholder="Full Name"
+                      class="w-full h-12 pl-11 pr-4 rounded-xl border border-[#C6D4E8] bg-white text-[#0A1E44] placeholder:text-[#5B7091] text-[15px] sm:text-[14.5px] transition-colors focus:border-[#1D4ED8] focus:ring-4 focus:ring-[#1D4ED8]/12 outline-none"
+                    />
+                  </div>
+                  <p id="sp-err-fullname" class="hidden mt-1 text-[12px] font-medium text-[#B91C1C]"></p>
+                </div>
+
+                <!-- 2. Email Address -->
+                <div>
+                  <label for="sp-signup-email" class="sr-only">Email Address</label>
+                  <div class="relative">
+                    <span class="pointer-events-none absolute inset-y-0 left-3.5 flex items-center text-[#3B5278]">
+                      <svg class="w-[18px] h-[18px]" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24" aria-hidden="true">
+                        <path stroke-linecap="round" stroke-linejoin="round" d="M16.5 12a4.5 4.5 0 11-9 0 4.5 4.5 0 019 0zm0 0c0 1.657 1.007 3 2.25 3S21 13.657 21 12a9 9 0 10-2.636 6.364M16.5 12V8.25"/>
+                      </svg>
+                    </span>
+                    <input
+                      id="sp-signup-email"
+                      name="email"
+                      type="email"
+                      autocomplete="email"
+                      required
+                      placeholder="Email Address"
+                      class="w-full h-12 pl-11 pr-4 rounded-xl border border-[#C6D4E8] bg-white text-[#0A1E44] placeholder:text-[#5B7091] text-[15px] sm:text-[14.5px] transition-colors focus:border-[#1D4ED8] focus:ring-4 focus:ring-[#1D4ED8]/12 outline-none"
+                    />
+                  </div>
+                  <p id="sp-err-email" class="hidden mt-1 text-[12px] font-medium text-[#B91C1C]"></p>
+                </div>
+
+                <!-- 3. Password -->
+                <div>
+                  <label for="sp-signup-password" class="sr-only">Password</label>
+                  <div class="relative">
+                    <span class="pointer-events-none absolute inset-y-0 left-3.5 flex items-center text-[#3B5278]">
+                      <svg class="w-[18px] h-[18px]" fill="none" stroke="currentColor" stroke-width="1.9" viewBox="0 0 24 24" aria-hidden="true">
+                        <path stroke-linecap="round" stroke-linejoin="round" d="M16.5 10.5V6.75a4.5 4.5 0 10-9 0v3.75m-.75 11.25h10.5a2.25 2.25 0 002.25-2.25v-6.75a2.25 2.25 0 00-2.25-2.25H6.75a2.25 2.25 0 00-2.25 2.25v6.75a2.25 2.25 0 002.25 2.25z"/>
+                      </svg>
+                    </span>
+                    <input
+                      id="sp-signup-password"
+                      name="password"
+                      type="password"
+                      autocomplete="new-password"
+                      minlength="8"
+                      required
+                      placeholder="Password"
+                      class="w-full h-12 pl-11 pr-12 rounded-xl border border-[#C6D4E8] bg-white text-[#0A1E44] placeholder:text-[#5B7091] text-[15px] sm:text-[14.5px] transition-colors focus:border-[#1D4ED8] focus:ring-4 focus:ring-[#1D4ED8]/12 outline-none"
+                    />
+                    <button
+                      type="button"
+                      id="sp-toggle-password"
+                      aria-label="Show password"
+                      class="absolute inset-y-0 right-1 w-11 flex items-center justify-center rounded-lg text-[#5B7091] hover:text-[#0A1E44] transition-colors"
+                    >
+                      ${eyeClosedSvg}
+                    </button>
+                  </div>
+                  <div id="sp-password-strength" class="hidden mt-1.5 flex items-center gap-2.5">
+                    <div class="flex-1 h-1.5 rounded-full bg-[#E6EEF9] overflow-hidden">
+                      <div id="sp-password-strength-bar" class="h-full w-0 rounded-full transition-all duration-200"></div>
+                    </div>
+                    <span id="sp-password-strength-label" class="text-[11px] font-medium text-[#3B5278] shrink-0"></span>
+                  </div>
+                  <p id="sp-err-password" class="hidden mt-1 text-[12px] font-medium text-[#B91C1C]"></p>
+                </div>
+
+                <!-- 4. Confirm Password -->
+                <div>
+                  <label for="sp-signup-confirm" class="sr-only">Confirm Password</label>
+                  <div class="relative">
+                    <span class="pointer-events-none absolute inset-y-0 left-3.5 flex items-center text-[#3B5278]">
+                      <svg class="w-[18px] h-[18px]" fill="none" stroke="currentColor" stroke-width="1.9" viewBox="0 0 24 24" aria-hidden="true">
+                        <path stroke-linecap="round" stroke-linejoin="round" d="M16.5 10.5V6.75a4.5 4.5 0 10-9 0v3.75m-.75 11.25h10.5a2.25 2.25 0 002.25-2.25v-6.75a2.25 2.25 0 00-2.25-2.25H6.75a2.25 2.25 0 00-2.25 2.25v6.75a2.25 2.25 0 002.25 2.25z"/>
+                      </svg>
+                    </span>
+                    <input
+                      id="sp-signup-confirm"
+                      name="confirmPassword"
+                      type="password"
+                      autocomplete="new-password"
+                      minlength="8"
+                      required
+                      placeholder="Confirm Password"
+                      class="w-full h-12 pl-11 pr-12 rounded-xl border border-[#C6D4E8] bg-white text-[#0A1E44] placeholder:text-[#5B7091] text-[15px] sm:text-[14.5px] transition-colors focus:border-[#1D4ED8] focus:ring-4 focus:ring-[#1D4ED8]/12 outline-none"
+                    />
+                    <button
+                      type="button"
+                      id="sp-toggle-confirm"
+                      aria-label="Show confirm password"
+                      class="absolute inset-y-0 right-1 w-11 flex items-center justify-center rounded-lg text-[#5B7091] hover:text-[#0A1E44] transition-colors"
+                    >
+                      ${eyeClosedSvg}
+                    </button>
+                  </div>
+                  <p id="sp-err-confirm" class="hidden mt-1 text-[12px] font-medium text-[#B91C1C]"></p>
+                </div>
+
+                <!-- Terms & Conditions + Privacy Policy -->
+                <div class="pt-0.5">
+                  <label for="sp-signup-terms" class="flex items-center gap-2.5 min-h-[42px] cursor-pointer select-none">
+                    <input
+                      id="sp-signup-terms"
+                      name="terms"
+                      type="checkbox"
+                      required
+                      class="w-[18px] h-[18px] rounded border-[#9FB5D6] text-[#1D4ED8] accent-[#1646A8] shrink-0 cursor-pointer"
+                    />
+                    <span class="text-[13px] text-[#283E61] leading-snug">
+                      I agree to the
+                      <a href="#/terms" class="font-semibold text-[#1D4ED8] hover:text-[#1E40AF] hover:underline underline-offset-2">Terms &amp; Conditions</a>
+                      and
+                      <a href="#/privacy" class="font-semibold text-[#1D4ED8] hover:text-[#1E40AF] hover:underline underline-offset-2">Privacy Policy</a>
+                    </span>
+                  </label>
+                  <p id="sp-err-terms" class="hidden mt-0.5 text-[12px] font-medium text-[#B91C1C]"></p>
+                </div>
+
+                <!-- Primary Sign Up Button (Pill on Mobile, Rounded-XL on Desktop) -->
+                <button
+                  type="submit"
+                  id="sp-signup-submit-btn"
+                  class="w-full h-12 px-5 rounded-full lg:rounded-xl bg-gradient-to-r from-[#082661] via-[#0E3580] to-[#134296] hover:from-[#0A2E73] hover:to-[#184DB0] active:scale-[0.99] disabled:opacity-65 disabled:cursor-not-allowed text-white text-[15px] font-semibold flex items-center justify-center gap-2.5 shadow-[0_10px_22px_-8px_rgba(8,38,97,0.5)] transition-all duration-150 whitespace-nowrap"
+                >
+                  <svg class="w-5 h-5 shrink-0" fill="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+                    <path d="M6.25 6.375a4.125 4.125 0 118.25 0 4.125 4.125 0 01-8.25 0zM3.25 19.125a7.125 7.125 0 0114.25 0v.003l-.001.119a.75.75 0 01-.363.63 13.067 13.067 0 01-6.761 1.873c-2.472 0-4.786-.684-6.76-1.873a.75.75 0 01-.364-.63l-.001-.122zM19.75 7.5a.75.75 0 00-1.5 0v2.25H16a.75.75 0 000 1.5h2.25v2.25a.75.75 0 001.5 0v-2.25H22a.75.75 0 000-1.5h-2.25V7.5z"/>
+                  </svg>
+                  <span>Sign Up</span>
+                  <svg class="w-4 h-4 lg:hidden shrink-0" fill="none" stroke="currentColor" stroke-width="2.3" viewBox="0 0 24 24" aria-hidden="true">
+                    <path stroke-linecap="round" stroke-linejoin="round" d="M13.5 4.5L21 12m0 0l-7.5 7.5M21 12H3"/>
+                  </svg>
+                </button>
+              </form>
+
+              <!-- Subtle Divider -->
+              <div class="relative my-4.5">
+                <div class="absolute inset-0 flex items-center" aria-hidden="true">
+                  <div class="w-full border-t border-[#DCE6F5]"></div>
+                </div>
+                <div class="relative flex justify-center">
+                  <span class="px-3.5 bg-white text-[12.5px] font-medium text-[#4B607F]">or continue with</span>
+                </div>
+              </div>
+
+              <!-- Social Sign-In Buttons (Firebase Authentication) -->
+              <div class="space-y-2.5">
+                <button
+                  type="button"
+                  id="sp-signup-google-btn"
+                  class="w-full h-11 px-4 rounded-full lg:rounded-xl border border-[#B8CAE4] bg-white hover:bg-[#F5F9FF] hover:border-[#8FAED8] disabled:opacity-60 disabled:cursor-not-allowed text-[#0A1E44] text-[14px] font-semibold flex items-center justify-center gap-2.5 transition-colors duration-150 whitespace-nowrap"
+                >
+                  ${SOCIAL_PROVIDER_ICONS.google}
+                  <span>Continue with Google</span>
+                </button>
+                <button
+                  type="button"
+                  id="sp-signup-facebook-btn"
+                  class="w-full h-11 px-4 rounded-full lg:rounded-xl border border-[#B8CAE4] bg-white hover:bg-[#F5F9FF] hover:border-[#8FAED8] disabled:opacity-60 disabled:cursor-not-allowed text-[#0A1E44] text-[14px] font-semibold flex items-center justify-center gap-2.5 transition-colors duration-150 whitespace-nowrap"
+                >
+                  ${SOCIAL_PROVIDER_ICONS.facebook}
+                  <span>Continue with Facebook</span>
+                </button>
+                <button
+                  type="button"
+                  id="sp-signup-twitter-btn"
+                  class="w-full h-11 px-4 rounded-full lg:rounded-xl border border-[#B8CAE4] bg-white hover:bg-[#F5F9FF] hover:border-[#8FAED8] disabled:opacity-60 disabled:cursor-not-allowed text-[#0A1E44] text-[14px] font-semibold flex items-center justify-center gap-2.5 transition-colors duration-150 whitespace-nowrap"
+                >
+                  ${SOCIAL_PROVIDER_ICONS.twitter}
+                  <span>Continue with Twitter</span>
+                </button>
+              </div>
+
+              <!-- Sign In Link -->
+              <p class="mt-5 text-center text-[13.5px] text-[#283E61]">
+                Already have an account?
+                <a href="#/login" class="inline-flex items-center gap-0.5 font-bold text-[#1646A8] hover:text-[#0E317A] hover:underline underline-offset-2 ml-1">
+                  <span>Sign In</span>
+                  <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" stroke-width="2.4" viewBox="0 0 24 24" aria-hidden="true">
+                    <path stroke-linecap="round" stroke-linejoin="round" d="M8.25 4.5l7.5 7.5-7.5 7.5"/>
+                  </svg>
+                </a>
+              </p>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Subtle Royal-Blue Curved Footer Accent on Mobile (< lg, matching mobile reference) -->
+      <div class="lg:hidden pointer-events-none w-full overflow-hidden leading-none mt-auto">
+        <svg class="w-full h-9 sm:h-11 block" viewBox="0 0 1440 80" preserveAspectRatio="none" aria-hidden="true">
+          <path d="M0,18 C340,78 1060,72 1440,10 L1440,80 L0,80 Z" fill="#93C5FD" fill-opacity="0.45"/>
+          <path d="M0,38 C420,82 1080,68 1440,22 L1440,80 L0,80 Z" fill="#1646A8" fill-opacity="0.88"/>
+        </svg>
+      </div>
+    </section>
+  `;
+
+  const form = document.getElementById('sp-signup-ui-form');
+  const submitBtn = document.getElementById('sp-signup-submit-btn');
+  const statusBox = document.getElementById('sp-signup-status');
+  const signupRestrictionBanner = document.getElementById('sp-signup-restriction-banner');
+  const fullNameInput = document.getElementById('sp-signup-fullname');
+  const emailInput = document.getElementById('sp-signup-email');
+  const passInput = document.getElementById('sp-signup-password');
+  const confirmInput = document.getElementById('sp-signup-confirm');
+  const termsInput = document.getElementById('sp-signup-terms');
+
+  const strengthWrap = document.getElementById('sp-password-strength');
+  const strengthBar = document.getElementById('sp-password-strength-bar');
+  const strengthLabel = document.getElementById('sp-password-strength-label');
+
+  const setFieldError = (inputEl, errId, msg) => {
+    const errEl = document.getElementById(errId);
+    if (!errEl) return;
+    if (msg) {
+      errEl.textContent = msg;
+      errEl.classList.remove('hidden');
+      if (inputEl && inputEl.type !== 'checkbox') {
+        inputEl.setAttribute('aria-invalid', 'true');
+        inputEl.classList.add('border-[#DC2626]');
+      }
+    } else {
+      errEl.textContent = '';
+      errEl.classList.add('hidden');
+      if (inputEl && inputEl.type !== 'checkbox') {
+        inputEl.removeAttribute('aria-invalid');
+        inputEl.classList.remove('border-[#DC2626]');
+      }
+    }
+  };
+
+  const showStatus = (tone, message) => {
+    if (!statusBox) return;
+    const toneClasses =
+      tone === 'success'
+        ? 'bg-[#EFF6FF] border-[#BFDBFE] text-[#1E3A8A]'
+        : tone === 'info'
+        ? 'bg-[#F8FAFF] border-[#CBD8EC] text-[#1E3557]'
+        : 'bg-[#FEF2F2] border-[#FECACA] text-[#991B1B]';
+    statusBox.className = `mb-4 rounded-xl px-4 py-3 text-[13px] leading-relaxed border ${toneClasses}`;
+    statusBox.textContent = message;
+  };
+
+  const wirePasswordToggle = (btnId, inputEl, fieldLabel) => {
+    const btn = document.getElementById(btnId);
+    if (!btn || !inputEl) return;
+    btn.addEventListener('click', () => {
+      const revealing = inputEl.type === 'password';
+      inputEl.type = revealing ? 'text' : 'password';
+      btn.setAttribute('aria-label', `${revealing ? 'Hide' : 'Show'} ${fieldLabel}`);
+      btn.innerHTML = revealing ? eyeOpenSvg : eyeClosedSvg;
+    });
+  };
+
+  wirePasswordToggle('sp-toggle-password', passInput, 'password');
+  wirePasswordToggle('sp-toggle-confirm', confirmInput, 'confirm password');
+
+  passInput?.addEventListener('input', () => {
+    const val = passInput.value;
+    setFieldError(passInput, 'sp-err-password', '');
+    if (!val) {
+      strengthWrap?.classList.add('hidden');
+      return;
+    }
+    strengthWrap?.classList.remove('hidden');
+    let score = 0;
+    if (val.length >= 8) score++;
+    if (/[A-Z]/.test(val) && /[a-z]/.test(val)) score++;
+    if (/\d/.test(val)) score++;
+    if (/[^A-Za-z0-9]/.test(val)) score++;
+    const levels = [
+      { w: '25%', bg: 'bg-[#DC2626]', label: 'Weak' },
+      { w: '50%', bg: 'bg-[#D97706]', label: 'Fair' },
+      { w: '75%', bg: 'bg-[#2563EB]', label: 'Good' },
+      { w: '100%', bg: 'bg-[#059669]', label: 'Strong' },
+    ];
+    const lvl = levels[Math.max(0, Math.min(score - 1, 3))];
+    if (strengthBar) {
+      strengthBar.className = `h-full rounded-full transition-all duration-200 ${lvl.bg}`;
+      strengthBar.style.width = lvl.w;
+    }
+    if (strengthLabel) strengthLabel.textContent = lvl.label;
+    if (confirmInput?.value) {
+      setFieldError(
+        confirmInput,
+        'sp-err-confirm',
+        confirmInput.value === val ? '' : 'Passwords do not match.'
+      );
+    }
+  });
+
+  confirmInput?.addEventListener('input', () => {
+    if (!confirmInput.value) {
+      setFieldError(confirmInput, 'sp-err-confirm', '');
+      return;
+    }
+    setFieldError(
+      confirmInput,
+      'sp-err-confirm',
+      confirmInput.value === passInput?.value ? '' : 'Passwords do not match.'
+    );
+  });
+
+  fullNameInput?.addEventListener('input', () => setFieldError(fullNameInput, 'sp-err-fullname', ''));
+  emailInput?.addEventListener('input', () => setFieldError(emailInput, 'sp-err-email', ''));
+  termsInput?.addEventListener('change', () => setFieldError(termsInput, 'sp-err-terms', ''));
+
+  const signupGoogleBtn = document.getElementById('sp-signup-google-btn');
+  const signupFacebookBtn = document.getElementById('sp-signup-facebook-btn');
+  const signupTwitterBtn = document.getElementById('sp-signup-twitter-btn');
+  const signupSocialBtns = [signupGoogleBtn, signupFacebookBtn, signupTwitterBtn];
+
+  signupGoogleBtn?.addEventListener('click', () =>
+    handleFirebaseSocialAuth({
+      providerFn: signInWithGoogle,
+      providerLabel: 'Google',
+      buttonEl: signupGoogleBtn,
+      allButtons: signupSocialBtns,
+      restrictionBanner: signupRestrictionBanner,
+      showStatus,
+    })
+  );
+  signupFacebookBtn?.addEventListener('click', () =>
+    handleFirebaseSocialAuth({
+      providerFn: signInWithFacebook,
+      providerLabel: 'Facebook',
+      buttonEl: signupFacebookBtn,
+      allButtons: signupSocialBtns,
+      restrictionBanner: signupRestrictionBanner,
+      showStatus,
+    })
+  );
+  signupTwitterBtn?.addEventListener('click', () =>
+    handleFirebaseSocialAuth({
+      providerFn: signInWithTwitter,
+      providerLabel: 'Twitter',
+      buttonEl: signupTwitterBtn,
+      allButtons: signupSocialBtns,
+      restrictionBanner: signupRestrictionBanner,
+      showStatus,
+    })
+  );
+
+  form?.addEventListener('submit', async (e) => {
+    e.preventDefault();
+    signupRestrictionBanner?.classList.add('hidden');
+    let valid = true;
+
+    const fullName = fullNameInput?.value.trim() || '';
+    const email = emailInput?.value.trim() || '';
+    const password = passInput?.value || '';
+    const confirmPassword = confirmInput?.value || '';
+    const acceptedTerms = Boolean(termsInput?.checked);
+
+    if (fullName.length < 2) {
+      setFieldError(fullNameInput, 'sp-err-fullname', 'Please enter your full name.');
+      valid = false;
+    } else {
+      setFieldError(fullNameInput, 'sp-err-fullname', '');
+    }
+
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+      setFieldError(emailInput, 'sp-err-email', 'Please enter a valid email address.');
+      valid = false;
+    } else {
+      setFieldError(emailInput, 'sp-err-email', '');
+    }
+
+    if (password.length < 8) {
+      setFieldError(passInput, 'sp-err-password', 'Password must be at least 8 characters long.');
+      valid = false;
+    } else {
+      setFieldError(passInput, 'sp-err-password', '');
+    }
+
+    if (!confirmPassword || confirmPassword !== password) {
+      setFieldError(confirmInput, 'sp-err-confirm', 'Passwords do not match.');
+      valid = false;
+    } else {
+      setFieldError(confirmInput, 'sp-err-confirm', '');
+    }
+
+    if (!acceptedTerms) {
+      setFieldError(termsInput, 'sp-err-terms', 'Please agree to the Terms & Conditions and Privacy Policy.');
+      valid = false;
+    } else {
+      setFieldError(termsInput, 'sp-err-terms', '');
+    }
+
+    if (!valid) {
+      showStatus('error', 'Please review the highlighted fields before continuing.');
+      return;
+    }
+
+    const originalBtnHtml = submitBtn?.innerHTML || '';
+    if (submitBtn) {
+      submitBtn.disabled = true;
+      submitBtn.innerHTML =
+        '<span class="inline-block w-4 h-4 rounded-full border-2 border-white border-t-transparent animate-spin shrink-0" aria-hidden="true"></span><span>Creating account...</span>';
+    }
+    statusBox?.classList.add('hidden');
+
+    try {
+      const res = await apiFetch('/api/auth/register', {
+        method: 'POST',
+        body: { name: fullName, email, password },
+      });
+      setSessionToken(res.token);
+      store.user = res.user;
+      notifyStore();
+      showToast(`Account created! Your 10-digit UID is ${res.user.publicUid}.`, 'success');
+
+      const needsProfileSetup = !res.user.username || !res.user.profile?.profileCompleted;
+      if (needsProfileSetup && !res.user.isSuperAdmin) {
+        window.location.hash = '#/complete-profile';
+        return;
+      }
+      const defaultDest =
+        res.user.role === 'admin'
+          ? '#/admin'
+          : res.user.role === 'creator'
+          ? '#/creator'
+          : '#/dashboard/settings';
+      window.location.hash = consumePostLoginRedirect(defaultDest);
+    } catch (err) {
+      if (err?.data?.accountBlocked || err?.data?.accountDeleted) {
+        renderAccountRestrictionBanner(signupRestrictionBanner, err.data);
+      }
+      const msg = err?.message || 'Could not create your account. Please try again.';
+      showStatus('error', msg);
+      showToast(msg, 'error');
+    } finally {
+      if (submitBtn) {
+        submitBtn.disabled = false;
+        submitBtn.innerHTML = originalBtnHtml;
+      }
+    }
+  });
+}
+
 export function renderAuthPage(container, mode = 'login') {
   const isSignup = mode === 'signup';
   const isForgot = mode === 'forgot';
   const isReset = mode === 'reset';
   const isVerify = mode === 'verify';
+
+  if (isSignup) {
+    renderSignupPage(container);
+    return;
+  }
 
   if (isForgot) {
     container.innerHTML = `
@@ -282,11 +1163,21 @@ export function renderAuthPage(container, mode = 'login') {
 
         <div id="auth-restriction-banner" class="hidden mb-5"></div>
 
-        <!-- Primary Google Sign-In (Firebase Auth) -->
-        <button type="button" id="google-signin-btn" class="w-full py-2.5 px-4 text-sm font-semibold rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-[#0B1120] hover:bg-slate-50 dark:hover:bg-slate-900 text-slate-900 dark:text-white flex items-center justify-center gap-2.5 transition-colors mb-5">
-          <svg class="w-4 h-4" viewBox="0 0 24 24"><path fill="#4285F4" d="M23.745 12.27c0-.79-.07-1.54-.19-2.27h-11.3v4.51h6.47c-.29 1.48-1.14 2.73-2.4 3.58v3h3.86c2.26-2.09 3.56-5.17 3.56-8.82z"/><path fill="#34A853" d="M12.255 24c3.24 0 5.95-1.08 7.93-2.91l-3.86-3c-1.08.72-2.45 1.16-4.07 1.16-3.13 0-5.78-2.11-6.73-4.96h-3.98v3.09C3.515 21.3 7.565 24 12.255 24z"/><path fill="#FBBC05" d="M5.525 14.29c-.25-.72-.38-1.49-.38-2.29s.14-1.57.38-2.29V6.62h-3.98a11.86 11.86 0 000 10.76l3.98-3.09z"/><path fill="#EA4335" d="M12.255 4.75c1.77 0 3.35.61 4.6 1.8l3.42-3.42C18.205 1.19 15.495 0 12.255 0c-4.69 0-8.74 2.7-10.71 6.62l3.98 3.09c.95-2.85 3.6-4.96 6.73-4.96z"/></svg>
-          Continue with Google
-        </button>
+        <!-- Social Sign-In Buttons (Firebase Auth) -->
+        <div class="space-y-2.5 mb-5">
+          <button type="button" id="google-signin-btn" class="w-full py-2.5 px-4 text-sm font-semibold rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-[#0B1120] hover:bg-slate-50 dark:hover:bg-slate-900 disabled:opacity-60 disabled:cursor-not-allowed text-slate-900 dark:text-white flex items-center justify-center gap-2.5 transition-colors whitespace-nowrap">
+            ${SOCIAL_PROVIDER_ICONS.google}
+            <span>Continue with Google</span>
+          </button>
+          <button type="button" id="facebook-signin-btn" class="w-full py-2.5 px-4 text-sm font-semibold rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-[#0B1120] hover:bg-slate-50 dark:hover:bg-slate-900 disabled:opacity-60 disabled:cursor-not-allowed text-slate-900 dark:text-white flex items-center justify-center gap-2.5 transition-colors whitespace-nowrap">
+            ${SOCIAL_PROVIDER_ICONS.facebook}
+            <span>Continue with Facebook</span>
+          </button>
+          <button type="button" id="twitter-signin-btn" class="w-full py-2.5 px-4 text-sm font-semibold rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-[#0B1120] hover:bg-slate-50 dark:hover:bg-slate-900 disabled:opacity-60 disabled:cursor-not-allowed text-slate-900 dark:text-white flex items-center justify-center gap-2.5 transition-colors whitespace-nowrap">
+            ${SOCIAL_PROVIDER_ICONS.twitter}
+            <span>Continue with Twitter</span>
+          </button>
+        </div>
 
         <div class="relative my-5">
           <div class="absolute inset-0 flex items-center"><div class="w-full border-t border-slate-200 dark:border-slate-800"></div></div>
@@ -396,17 +1287,6 @@ export function renderAuthPage(container, mode = 'login') {
     );
   }
 
-  const consumePostLoginRedirect = (fallbackHash) => {
-    try {
-      const target = sessionStorage.getItem('sp_post_login_redirect');
-      if (target) {
-        sessionStorage.removeItem('sp_post_login_redirect');
-        if (target.startsWith('#/')) return target;
-      }
-    } catch {}
-    return fallbackHash;
-  };
-
   const restrictionBanner = document.getElementById('auth-restriction-banner');
   if (!isSignup && restrictionBanner) {
     try {
@@ -418,33 +1298,38 @@ export function renderAuthPage(container, mode = 'login') {
     } catch {}
   }
 
-  document.getElementById('google-signin-btn')?.addEventListener('click', async () => {
-    restrictionBanner?.classList.add('hidden');
-    try {
-      const { idToken } = await signInWithGoogle();
-      setSessionToken(null); // Use Firebase ID token
-      const res = await apiFetch('/api/auth/firebase-sync', {
-        method: 'POST',
-        headers: { Authorization: `Bearer ${idToken}` },
-      });
-      store.user = res.user;
-      notifyStore();
-      showToast(`Signed in as ${res.user.name}.`, 'success');
-      const needsProfileSetup = !res.user.username || !res.user.profile?.profileCompleted;
-      if (needsProfileSetup && !res.user.isSuperAdmin) {
-        window.location.hash = '#/complete-profile';
-        return;
-      }
-      const defaultDest = res.user.role === 'admin' ? '#/admin' : '#/dashboard';
-      window.location.hash = consumePostLoginRedirect(defaultDest);
-    } catch (err) {
-      if (err?.data?.accountBlocked || err?.data?.accountDeleted) {
-        await signOutFirebase();
-        renderAccountRestrictionBanner(restrictionBanner, err.data);
-      }
-      showToast(err.message || 'Google Sign-In was cancelled or failed.', 'error');
-    }
-  });
+  const loginGoogleBtn = document.getElementById('google-signin-btn');
+  const loginFacebookBtn = document.getElementById('facebook-signin-btn');
+  const loginTwitterBtn = document.getElementById('twitter-signin-btn');
+  const loginSocialBtns = [loginGoogleBtn, loginFacebookBtn, loginTwitterBtn];
+
+  loginGoogleBtn?.addEventListener('click', () =>
+    handleFirebaseSocialAuth({
+      providerFn: signInWithGoogle,
+      providerLabel: 'Google',
+      buttonEl: loginGoogleBtn,
+      allButtons: loginSocialBtns,
+      restrictionBanner,
+    })
+  );
+  loginFacebookBtn?.addEventListener('click', () =>
+    handleFirebaseSocialAuth({
+      providerFn: signInWithFacebook,
+      providerLabel: 'Facebook',
+      buttonEl: loginFacebookBtn,
+      allButtons: loginSocialBtns,
+      restrictionBanner,
+    })
+  );
+  loginTwitterBtn?.addEventListener('click', () =>
+    handleFirebaseSocialAuth({
+      providerFn: signInWithTwitter,
+      providerLabel: 'Twitter',
+      buttonEl: loginTwitterBtn,
+      allButtons: loginSocialBtns,
+      restrictionBanner,
+    })
+  );
 
   document.getElementById('auth-email-form')?.addEventListener('submit', async (e) => {
     e.preventDefault();

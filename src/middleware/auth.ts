@@ -317,14 +317,19 @@ async function resolveUserFromToken(token: string, expectedFileId?: number): Pro
     }
   }
 
-  // 2. Firebase Auth ID Token (Google Sign-In)
+  // 2. Firebase Auth ID Token (Google, Facebook, Twitter Sign-In)
   try {
     const decoded = await adminAuth.verifyIdToken(token);
-    if (!decoded.uid || !decoded.email) return null;
+    if (!decoded.uid) return null;
+    const providerRaw = String(decoded.firebase?.sign_in_provider || 'social')
+      .replace(/[^a-z0-9]/gi, '')
+      .toLowerCase();
+    const resolvedEmail =
+      decoded.email?.trim() || `${decoded.uid.toLowerCase()}@${providerRaw || 'social'}.scholarpress.local`;
     return await getOrCreateFirebaseUser({
       uid: decoded.uid,
-      email: decoded.email,
-      name: decoded.name,
+      email: resolvedEmail,
+      name: decoded.name || `${providerRaw || 'ScholarPress'} User`,
       picture: decoded.picture,
     });
   } catch {
