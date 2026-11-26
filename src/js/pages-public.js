@@ -14,9 +14,11 @@ import {
   showToast,
   store,
 } from './api.js';
+import { attachSmartSearch } from './smart-search.js';
 
 // ===== INFINITE SCROLL FEED CACHE & CLEANUP REGISTRY =====
 let activeExploreCleanup = null;
+let activeHomeSearchCleanup = null;
 const exploreFeedCache = new Map();
 const MAX_EXPLORE_CACHE = 8;
 
@@ -24,6 +26,10 @@ export function cleanupExploreObservers() {
   if (typeof activeExploreCleanup === 'function') {
     activeExploreCleanup();
     activeExploreCleanup = null;
+  }
+  if (typeof activeHomeSearchCleanup === 'function') {
+    activeHomeSearchCleanup();
+    activeHomeSearchCleanup = null;
   }
 }
 
@@ -244,6 +250,25 @@ function renderHomeMarkup(container, data) {
            </div>`
         : ''
     }
+
+    <!-- Compact Sticky Search Bar when Hero Search scrolls past the Fixed Header (Mobile / Tablet) -->
+    <div id="home-sticky-search-bar" class="hidden xl:hidden fixed top-14 sm:top-[68px] inset-x-0 z-30 bg-[#eaf1ff]/95 dark:bg-[#0B1120]/95 backdrop-blur-md border-b border-indigo-100/90 dark:border-slate-800 px-3.5 sm:px-6 py-2 shadow-sm">
+      <form id="home-sticky-search-form" class="max-w-2xl mx-auto flex items-center bg-white dark:bg-[#111A2E] border border-indigo-200/80 dark:border-slate-700 rounded-full p-1 shadow-xs">
+        <svg class="w-4 h-4 text-slate-500 ml-3 shrink-0" fill="none" stroke="currentColor" stroke-width="2.2" viewBox="0 0 24 24" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" d="M21 21l-4.35-4.35m1.85-5.15a7 7 0 11-14 0 7 7 0 0114 0z"></path></svg>
+        <input
+          type="search"
+          id="home-sticky-search-input"
+          placeholder="Search notes, lectures, articles..."
+          class="flex-1 min-w-0 bg-transparent border-0 outline-none focus:outline-none px-2.5 py-1 text-xs sm:text-sm text-slate-800 dark:text-slate-100 placeholder:text-slate-400"
+        />
+        <button
+          type="submit"
+          class="min-h-[32px] px-4 py-1 text-xs font-bold rounded-full bg-gradient-to-r from-[#5a1fd8] to-[#7429e8] hover:from-[#4a14c4] hover:to-[#6320d4] text-white shadow-xs transition-colors whitespace-nowrap shrink-0"
+        >
+          Search
+        </button>
+      </form>
+    </div>
 
     <!-- Sky-Periwinkle Hero + Responsive Home Canvas (Matches Mobile Image 1 & Desktop Image 2) -->
     <div class="bg-gradient-to-b from-[#dceaff] via-[#eef4ff] to-[#f4f7ff] dark:from-[#0b152b] dark:via-[#0e182e] dark:to-[#0B1120] pt-2 sm:pt-4 lg:pt-5 pb-7 sm:pb-10">
@@ -524,28 +549,136 @@ function renderHomeMarkup(container, data) {
 
           <div class="flex items-center justify-center lg:justify-end lg:pl-6 lg:border-l lg:border-white/20 shrink-0 pt-2 lg:pt-0 border-t lg:border-t-0 border-white/15">
             <div class="text-center lg:text-right">
-              <p class="font-script font-bold text-2xl sm:text-[1.75rem] text-white leading-none tracking-wide">
+              <p class="font-script font-bold text-xl sm:text-2xl text-white leading-tight tracking-tight">
                 Together for a <span class="text-[#ffd23f]">Smarter Education!</span>
               </p>
-              <svg class="w-44 h-2.5 mx-auto lg:ml-auto lg:mr-0 mt-0.5 text-[#ffd23f]" viewBox="0 0 180 10" fill="none"><path d="M3 7C46 2 128 1.5 177 6.5" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"/></svg>
+              <svg class="w-44 h-2.5 mx-auto lg:ml-auto lg:mr-0 mt-1 text-[#ffd23f]" viewBox="0 0 180 10" fill="none"><path d="M3 7C46 2 128 1.5 177 6.5" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"/></svg>
             </div>
           </div>
         </div>
       </div>
     </section>
+
+    <div id="home-personalized-slot"></div>
   `;
 
-  document.getElementById('hero-search-form')?.addEventListener('submit', (e) => {
+  if (typeof activeHomeSearchCleanup === 'function') {
+    activeHomeSearchCleanup();
+    activeHomeSearchCleanup = null;
+  }
+
+  const heroForm = document.getElementById('hero-search-form');
+  const heroInput = document.getElementById('hero-search-input');
+  heroForm?.addEventListener('submit', (e) => {
     e.preventDefault();
-    const q = document.getElementById('hero-search-input')?.value.trim() || '';
+    const q = heroInput?.value.trim() || '';
     window.location.hash = q ? `#/explore?q=${encodeURIComponent(q)}` : '#/explore';
   });
+  attachSmartSearch({
+    formEl: heroForm,
+    inputEl: heroInput,
+    dropdownAlign: 'left',
+    minDropdownWidthClass: 'w-full',
+  });
+
+  const stickyBar = document.getElementById('home-sticky-search-bar');
+  const stickyForm = document.getElementById('home-sticky-search-form');
+  const stickyInput = document.getElementById('home-sticky-search-input');
+  stickyForm?.addEventListener('submit', (e) => {
+    e.preventDefault();
+    const q = stickyInput?.value.trim() || '';
+    window.location.hash = q ? `#/explore?q=${encodeURIComponent(q)}` : '#/explore';
+  });
+  attachSmartSearch({
+    formEl: stickyForm,
+    inputEl: stickyInput,
+    dropdownAlign: 'left',
+    minDropdownWidthClass: 'w-full',
+  });
+
+  if (heroForm && stickyBar) {
+    if (typeof IntersectionObserver === 'function') {
+      const topOffset = window.innerWidth >= 640 ? 68 : 56;
+      const io = new IntersectionObserver(
+        (entries) => {
+          if (!heroForm.isConnected || !stickyBar.isConnected) {
+            io.disconnect();
+            return;
+          }
+          const entry = entries[0];
+          const scrolledPastHero = !entry.isIntersecting && entry.boundingClientRect.bottom <= topOffset + 8;
+          stickyBar.classList.toggle('hidden', !scrolledPastHero);
+        },
+        { threshold: 0, rootMargin: `-${topOffset}px 0px 0px 0px` }
+      );
+      io.observe(heroForm);
+      activeHomeSearchCleanup = () => io.disconnect();
+    } else {
+      const onScroll = () => {
+        if (!heroForm.isConnected || !stickyBar.isConnected) {
+          window.removeEventListener('scroll', onScroll);
+          return;
+        }
+        const rect = heroForm.getBoundingClientRect();
+        const topOffset = window.innerWidth >= 640 ? 68 : 56;
+        stickyBar.classList.toggle('hidden', rect.bottom > topOffset);
+      };
+      window.addEventListener('scroll', onScroll, { passive: true });
+      activeHomeSearchCleanup = () => window.removeEventListener('scroll', onScroll);
+    }
+  }
+}
+
+async function loadHomePersonalizedSections() {
+  const slot = document.getElementById('home-personalized-slot');
+  if (!slot || !store.user) return;
+  try {
+    const rec = await apiFetch('/api/recommendations?limit=4');
+    if (!slot.isConnected) return;
+    const cw = Array.isArray(rec.continueWatching) ? rec.continueWatching : [];
+    const items = rec.personalized && Array.isArray(rec.items) ? rec.items : [];
+    if (cw.length === 0 && items.length === 0) return;
+
+    slot.innerHTML = `
+      <div class="bg-[#f4f7ff] dark:bg-[#0B1120] py-7 sm:py-9 border-t border-indigo-100/80 dark:border-slate-800/80">
+        <div class="max-w-[1440px] mx-auto px-3.5 sm:px-6 lg:px-8 space-y-8">
+          ${
+            cw.length > 0
+              ? `<div>
+                  <div class="flex items-center justify-between gap-4 mb-4">
+                    <h2 class="font-display text-lg sm:text-xl font-extrabold text-[#0f0f4d] dark:text-white">Continue Watching</h2>
+                    <a href="#/explore" class="text-xs sm:text-sm font-bold text-[#2563eb] dark:text-violet-400 hover:underline">Browse More →</a>
+                  </div>
+                  <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 sm:gap-5">
+                    ${cw.map(renderContentCard).join('')}
+                  </div>
+                </div>`
+              : ''
+          }
+          ${
+            items.length > 0
+              ? `<div>
+                  <div class="flex items-center justify-between gap-4 mb-4">
+                    <h2 class="font-display text-lg sm:text-xl font-extrabold text-[#0f0f4d] dark:text-white">Recommended for You</h2>
+                    <a href="#/explore?sort=relevant" class="text-xs sm:text-sm font-bold text-[#2563eb] dark:text-violet-400 hover:underline">Explore All →</a>
+                  </div>
+                  <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 sm:gap-5">
+                    ${items.map(renderContentCard).join('')}
+                  </div>
+                </div>`
+              : ''
+          }
+        </div>
+      </div>
+    `;
+  } catch {}
 }
 
 export async function renderHomePage(container) {
   const cached = getCachedHomeSnapshot();
   if (cached) {
     renderHomeMarkup(container, cached);
+    loadHomePersonalizedSections();
   } else {
     container.innerHTML = `
       <div class="bg-gradient-to-b from-[#dceaff] via-[#eef4ff] to-[#f4f7ff] dark:from-[#0b152b] dark:via-[#0e182e] dark:to-[#0B1120] py-5">
@@ -574,6 +707,7 @@ export async function renderHomePage(container) {
     const data = await apiFetch('/api/catalog/home');
     saveHomeSnapshot(data);
     renderHomeMarkup(container, data);
+    loadHomePersonalizedSections();
   } catch (err) {
     if (!cached) {
       container.innerHTML = `
@@ -594,114 +728,237 @@ export async function renderExplorePage(container, preset = {}) {
     ? new URLSearchParams(window.location.hash.split('?')[1])
     : new URLSearchParams();
 
+  const initialQ = hashQuery.get('q') || '';
   const state = {
-    q: hashQuery.get('q') || '',
+    q: initialQ,
     category: hashQuery.get('category') || '',
     subject: hashQuery.get('subject') || '',
     contentType: preset.contentType || hashQuery.get('contentType') || '',
     language: hashQuery.get('language') || 'all',
     pricing: hashQuery.get('pricing') || 'all',
-    sort: hashQuery.get('sort') || 'latest',
+    classLevel: hashQuery.get('classLevel') || 'all',
+    chapter: hashQuery.get('chapter') || '',
+    topic: hashQuery.get('topic') || '',
+    duration: hashQuery.get('duration') || 'all',
+    teacher: hashQuery.get('teacher') || '',
+    sort: hashQuery.get('sort') || (initialQ ? 'relevant' : 'latest'),
   };
 
   const pageTitle = preset.title || 'Explore Educational Catalog';
   const pageSubtitle =
     preset.subtitle ||
-    'Search across notes, PDFs, articles, e-books, research papers, video lectures, poems, and stories.';
+    'Smart educational search across notes, PDFs, articles, e-books, research papers, video lectures, poems, and stories.';
 
   container.innerHTML = `
-    <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-7 sm:py-10">
-      <div class="mb-6 sm:mb-8">
-        <h1 class="font-display text-2xl sm:text-3xl font-semibold text-slate-900 dark:text-white">${esc(pageTitle)}</h1>
-        <p class="text-sm text-slate-600 dark:text-slate-400 mt-1.5">${esc(pageSubtitle)}</p>
-      </div>
+    <div class="max-w-7xl mx-auto px-3.5 sm:px-6 lg:px-8 pb-6 sm:pb-8 pt-1 sm:pt-2">
+      <!-- Top YouTube-inspired Sticky Search Bar [ ← ] [ Search Query ] [ ⋮ ] + Collapsible Filter Menu -->
+      <form id="explore-filter-form" class="sticky top-14 sm:top-[68px] z-30 bg-[#F8FAFC]/95 dark:bg-[#0B1120]/95 backdrop-blur-md py-2.5 -mx-3.5 px-3.5 sm:-mx-6 sm:px-6 lg:-mx-8 lg:px-8 mb-4 sm:mb-5 border-b border-slate-200/80 dark:border-slate-800/80">
+        <div class="flex items-center gap-1.5 sm:gap-2.5 w-full min-w-0">
+          <button
+            type="button"
+            id="ex-back-btn"
+            aria-label="Go back"
+            title="Back"
+            class="w-10 h-10 rounded-full flex items-center justify-center text-slate-700 dark:text-slate-200 hover:bg-slate-200/70 dark:hover:bg-slate-800 transition-colors shrink-0"
+          >
+            <svg class="w-5 h-5" fill="none" stroke="currentColor" stroke-width="2.2" viewBox="0 0 24 24" aria-hidden="true">
+              <path stroke-linecap="round" stroke-linejoin="round" d="M15 19l-7-7 7-7" />
+            </svg>
+          </button>
 
-      <!-- Filter & Search Bar -->
-      <form id="explore-filter-form" class="bg-white dark:bg-[#111A2E] border border-slate-200 dark:border-slate-800 rounded-xl p-4 sm:p-5 mb-6 sm:mb-8 space-y-4">
-        <div class="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-12 gap-3">
-          <div class="sm:col-span-2 md:col-span-5">
-            <label for="ex-q" class="block text-xs font-medium text-slate-500 dark:text-slate-400 mb-1">Keyword, title, creator, or tag</label>
-            <input id="ex-q" type="search" value="${esc(state.q)}" placeholder="e.g. Raft, Linear Algebra, GATE, Poetry..."
-              class="w-full min-h-[40px] px-3.5 py-2 text-sm rounded-lg border border-slate-300 dark:border-slate-700 bg-slate-50 dark:bg-[#0B1120] text-slate-900 dark:text-white" />
+          <div class="flex-1 min-w-0 flex items-center gap-1 h-10 sm:h-11 pl-3.5 sm:pl-4 pr-1.5 rounded-full border border-slate-300 dark:border-slate-700 bg-white dark:bg-[#111A2E] shadow-xs focus-within:border-[#0F2547] dark:focus-within:border-sky-400 transition-colors">
+            <input
+              id="ex-q"
+              type="search"
+              value="${esc(state.q)}"
+              placeholder="Search notes, lectures, chapters, topics..."
+              aria-label="Search ScholarPress"
+              class="flex-1 min-w-0 bg-transparent border-0 outline-none text-sm text-slate-900 dark:text-white placeholder:text-slate-400 py-1"
+            />
+            <button
+              type="submit"
+              aria-label="Search"
+              title="Search"
+              class="w-8 h-8 rounded-full flex items-center justify-center text-slate-600 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors shrink-0"
+            >
+              <svg class="w-4 h-4" fill="none" stroke="currentColor" stroke-width="2.2" viewBox="0 0 24 24" aria-hidden="true">
+                <path stroke-linecap="round" stroke-linejoin="round" d="M21 21l-4.35-4.35m1.85-5.15a7 7 0 11-14 0 7 7 0 0114 0z" />
+              </svg>
+            </button>
           </div>
-          <div class="md:col-span-3">
-            <label for="ex-category" class="block text-xs font-medium text-slate-500 dark:text-slate-400 mb-1">Category</label>
-            <select id="ex-category" class="w-full min-h-[40px] px-3 py-2 text-sm rounded-lg border border-slate-300 dark:border-slate-700 bg-slate-50 dark:bg-[#0B1120] text-slate-900 dark:text-white">
-              <option value="">All Categories</option>
-              ${store.categories
-                .map(
-                  (c) => `<option value="${esc(c.slug)}" ${state.category === c.slug ? 'selected' : ''}>${esc(c.name)}</option>`
-                )
-                .join('')}
-            </select>
-          </div>
-          <div class="md:col-span-2">
-            <label for="ex-type" class="block text-xs font-medium text-slate-500 dark:text-slate-400 mb-1">Content Type</label>
-            <select id="ex-type" ${preset.lockType ? 'disabled' : ''} class="w-full min-h-[40px] px-3 py-2 text-sm rounded-lg border border-slate-300 dark:border-slate-700 bg-slate-50 dark:bg-[#0B1120] text-slate-900 dark:text-white disabled:opacity-60">
-              <option value="">All Formats</option>
-              ${CONTENT_TYPES.map(
-                (t) => `<option value="${esc(t)}" ${state.contentType === t ? 'selected' : ''}>${esc(t)}</option>`
-              ).join('')}
-              ${
-                preset.contentType === 'PoemsAndStories'
-                  ? `<option value="PoemsAndStories" selected>Poems &amp; Stories</option>`
-                  : ''
-              }
-              ${
-                preset.contentType === 'StudyMaterials'
-                  ? `<option value="StudyMaterials" selected>Study Materials</option>`
-                  : ''
-              }
-            </select>
-          </div>
-          <div class="md:col-span-2">
-            <label for="ex-language" class="block text-xs font-medium text-slate-500 dark:text-slate-400 mb-1">Language</label>
-            <select id="ex-language" class="w-full min-h-[40px] px-3 py-2 text-sm rounded-lg border border-slate-300 dark:border-slate-700 bg-slate-50 dark:bg-[#0B1120] text-slate-900 dark:text-white">
-              <option value="all">All Languages</option>
-              ${LANGUAGES.map(
-                (l) => `<option value="${esc(l)}" ${state.language === l ? 'selected' : ''}>${esc(l)}</option>`
-              ).join('')}
-            </select>
-          </div>
+
+          <button
+            type="button"
+            id="ex-filter-menu-btn"
+            aria-label="Search filters"
+            aria-haspopup="true"
+            aria-expanded="false"
+            aria-controls="ex-filter-panel"
+            title="Search filters"
+            class="relative w-10 h-10 rounded-full flex items-center justify-center text-slate-700 dark:text-slate-200 hover:bg-slate-200/70 dark:hover:bg-slate-800 transition-colors shrink-0"
+          >
+            <svg class="w-5 h-5" fill="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+              <circle cx="12" cy="5.5" r="1.75" />
+              <circle cx="12" cy="12" r="1.75" />
+              <circle cx="12" cy="18.5" r="1.75" />
+            </svg>
+            <span id="ex-filter-active-dot" class="hidden absolute top-2 right-2 w-2 h-2 rounded-full bg-[#0F2547] dark:bg-sky-400"></span>
+          </button>
         </div>
 
-        <div class="flex flex-col sm:flex-row sm:flex-wrap items-stretch sm:items-center justify-between gap-3 pt-3 border-t border-slate-100 dark:border-slate-800">
-          <!-- Interactive Segmented Price Filter -->
-          <div class="w-full sm:w-auto grid grid-cols-3 sm:flex items-center gap-1 p-1 bg-slate-100 dark:bg-[#0B1120] rounded-lg" role="group" aria-label="Pricing filter">
-            ${[
-              { id: 'all', label: 'All' },
-              { id: 'free', label: 'Free' },
-              { id: 'paid', label: 'Paid' },
-            ]
-              .map(
-                (opt) => `
-              <button type="button" data-pricing="${opt.id}" class="ex-pricing-btn min-h-[36px] px-3 py-1.5 text-xs font-semibold rounded-md transition-colors text-center whitespace-nowrap shrink-0 ${
-                state.pricing === opt.id
-                  ? 'bg-white dark:bg-slate-800 text-slate-900 dark:text-white shadow-sm'
-                  : 'text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white'
-              }">${opt.label}</button>
-            `
-              )
-              .join('')}
+        <!-- Three-Dot Dropdown / Popover Containing All Existing Search Filters -->
+        <div
+          id="ex-filter-panel"
+          role="dialog"
+          aria-label="Search filters"
+          class="hidden absolute left-3.5 right-3.5 sm:left-auto sm:right-6 lg:right-8 sm:w-[600px] lg:w-[680px] top-full mt-1 z-50 bg-white dark:bg-[#111A2E] border border-slate-200 dark:border-slate-700 rounded-2xl shadow-2xl p-4 sm:p-5 space-y-4 max-h-[76vh] overflow-y-auto overscroll-contain"
+        >
+          <div class="flex items-center justify-between gap-3 pb-2.5 border-b border-slate-100 dark:border-slate-800">
+            <h2 class="font-display text-sm sm:text-base font-semibold text-slate-900 dark:text-white">Search Filters</h2>
+            <button
+              type="button"
+              id="ex-filter-close-btn"
+              aria-label="Close filters"
+              class="p-1.5 rounded-lg text-slate-400 hover:text-slate-700 dark:hover:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors"
+            >
+              <svg class="w-4 h-4" fill="none" stroke="currentColor" stroke-width="2.2" viewBox="0 0 24 24" aria-hidden="true">
+                <path stroke-linecap="round" stroke-linejoin="round" d="M6 18L18 6M6 6l12 12" />
+              </svg>
+            </button>
           </div>
 
-          <div class="flex flex-wrap items-center gap-2.5">
-            <select id="ex-sort" class="flex-1 sm:flex-none min-h-[38px] px-3 py-1.5 text-xs font-medium rounded-lg border border-slate-300 dark:border-slate-700 bg-slate-50 dark:bg-[#0B1120] text-slate-900 dark:text-white">
-              <option value="latest" ${state.sort === 'latest' ? 'selected' : ''}>Latest Uploads</option>
-              <option value="popular" ${state.sort === 'popular' ? 'selected' : ''}>Most Popular</option>
-              <option value="highest_rated" ${state.sort === 'highest_rated' ? 'selected' : ''}>Highest Rated</option>
-              <option value="price_asc" ${state.sort === 'price_asc' ? 'selected' : ''}>Price: Low to High</option>
-              <option value="price_desc" ${state.sort === 'price_desc' ? 'selected' : ''}>Price: High to Low</option>
-            </select>
-            <button type="submit" class="min-h-[38px] px-4 py-1.5 text-xs font-semibold rounded-lg bg-[#0F2547] hover:bg-[#1B3B6F] dark:bg-sky-500 dark:hover:bg-sky-400 text-white dark:text-slate-950 transition-colors whitespace-nowrap shrink-0">
-              Apply
-            </button>
-            <button type="button" id="ex-reset-btn" class="min-h-[38px] px-3 py-1.5 text-xs font-medium text-slate-500 hover:text-slate-900 dark:text-slate-400 dark:hover:text-white whitespace-nowrap shrink-0">
-              Reset
-            </button>
+          <div class="grid grid-cols-1 sm:grid-cols-3 gap-3">
+            <div>
+              <label for="ex-category" class="block text-xs font-medium text-slate-500 dark:text-slate-400 mb-1">Category</label>
+              <select id="ex-category" class="w-full min-h-[38px] px-3 py-1.5 text-sm rounded-lg border border-slate-300 dark:border-slate-700 bg-slate-50 dark:bg-[#0B1120] text-slate-900 dark:text-white">
+                <option value="">All Categories</option>
+                ${store.categories
+                  .map(
+                    (c) => `<option value="${esc(c.slug)}" ${state.category === c.slug ? 'selected' : ''}>${esc(c.name)}</option>`
+                  )
+                  .join('')}
+              </select>
+            </div>
+            <div>
+              <label for="ex-subject" class="block text-xs font-medium text-slate-500 dark:text-slate-400 mb-1">Subject</label>
+              <select id="ex-subject" class="w-full min-h-[38px] px-3 py-1.5 text-sm rounded-lg border border-slate-300 dark:border-slate-700 bg-slate-50 dark:bg-[#0B1120] text-slate-900 dark:text-white">
+                <option value="">All Subjects</option>
+                ${(store.subjects || [])
+                  .map(
+                    (s) => `<option value="${esc(s.slug)}" ${state.subject === s.slug ? 'selected' : ''}>${esc(s.name)}</option>`
+                  )
+                  .join('')}
+              </select>
+            </div>
+            <div>
+              <label for="ex-type" class="block text-xs font-medium text-slate-500 dark:text-slate-400 mb-1">Content Type</label>
+              <select id="ex-type" ${preset.lockType ? 'disabled' : ''} class="w-full min-h-[38px] px-3 py-1.5 text-sm rounded-lg border border-slate-300 dark:border-slate-700 bg-slate-50 dark:bg-[#0B1120] text-slate-900 dark:text-white disabled:opacity-60">
+                <option value="">All Formats</option>
+                ${CONTENT_TYPES.map(
+                  (t) => `<option value="${esc(t)}" ${state.contentType === t ? 'selected' : ''}>${esc(t)}</option>`
+                ).join('')}
+                ${
+                  preset.contentType === 'PoemsAndStories'
+                    ? `<option value="PoemsAndStories" selected>Poems &amp; Stories</option>`
+                    : ''
+                }
+                ${
+                  preset.contentType === 'StudyMaterials'
+                    ? `<option value="StudyMaterials" selected>Study Materials</option>`
+                    : ''
+                }
+              </select>
+            </div>
+          </div>
+
+          <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
+            <div>
+              <label for="ex-class" class="block text-[11px] font-medium text-slate-500 dark:text-slate-400 mb-1">Class / Level</label>
+              <select id="ex-class" class="w-full min-h-[38px] px-2.5 py-1.5 text-xs rounded-lg border border-slate-300 dark:border-slate-700 bg-slate-50 dark:bg-[#0B1120] text-slate-900 dark:text-white">
+                <option value="all">All Levels</option>
+                ${state.classLevel && state.classLevel !== 'all' ? `<option value="${esc(state.classLevel)}" selected>${esc(state.classLevel)}</option>` : ''}
+              </select>
+            </div>
+            <div>
+              <label for="ex-language" class="block text-[11px] font-medium text-slate-500 dark:text-slate-400 mb-1">Language</label>
+              <select id="ex-language" class="w-full min-h-[38px] px-2.5 py-1.5 text-xs rounded-lg border border-slate-300 dark:border-slate-700 bg-slate-50 dark:bg-[#0B1120] text-slate-900 dark:text-white">
+                <option value="all">All Languages</option>
+                ${LANGUAGES.map(
+                  (l) => `<option value="${esc(l)}" ${state.language === l ? 'selected' : ''}>${esc(l)}</option>`
+                ).join('')}
+              </select>
+            </div>
+            <div>
+              <label for="ex-duration" class="block text-[11px] font-medium text-slate-500 dark:text-slate-400 mb-1">Duration</label>
+              <select id="ex-duration" class="w-full min-h-[38px] px-2.5 py-1.5 text-xs rounded-lg border border-slate-300 dark:border-slate-700 bg-slate-50 dark:bg-[#0B1120] text-slate-900 dark:text-white">
+                <option value="all" ${state.duration === 'all' ? 'selected' : ''}>Any Duration</option>
+                <option value="short" ${state.duration === 'short' ? 'selected' : ''}>Under 10 mins</option>
+                <option value="medium" ${state.duration === 'medium' ? 'selected' : ''}>10 – 30 mins</option>
+                <option value="long" ${state.duration === 'long' ? 'selected' : ''}>30+ mins</option>
+              </select>
+            </div>
+            <div>
+              <label for="ex-teacher" class="block text-[11px] font-medium text-slate-500 dark:text-slate-400 mb-1">Teacher / Creator</label>
+              <select id="ex-teacher" class="w-full min-h-[38px] px-2.5 py-1.5 text-xs rounded-lg border border-slate-300 dark:border-slate-700 bg-slate-50 dark:bg-[#0B1120] text-slate-900 dark:text-white">
+                <option value="">All Creators</option>
+                ${state.teacher ? `<option value="${esc(state.teacher)}" selected>${esc(state.teacher)}</option>` : ''}
+              </select>
+            </div>
+            <div class="sm:col-span-2 lg:col-span-2">
+              <label for="ex-chapter" class="block text-[11px] font-medium text-slate-500 dark:text-slate-400 mb-1">Chapter / Topic</label>
+              <input id="ex-chapter" type="text" value="${esc(state.chapter || state.topic)}" placeholder="Filter by chapter or topic..."
+                class="w-full min-h-[38px] px-2.5 py-1.5 text-xs rounded-lg border border-slate-300 dark:border-slate-700 bg-slate-50 dark:bg-[#0B1120] text-slate-900 dark:text-white" />
+            </div>
+          </div>
+
+          <div class="flex flex-col sm:flex-row sm:flex-wrap items-stretch sm:items-center justify-between gap-3 pt-3 border-t border-slate-100 dark:border-slate-800">
+            <!-- Interactive Segmented Price Filter -->
+            <div class="w-full sm:w-auto grid grid-cols-3 sm:flex items-center gap-1 p-1 bg-slate-100 dark:bg-[#0B1120] rounded-lg" role="group" aria-label="Pricing filter">
+              ${[
+                { id: 'all', label: 'All' },
+                { id: 'free', label: 'Free' },
+                { id: 'paid', label: 'Paid' },
+              ]
+                .map(
+                  (opt) => `
+                <button type="button" data-pricing="${opt.id}" class="ex-pricing-btn min-h-[36px] px-3 py-1.5 text-xs font-semibold rounded-md transition-colors text-center whitespace-nowrap shrink-0 ${
+                  state.pricing === opt.id
+                    ? 'bg-white dark:bg-slate-800 text-slate-900 dark:text-white shadow-sm'
+                    : 'text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white'
+                }">${opt.label}</button>
+              `
+                )
+                .join('')}
+            </div>
+
+            <div class="flex flex-wrap items-center gap-2.5">
+              <select id="ex-sort" aria-label="Sort results" class="flex-1 sm:flex-none min-h-[38px] px-3 py-1.5 text-xs font-medium rounded-lg border border-slate-300 dark:border-slate-700 bg-slate-50 dark:bg-[#0B1120] text-slate-900 dark:text-white">
+                <option value="relevant" ${state.sort === 'relevant' ? 'selected' : ''}>Most Relevant</option>
+                <option value="latest" ${state.sort === 'latest' ? 'selected' : ''}>Latest Uploads</option>
+                <option value="popular" ${state.sort === 'popular' ? 'selected' : ''}>Most Popular</option>
+                <option value="highest_rated" ${state.sort === 'highest_rated' ? 'selected' : ''}>Highest Rated</option>
+                <option value="price_asc" ${state.sort === 'price_asc' ? 'selected' : ''}>Price: Low to High</option>
+                <option value="price_desc" ${state.sort === 'price_desc' ? 'selected' : ''}>Price: High to Low</option>
+              </select>
+              <button type="submit" id="ex-apply-btn" class="min-h-[38px] px-4 py-1.5 text-xs font-semibold rounded-lg bg-[#0F2547] hover:bg-[#1B3B6F] dark:bg-sky-500 dark:hover:bg-sky-400 text-white dark:text-slate-950 transition-colors whitespace-nowrap shrink-0">
+                Apply
+              </button>
+              <button type="button" id="ex-reset-btn" class="min-h-[38px] px-3 py-1.5 text-xs font-medium text-slate-500 hover:text-slate-900 dark:text-slate-400 dark:hover:text-white whitespace-nowrap shrink-0">
+                Reset
+              </button>
+            </div>
           </div>
         </div>
       </form>
+
+      ${
+        preset.title
+          ? `<div class="mb-3">
+               <h1 class="font-display text-xl sm:text-2xl font-semibold text-slate-900 dark:text-white">${esc(pageTitle)}</h1>
+               <p class="text-xs sm:text-sm text-slate-600 dark:text-slate-400 mt-0.5">${esc(pageSubtitle)}</p>
+             </div>`
+          : ''
+      }
 
       <div id="explore-results-meta" class="text-xs text-slate-500 dark:text-slate-400 mb-4 tabular-nums"></div>
       <div id="explore-virtual-top" aria-hidden="true"></div>
@@ -713,6 +970,7 @@ export async function renderExplorePage(container, preset = {}) {
       <!-- Proactive IntersectionObserver sentinel (prefetches 700px before reaching end) -->
       <div id="explore-scroll-sentinel" class="h-2 w-full" aria-hidden="true"></div>
       <div id="explore-feed-footer" class="mt-8 text-center"></div>
+      <div id="explore-external-slot" class="mt-10"></div>
     </div>
   `;
 
@@ -723,6 +981,7 @@ export async function renderExplorePage(container, preset = {}) {
   const batchSkeleton = document.getElementById('explore-batch-skeleton');
   const sentinel = document.getElementById('explore-scroll-sentinel');
   const feedFooter = document.getElementById('explore-feed-footer');
+  const externalSlot = document.getElementById('explore-external-slot');
   if (!grid || !sentinel) return;
 
   const BATCH_SIZE = 10;
@@ -735,6 +994,8 @@ export async function renderExplorePage(container, preset = {}) {
   let nextCursor = null;
   let hasMore = true;
   let totalCount = null;
+  let lastHistoryEntryId = null;
+  let lastParsedIntent = null;
   let isFetching = false;
   let activeFetchId = 0;
   let activeAbort = null;
@@ -750,6 +1011,11 @@ export async function renderExplorePage(container, preset = {}) {
       contentType: state.contentType,
       language: state.language,
       pricing: state.pricing,
+      classLevel: state.classLevel,
+      chapter: state.chapter,
+      topic: state.topic,
+      duration: state.duration,
+      teacher: state.teacher,
       sort: state.sort,
     });
 
@@ -760,12 +1026,82 @@ export async function renderExplorePage(container, preset = {}) {
     return 1;
   };
 
+  const populateDynamicFacets = (facets) => {
+    if (!facets) return;
+    const classSel = document.getElementById('ex-class');
+    if (classSel && Array.isArray(facets.classLevels) && facets.classLevels.length > 0) {
+      const current = state.classLevel || 'all';
+      classSel.innerHTML = `<option value="all">All Levels</option>${facets.classLevels
+        .map((cl) => `<option value="${esc(cl)}" ${current === cl ? 'selected' : ''}>${esc(cl)}</option>`)
+        .join('')}`;
+    }
+    const teacherSel = document.getElementById('ex-teacher');
+    if (teacherSel && Array.isArray(facets.teachers) && facets.teachers.length > 0) {
+      const currentT = state.teacher || '';
+      teacherSel.innerHTML = `<option value="">All Creators</option>${facets.teachers
+        .map(
+          (t) =>
+            `<option value="${esc(t.name)}" ${
+              currentT === t.name || currentT === String(t.id) ? 'selected' : ''
+            }>${esc(t.name)}</option>`
+        )
+        .join('')}`;
+    }
+  };
+
+  const renderExternalVideosSection = (extVideos) => {
+    if (!externalSlot) return;
+    if (!Array.isArray(extVideos) || extVideos.length === 0) {
+      externalSlot.innerHTML = '';
+      return;
+    }
+    externalSlot.innerHTML = `
+      <section class="pt-8 border-t border-slate-200 dark:border-slate-800">
+        <div class="flex items-center justify-between gap-4 mb-4">
+          <div>
+            <h2 class="font-display text-lg sm:text-xl font-semibold text-slate-900 dark:text-white">External Educational Videos</h2>
+            <p class="text-xs text-slate-500 dark:text-slate-400">Supplementary external video lectures matched to your topic.</p>
+          </div>
+        </div>
+        <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-5">
+          ${extVideos
+            .map(
+              (ev) => `
+            <a href="${esc(ev.watchUrl)}" target="_blank" rel="noopener noreferrer" class="group bg-white dark:bg-[#111A2E] border border-slate-200 dark:border-slate-800 rounded-xl overflow-hidden flex flex-col hover:border-slate-300 dark:hover:border-slate-700 transition-colors">
+              <div class="aspect-video bg-slate-100 dark:bg-slate-900 overflow-hidden">
+                <img src="${esc(ev.thumbnailUrl)}" alt="${esc(ev.title)}" loading="lazy" class="w-full h-full object-cover group-hover:scale-[1.02] transition-transform" />
+              </div>
+              <div class="p-4 flex-1 flex flex-col">
+                <div class="text-[11px] font-medium text-slate-500 dark:text-slate-400 mb-1">${esc(ev.sourceLabel || 'External Educational Video')}</div>
+                <div class="font-display text-sm font-semibold text-slate-900 dark:text-white line-clamp-2 mb-2 flex-1">${esc(ev.title)}</div>
+                <div class="text-xs text-slate-500 dark:text-slate-400 truncate">${esc(ev.channelTitle)} ↗</div>
+              </div>
+            </a>
+          `
+            )
+            .join('')}
+        </div>
+      </section>
+    `;
+  };
+
   const updateMetaText = () => {
     if (!meta) return;
+    const intentHints = [];
+    if (lastParsedIntent?.classLevel) intentHints.push(lastParsedIntent.classLevel);
+    if (lastParsedIntent?.chapterOrder) intentHints.push(`Chapter ${lastParsedIntent.chapterOrder}`);
+    if (lastParsedIntent?.studyLabelHint) intentHints.push(lastParsedIntent.studyLabelHint);
+    if (lastParsedIntent?.languageHint) intentHints.push(lastParsedIntent.languageHint);
+
+    const intentSuffix =
+      intentHints.length > 0 ? ` · Understood: ${intentHints.join(', ')}` : '';
+
     if (totalCount !== null) {
-      meta.textContent = `Showing ${loadedItems.length} of ${totalCount} matching ${totalCount === 1 ? 'publication' : 'publications'}`;
+      meta.textContent = `Showing ${loadedItems.length} of ${totalCount} matching ${
+        totalCount === 1 ? 'publication' : 'publications'
+      }${intentSuffix}`;
     } else if (loadedItems.length > 0) {
-      meta.textContent = `Loaded ${loadedItems.length} publications`;
+      meta.textContent = `Loaded ${loadedItems.length} publications${intentSuffix}`;
     } else {
       meta.textContent = '';
     }
@@ -834,6 +1170,7 @@ export async function renderExplorePage(container, preset = {}) {
       nextCursor,
       hasMore,
       totalCount,
+      lastParsedIntent,
       scrollY: window.scrollY,
     });
   };
@@ -867,6 +1204,7 @@ export async function renderExplorePage(container, preset = {}) {
       grid.innerHTML = renderCardSkeletons(6);
       batchSkeleton?.classList.add('hidden');
       renderFeedFooter('');
+      renderExternalVideosSection([]);
     } else {
       batchSkeleton?.classList.remove('hidden');
       renderFeedFooter('');
@@ -880,6 +1218,11 @@ export async function renderExplorePage(container, preset = {}) {
       if (state.contentType) qs.set('contentType', state.contentType);
       if (state.language && state.language !== 'all') qs.set('language', state.language);
       if (state.pricing && state.pricing !== 'all') qs.set('pricing', state.pricing);
+      if (state.classLevel && state.classLevel !== 'all') qs.set('classLevel', state.classLevel);
+      if (state.chapter) qs.set('chapter', state.chapter);
+      if (state.topic) qs.set('topic', state.topic);
+      if (state.duration && state.duration !== 'all') qs.set('duration', state.duration);
+      if (state.teacher) qs.set('teacher', state.teacher);
       qs.set('sort', state.sort);
       qs.set('limit', String(BATCH_SIZE));
       if (!isInitial && nextCursor) {
@@ -890,12 +1233,24 @@ export async function renderExplorePage(container, preset = {}) {
         signal: activeAbort?.signal,
       });
 
-      // Ignore stale responses if user changed filters mid-flight
       if (myFetchId !== activeFetchId) return;
 
       if (typeof res.total === 'number') {
         totalCount = res.total;
       }
+      if (res.historyEntryId) {
+        lastHistoryEntryId = res.historyEntryId;
+      }
+      if (res.parsedIntent) {
+        lastParsedIntent = res.parsedIntent;
+      }
+      if (res.facets) {
+        populateDynamicFacets(res.facets);
+      }
+      if (isInitial && Array.isArray(res.externalVideos)) {
+        renderExternalVideosSection(res.externalVideos);
+      }
+
       hasMore = Boolean(res.hasMore && res.nextCursor);
       nextCursor = res.nextCursor || null;
 
@@ -911,15 +1266,56 @@ export async function renderExplorePage(container, preset = {}) {
       updateMetaText();
 
       if (isInitial && loadedItems.length === 0) {
+        const altQueries = Array.isArray(res.alternativeQueries) ? res.alternativeQueries : [];
+        const relRecs = Array.isArray(res.relatedRecommendations) ? res.relatedRecommendations : [];
         grid.innerHTML = `
-          <div class="col-span-full bg-white dark:bg-[#111A2E] border border-slate-200 dark:border-slate-800 rounded-xl p-12 text-center">
-            <h3 class="font-display text-xl font-semibold text-slate-900 dark:text-white mb-2">No matching publications found</h3>
-            <p class="text-sm text-slate-500 dark:text-slate-400 mb-5">Try broadening your search terms, clearing filters, or switching categories.</p>
-            <button type="button" id="ex-empty-reset" class="px-4 py-2 text-xs font-semibold rounded-lg bg-[#0F2547] text-white">Clear All Filters</button>
+          <div class="col-span-full bg-white dark:bg-[#111A2E] border border-slate-200 dark:border-slate-800 rounded-xl p-8 sm:p-10 text-center space-y-4">
+            <h3 class="font-display text-xl font-semibold text-slate-900 dark:text-white">No exact match found</h3>
+            <p class="text-sm text-slate-500 dark:text-slate-400 max-w-lg mx-auto">
+              We couldn't find an exact match for your current query and filters.
+            </p>
+            ${
+              altQueries.length > 0
+                ? `<div class="flex flex-wrap items-center justify-center gap-2 pt-1 text-xs">
+                     <span class="text-slate-500 dark:text-slate-400">Try searching:</span>
+                     ${altQueries
+                       .map(
+                         (aq) =>
+                           `<button type="button" data-alt-q="${esc(aq)}" class="ex-alt-q px-3 py-1.5 rounded-lg border border-indigo-200 dark:border-slate-700 bg-indigo-50/60 dark:bg-slate-800 text-[#3a1fc7] dark:text-sky-300 font-medium hover:bg-indigo-100 dark:hover:bg-slate-700">${esc(aq)}</button>`
+                       )
+                       .join('')}
+                   </div>`
+                : ''
+            }
+            <div>
+              <button type="button" id="ex-empty-reset" class="px-4 py-2 text-xs font-semibold rounded-lg bg-[#0F2547] dark:bg-sky-500 text-white dark:text-slate-950">Clear All Filters</button>
+            </div>
           </div>
+          ${
+            relRecs.length > 0
+              ? `<div class="col-span-full pt-4 space-y-4">
+                   <h3 class="font-display text-lg font-semibold text-slate-900 dark:text-white">Closest Related Educational Resources</h3>
+                   <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-6">
+                     ${relRecs.map(renderContentCard).join('')}
+                   </div>
+                 </div>`
+              : ''
+          }
         `;
         document.getElementById('ex-empty-reset')?.addEventListener('click', () => {
           document.getElementById('ex-reset-btn')?.click();
+        });
+        grid.querySelectorAll('.ex-alt-q').forEach((btn) => {
+          btn.addEventListener('click', () => {
+            const qText = btn.dataset.altQ || '';
+            state.q = qText;
+            state.sort = 'relevant';
+            const qEl = document.getElementById('ex-q');
+            const sortEl = document.getElementById('ex-sort');
+            if (qEl) qEl.value = qText;
+            if (sortEl) sortEl.value = 'relevant';
+            resetAndFetch();
+          });
         });
         renderFeedFooter('');
         return;
@@ -961,8 +1357,6 @@ export async function renderExplorePage(container, preset = {}) {
     loadNextBatch(true);
   }
 
-  // IntersectionObserver with generous 700px bottom rootMargin prefetches the next batch smoothly
-  // well before the reader reaches the end of the feed.
   const observer = new IntersectionObserver(
     (entries) => {
       if (entries.some((e) => e.isIntersecting) && hasMore && !isFetching && loadedItems.length > 0) {
@@ -973,6 +1367,97 @@ export async function renderExplorePage(container, preset = {}) {
   );
   observer.observe(sentinel);
 
+  const exFilterForm = document.getElementById('explore-filter-form');
+  const exQInput = document.getElementById('ex-q');
+  const exBackBtn = document.getElementById('ex-back-btn');
+  const filterMenuBtn = document.getElementById('ex-filter-menu-btn');
+  const filterPanel = document.getElementById('ex-filter-panel');
+  const filterCloseBtn = document.getElementById('ex-filter-close-btn');
+  const filterActiveDot = document.getElementById('ex-filter-active-dot');
+
+  const updateFilterActiveDot = () => {
+    if (!filterActiveDot) return;
+    const hasActive = Boolean(
+      state.category ||
+        state.subject ||
+        (!preset.lockType && state.contentType) ||
+        (state.language && state.language !== 'all') ||
+        (state.pricing && state.pricing !== 'all') ||
+        (state.classLevel && state.classLevel !== 'all') ||
+        state.chapter ||
+        state.topic ||
+        (state.duration && state.duration !== 'all') ||
+        state.teacher ||
+        (state.sort && state.sort !== (state.q ? 'relevant' : 'latest'))
+    );
+    filterActiveDot.classList.toggle('hidden', !hasActive);
+  };
+
+  const syncExploreHashUrl = () => {
+    try {
+      const basePath = (window.location.hash.split('?')[0] || '#/explore') || '#/explore';
+      const qs = new URLSearchParams();
+      if (state.q) qs.set('q', state.q);
+      if (state.category) qs.set('category', state.category);
+      if (state.subject) qs.set('subject', state.subject);
+      if (!preset.lockType && state.contentType) qs.set('contentType', state.contentType);
+      if (state.language && state.language !== 'all') qs.set('language', state.language);
+      if (state.pricing && state.pricing !== 'all') qs.set('pricing', state.pricing);
+      if (state.classLevel && state.classLevel !== 'all') qs.set('classLevel', state.classLevel);
+      if (state.chapter) qs.set('chapter', state.chapter);
+      if (state.topic) qs.set('topic', state.topic);
+      if (state.duration && state.duration !== 'all') qs.set('duration', state.duration);
+      if (state.teacher) qs.set('teacher', state.teacher);
+      if (state.sort && state.sort !== (state.q ? 'relevant' : 'latest')) qs.set('sort', state.sort);
+      const nextHash = `${basePath}${qs.toString() ? `?${qs.toString()}` : ''}`;
+      if (window.location.hash !== nextHash) {
+        window.history.replaceState(null, '', nextHash);
+      }
+    } catch {}
+  };
+
+  const setFilterMenuOpen = (open) => {
+    if (!filterPanel || !filterMenuBtn) return;
+    filterPanel.classList.toggle('hidden', !open);
+    filterMenuBtn.setAttribute('aria-expanded', open ? 'true' : 'false');
+  };
+
+  exBackBtn?.addEventListener('click', () => {
+    if (window.history.length > 1) {
+      window.history.back();
+    } else {
+      window.location.hash = '#/';
+    }
+  });
+
+  let cleanupExploreSmartSearch = null;
+
+  filterMenuBtn?.addEventListener('click', (e) => {
+    e.stopPropagation();
+    const isClosed = filterPanel?.classList.contains('hidden');
+    if (isClosed) {
+      exQInput?.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' }));
+    }
+    setFilterMenuOpen(Boolean(isClosed));
+  });
+
+  filterCloseBtn?.addEventListener('click', () => setFilterMenuOpen(false));
+  exQInput?.addEventListener('focus', () => setFilterMenuOpen(false));
+
+  const onExploreDocClick = (e) => {
+    if (!filterPanel || filterPanel.classList.contains('hidden')) return;
+    if (!filterPanel.contains(e.target) && !filterMenuBtn?.contains(e.target)) {
+      setFilterMenuOpen(false);
+    }
+  };
+  const onExploreDocKeyDown = (e) => {
+    if (e.key === 'Escape' && filterPanel && !filterPanel.classList.contains('hidden')) {
+      setFilterMenuOpen(false);
+    }
+  };
+  document.addEventListener('click', onExploreDocClick);
+  document.addEventListener('keydown', onExploreDocKeyDown);
+
   window.addEventListener('scroll', onWindowScrollOrResize, { passive: true });
   window.addEventListener('resize', onWindowScrollOrResize, { passive: true });
 
@@ -981,6 +1466,12 @@ export async function renderExplorePage(container, preset = {}) {
     observer.disconnect();
     window.removeEventListener('scroll', onWindowScrollOrResize);
     window.removeEventListener('resize', onWindowScrollOrResize);
+    document.removeEventListener('click', onExploreDocClick);
+    document.removeEventListener('keydown', onExploreDocKeyDown);
+    if (typeof cleanupExploreSmartSearch === 'function') {
+      cleanupExploreSmartSearch();
+      cleanupExploreSmartSearch = null;
+    }
     if (activeAbort) {
       try {
         activeAbort.abort();
@@ -988,21 +1479,65 @@ export async function renderExplorePage(container, preset = {}) {
     }
   };
 
-  document.getElementById('explore-filter-form')?.addEventListener('submit', (e) => {
+  // Track search result clicks for logged-in personalization history
+  grid.addEventListener('click', (e) => {
+    const card = e.target.closest('article[data-content-id]');
+    if (card && store.user && lastHistoryEntryId) {
+      const contentId = Number(card.dataset.contentId);
+      if (contentId > 0) {
+        apiFetch('/api/search/history/click', {
+          method: 'POST',
+          body: { historyId: lastHistoryEntryId, contentId },
+        }).catch(() => {});
+      }
+    }
+  });
+
+  cleanupExploreSmartSearch = attachSmartSearch({
+    formEl: exFilterForm,
+    inputEl: exQInput,
+    dropdownAlign: 'left',
+    minDropdownWidthClass: 'w-full',
+    onSelectQuery: (qText) => {
+      state.q = qText;
+      if (qText && state.sort === 'latest') {
+        state.sort = 'relevant';
+        const sortEl = document.getElementById('ex-sort');
+        if (sortEl) sortEl.value = 'relevant';
+      }
+      setFilterMenuOpen(false);
+      updateFilterActiveDot();
+      syncExploreHashUrl();
+      resetAndFetch();
+    },
+  });
+
+  exFilterForm?.addEventListener('submit', (e) => {
     e.preventDefault();
-    state.q = document.getElementById('ex-q')?.value.trim() || '';
+    state.q = exQInput?.value.trim() || '';
     state.category = document.getElementById('ex-category')?.value || '';
+    state.subject = document.getElementById('ex-subject')?.value || '';
     if (!preset.lockType) {
       state.contentType = document.getElementById('ex-type')?.value || '';
     }
     state.language = document.getElementById('ex-language')?.value || 'all';
-    state.sort = document.getElementById('ex-sort')?.value || 'latest';
+    state.classLevel = document.getElementById('ex-class')?.value || 'all';
+    state.duration = document.getElementById('ex-duration')?.value || 'all';
+    state.teacher = document.getElementById('ex-teacher')?.value || '';
+    state.chapter = document.getElementById('ex-chapter')?.value.trim() || '';
+    state.sort = document.getElementById('ex-sort')?.value || (state.q ? 'relevant' : 'latest');
+    if (e.submitter?.id === 'ex-apply-btn') {
+      setFilterMenuOpen(false);
+    }
+    updateFilterActiveDot();
+    syncExploreHashUrl();
     resetAndFetch();
   });
 
-  document.getElementById('ex-sort')?.addEventListener('change', () => {
-    state.sort = document.getElementById('ex-sort').value;
-    resetAndFetch();
+  ['ex-sort', 'ex-category', 'ex-subject', 'ex-type', 'ex-class', 'ex-language', 'ex-duration', 'ex-teacher'].forEach((id) => {
+    document.getElementById(id)?.addEventListener('change', () => {
+      exFilterForm?.dispatchEvent(new Event('submit', { cancelable: true }));
+    });
   });
 
   document.querySelectorAll('.ex-pricing-btn').forEach((btn) => {
@@ -1016,6 +1551,8 @@ export async function renderExplorePage(container, preset = {}) {
             : 'text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white'
         }`;
       });
+      updateFilterActiveDot();
+      syncExploreHashUrl();
       resetAndFetch();
     });
   });
@@ -1027,14 +1564,46 @@ export async function renderExplorePage(container, preset = {}) {
     if (!preset.lockType) state.contentType = '';
     state.language = 'all';
     state.pricing = 'all';
+    state.classLevel = 'all';
+    state.chapter = '';
+    state.topic = '';
+    state.duration = 'all';
+    state.teacher = '';
     state.sort = 'latest';
-    document.getElementById('ex-q').value = '';
-    document.getElementById('ex-category').value = '';
-    if (!preset.lockType) document.getElementById('ex-type').value = '';
-    document.getElementById('ex-language').value = 'all';
-    document.getElementById('ex-sort').value = 'latest';
+    if (exQInput) exQInput.value = '';
+    const resetIds = [
+      ['ex-category', ''],
+      ['ex-subject', ''],
+      ['ex-language', 'all'],
+      ['ex-class', 'all'],
+      ['ex-duration', 'all'],
+      ['ex-teacher', ''],
+      ['ex-chapter', ''],
+      ['ex-sort', 'latest'],
+    ];
+    for (const [id, val] of resetIds) {
+      const el = document.getElementById(id);
+      if (el) el.value = val;
+    }
+    if (!preset.lockType) {
+      const tEl = document.getElementById('ex-type');
+      if (tEl) tEl.value = '';
+    }
+    document.querySelectorAll('.ex-pricing-btn').forEach((b) => {
+      const active = b.dataset.pricing === 'all';
+      b.className = `ex-pricing-btn min-h-[36px] px-3 py-1.5 text-xs font-semibold rounded-md transition-colors text-center whitespace-nowrap shrink-0 ${
+        active
+          ? 'bg-white dark:bg-slate-800 text-slate-900 dark:text-white shadow-sm'
+          : 'text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white'
+      }`;
+    });
+    updateFilterActiveDot();
+    syncExploreHashUrl();
+    setFilterMenuOpen(false);
     resetAndFetch();
   });
+
+  updateFilterActiveDot();
 
   // Instant restore when navigating Back to Explore (preserves loaded batches + exact scroll position!)
   const cachedFeed = getExploreFeedState(getCacheKey());
@@ -1044,6 +1613,7 @@ export async function renderExplorePage(container, preset = {}) {
     nextCursor = cachedFeed.nextCursor;
     hasMore = cachedFeed.hasMore;
     totalCount = cachedFeed.totalCount;
+    lastParsedIntent = cachedFeed.lastParsedIntent || null;
     updateMetaText();
     renderVirtualizedWindow(true);
     renderFeedFooter('');

@@ -70,12 +70,14 @@ export interface SessionPayload {
   userId: number;
   email: string;
   role: string;
+  sv?: number;
   exp: number;
 }
 
 export function createSessionToken(payload: Omit<SessionPayload, 'exp'>, ttlHours = 168): string {
   const fullPayload: SessionPayload = {
     ...payload,
+    sv: payload.sv ?? 1,
     exp: Date.now() + ttlHours * 60 * 60 * 1000,
   };
   const encoded = Buffer.from(JSON.stringify(fullPayload)).toString('base64url');
@@ -153,6 +155,80 @@ export function verifySignedFileToken(
 
 export function generateRandomToken(bytes = 24): string {
   return crypto.randomBytes(bytes).toString('hex');
+}
+
+export function generateNumericOtp(digits = 4): string {
+  const max = 10 ** digits;
+  return crypto.randomInt(0, max).toString().padStart(digits, '0');
+}
+
+export function hashOtpCode(pendingToken: string, otpCode: string): string {
+  return crypto
+    .createHmac('sha256', `${SESSION_SECRET}:signup-otp`)
+    .update(`${pendingToken}:${otpCode}`)
+    .digest('hex');
+}
+
+export function verifyOtpHash(pendingToken: string, otpCode: string, expectedHash: string): boolean {
+  if (!/^\d{4}$/.test(otpCode) || !expectedHash) return false;
+  const computed = hashOtpCode(pendingToken, otpCode);
+  const a = Buffer.from(computed, 'hex');
+  const b = Buffer.from(expectedHash, 'hex');
+  if (a.length !== b.length) return false;
+  return crypto.timingSafeEqual(a, b);
+}
+
+export function maskEmailAddress(email: string): string {
+  const normalized = String(email || '').trim().toLowerCase();
+  const atIndex = normalized.indexOf('@');
+  if (atIndex <= 0) return '***';
+  const local = normalized.slice(0, atIndex);
+  const domain = normalized.slice(atIndex + 1);
+  if (local.length <= 1) return `*@${domain}`;
+  if (local.length === 2) return `${local[0]}*@${domain}`;
+  if (local.length <= 4) return `${local.slice(0, 2)}${'*'.repeat(local.length - 2)}@${domain}`;
+  return `${local.slice(0, 2)}${'*'.repeat(Math.min(5, local.length - 3))}${local.slice(-1)}@${domain}`;
+}
+
+export function generatePasswordResetToken(): string {
+  return crypto.randomBytes(32).toString('base64url');
+}
+
+export function hashPasswordResetToken(rawToken: string): string {
+  return crypto.createHash('sha256').update(String(rawToken || '')).digest('hex');
+}
+
+/**
+ * Resolves the trusted application base URL from configured environment variables
+ * (APP_BASE_URL or APP_URL) — never from untrusted Host/X-Forwarded-Host headers.
+ */
+export function getTrustedAppBaseUrl(): string {
+  const candidates = [
+    process.env.APP_BASE_URL,
+    process.env.APP_URL,
+    process.env.NODE_ENV === 'production'
+      ? 'https://thinkingpen-ksf3.onrender.com'
+      : `http://localhost:${Number(process.env.PORT) || 3000}`,
+  ];
+
+  for (const raw of candidates) {
+    const val = String(raw || '').trim();
+    if (!val) continue;
+    try {
+      const parsed = new URL(val);
+      const isLocal = parsed.hostname === 'localhost' || parsed.hostname === '127.0.0.1';
+      if (parsed.protocol === 'http:' && !isLocal) {
+        parsed.protocol = 'https:';
+      }
+      if (parsed.protocol === 'https:' || (parsed.protocol === 'http:' && isLocal)) {
+        return parsed.origin;
+      }
+    } catch {
+      // Ignore malformed candidate and check next fallback
+    }
+  }
+
+  return 'https://thinkingpen-ksf3.onrender.com';
 }
 
 export function slugify(input: string): string {

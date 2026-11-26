@@ -1,5 +1,5 @@
 import crypto from 'node:crypto';
-import { eq } from 'drizzle-orm';
+import { and, eq, sql } from 'drizzle-orm';
 import { db } from '../db/index.ts';
 import {
   adminSettings,
@@ -19,6 +19,7 @@ export interface GatewayConfig {
   keyId: string | null;
   currency: 'INR';
   configured: boolean;
+  webhookConfigured: boolean;
 }
 
 export function getPaymentGatewayConfig(): GatewayConfig {
@@ -33,14 +34,17 @@ export function getPaymentGatewayConfig(): GatewayConfig {
     keyId: configured ? keyId : null,
     currency: 'INR',
     configured,
+    webhookConfigured: Boolean(process.env.RAZORPAY_WEBHOOK_SECRET?.trim()),
   };
 }
+
+const EPHEMERAL_SANDBOX_SECRET = crypto.randomBytes(32).toString('hex');
 
 function getSigningSecret(): string {
   return (
     process.env.RAZORPAY_KEY_SECRET?.trim() ||
-    process.env.SESSION_SECRET ||
-    'scholarpress-razorpay-sandbox-secret'
+    process.env.SESSION_SECRET?.trim() ||
+    EPHEMERAL_SANDBOX_SECRET
   );
 }
 
@@ -69,6 +73,7 @@ export async function createRazorpayOrder(params: {
         receipt: params.receipt,
         notes: params.notes,
       }),
+      signal: AbortSignal.timeout(10_000),
     });
 
     if (!response.ok) {
@@ -103,11 +108,129 @@ export function verifyPaymentSignature(
 }
 
 export function verifyRazorpayWebhookSignature(rawBody: string, headerSignature: string): boolean {
-  const secret = process.env.RAZORPAY_WEBHOOK_SECRET?.trim() || getSigningSecret();
+  const secret = process.env.RAZORPAY_WEBHOOK_SECRET?.trim() || '';
+  if (!secret || !headerSignature) return false;
   const expected = crypto.createHmac('sha256', secret).update(rawBody).digest('hex');
   const a = Buffer.from(expected, 'utf8');
   const b = Buffer.from(headerSignature || '', 'utf8');
   return a.length === b.length && crypto.timingSafeEqual(a, b);
+}
+
+function getRazorpayBasicAuthHeader(): string | null {
+  const keyId = process.env.RAZORPAY_KEY_ID?.trim() || '';
+  const keySecret = process.env.RAZORPAY_KEY_SECRET?.trim() || '';
+  if (!keyId || !keySecret) return null;
+  return `Basic ${Buffer.from(`${keyId}:${keySecret}`).toString('base64')}`;
+}
+
+/**
+ * Verifies the live/test Razorpay payment directly with Razorpay's Payments API:
+ * confirms order_id, exact INR amount in paise, currency, and captures if authorized.
+ */
+export async function verifyAndCaptureRazorpayPayment(params: {
+  providerPaymentId: string;
+  expectedOrderId: string;
+  expectedAmountInr: number;
+}): Promise<void> {
+  const authHeader = getRazorpayBasicAuthHeader();
+  if (!authHeader) return;
+
+  const expectedPaise = Math.round(params.expectedAmountInr * 100);
+  const res = await fetch(
+    `https://api.razorpay.com/v1/payments/${encodeURIComponent(params.providerPaymentId)}`,
+    {
+      method: 'GET',
+      headers: { Authorization: authHeader },
+      signal: AbortSignal.timeout(10_000),
+    }
+  );
+
+  if (!res.ok) {
+    const errText = await res.text();
+    throw new Error(`Unable to confirm payment with Razorpay (${res.status}): ${errText}`);
+  }
+
+  const rzpPayment = (await res.json()) as {
+    id: string;
+    order_id?: string;
+    amount?: number;
+    currency?: string;
+    status?: string;
+  };
+
+  if (rzpPayment.order_id && rzpPayment.order_id !== params.expectedOrderId) {
+    throw new Error('Payment order mismatch reported by Razorpay.');
+  }
+  if (Number(rzpPayment.amount) !== expectedPaise || rzpPayment.currency !== 'INR') {
+    throw new Error('Payment amount or currency mismatch reported by Razorpay.');
+  }
+
+  if (rzpPayment.status === 'authorized') {
+    const capRes = await fetch(
+      `https://api.razorpay.com/v1/payments/${encodeURIComponent(params.providerPaymentId)}/capture`,
+      {
+        method: 'POST',
+        headers: {
+          Authorization: authHeader,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ amount: expectedPaise, currency: 'INR' }),
+        signal: AbortSignal.timeout(10_000),
+      }
+    );
+    if (!capRes.ok) {
+      const capErr = await capRes.text();
+      throw new Error(`Razorpay payment capture failed (${capRes.status}): ${capErr}`);
+    }
+    return;
+  }
+
+  if (rzpPayment.status !== 'captured') {
+    throw new Error(`Payment is not captured (Razorpay status: ${rzpPayment.status || 'unknown'}).`);
+  }
+}
+
+async function issueRazorpayApiRefund(params: {
+  providerPaymentId: string;
+  amountInr: number;
+  receiptNumber: string;
+  reason: string;
+}): Promise<string | null> {
+  const authHeader = getRazorpayBasicAuthHeader();
+  if (!authHeader || !params.providerPaymentId || params.providerPaymentId.startsWith('pay_sandbox_')) {
+    return null;
+  }
+
+  const res = await fetch(
+    `https://api.razorpay.com/v1/payments/${encodeURIComponent(params.providerPaymentId)}/refund`,
+    {
+      method: 'POST',
+      headers: {
+        Authorization: authHeader,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        amount: Math.round(params.amountInr * 100),
+        speed: 'normal',
+        notes: {
+          receipt: params.receiptNumber,
+          reason: params.reason.slice(0, 200),
+        },
+      }),
+      signal: AbortSignal.timeout(12_000),
+    }
+  );
+
+  if (!res.ok) {
+    const errText = await res.text();
+    if (errText.toLowerCase().includes('already been fully refunded')) {
+      return null;
+    }
+    throw new Error(`Razorpay refund failed (${res.status}): ${errText}`);
+  }
+
+  const refundJson = (await res.json()) as { id?: string };
+  return refundJson.id || null;
 }
 
 export async function resolveCommissionRate(contentId: number, creatorId: number): Promise<{
@@ -223,8 +346,22 @@ export async function settleVerifiedPayment(params: {
         providerSignature: params.providerSignature,
         updatedAt: new Date(),
       })
-      .where(eq(payments.id, payment.id))
+      .where(
+        and(
+          eq(payments.id, payment.id),
+          sql`${payments.status} NOT IN ('captured', 'refunded')`
+        )
+      )
       .returning();
+
+    if (!updatedPayment) {
+      const [existingPurchase] = await tx
+        .select()
+        .from(purchases)
+        .where(eq(purchases.paymentId, payment.id))
+        .limit(1);
+      return { alreadySettled: true, payment, purchase: existingPurchase };
+    }
 
     const [purchase] = await tx
       .insert(purchases)
@@ -373,9 +510,35 @@ export async function settleVerifiedPayment(params: {
 }
 
 /**
- * Refunds a captured payment and reverses creator earnings & platform commission.
+ * Refunds a captured payment (invoking Razorpay Refund API when configured)
+ * and reverses creator earnings & platform commission atomically.
  */
-export async function refundCapturedPayment(paymentId: number, reason: string) {
+export async function refundCapturedPayment(
+  paymentId: number,
+  reason: string,
+  options: { skipGatewayApi?: boolean } = {}
+) {
+  const [preCheck] = await db
+    .select()
+    .from(payments)
+    .where(eq(payments.id, paymentId))
+    .limit(1);
+
+  if (!preCheck) throw new Error('Payment not found');
+  if (preCheck.status !== 'captured') {
+    throw new Error(`Only captured payments can be refunded (current status: ${preCheck.status})`);
+  }
+
+  let gatewayRefundId: string | null = null;
+  if (!options.skipGatewayApi && preCheck.providerPaymentId) {
+    gatewayRefundId = await issueRazorpayApiRefund({
+      providerPaymentId: preCheck.providerPaymentId,
+      amountInr: Number(preCheck.amountInr),
+      receiptNumber: preCheck.receiptNumber,
+      reason,
+    });
+  }
+
   return await db.transaction(async (tx) => {
     const [payment] = await tx
       .select()
@@ -394,9 +557,18 @@ export async function refundCapturedPayment(paymentId: number, reason: string) {
       .where(eq(commissionRecords.paymentId, payment.id))
       .limit(1);
 
+    const nextMeta = gatewayRefundId
+      ? { ...(payment.metadata || {}), razorpayRefundId: gatewayRefundId }
+      : payment.metadata;
+
     await tx
       .update(payments)
-      .set({ status: 'refunded', refundReason: reason, updatedAt: new Date() })
+      .set({
+        status: 'refunded',
+        refundReason: reason,
+        metadata: nextMeta,
+        updatedAt: new Date(),
+      })
       .where(eq(payments.id, payment.id));
 
     await tx
@@ -459,6 +631,6 @@ export async function refundCapturedPayment(paymentId: number, reason: string) {
       ]);
     }
 
-    return { refunded: true, paymentId: payment.id };
+    return { refunded: true, paymentId: payment.id, gatewayRefundId };
   });
 }

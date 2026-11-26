@@ -198,3 +198,227 @@ export async function sendAccountBlockedEmail(params: {
     };
   }
 }
+
+export async function sendSignupOtpEmail(params: {
+  toEmail: string;
+  userName: string;
+  otpCode: string;
+  expiresMinutes?: number;
+}): Promise<EmailSendResult> {
+  const transporter = createTransporter();
+  if (!transporter) {
+    return {
+      sent: false,
+      configured: false,
+      provider: 'smtp',
+      note: 'SMTP credentials (SMTP_HOST, SMTP_USER, SMTP_PASS) are not configured on the server.',
+    };
+  }
+
+  const expiresMinutes = params.expiresMinutes ?? 2;
+  const from = process.env.SMTP_FROM?.trim() || `ScholarPress <${process.env.SMTP_USER}>`;
+  const subject = `${params.otpCode} is your ScholarPress verification OTP`;
+
+  const text = [
+    `Hello ${params.userName || 'Scholar'},`,
+    '',
+    'Welcome to ScholarPress — Your Knowledge, Our Mission.',
+    '',
+    `Your 4-digit verification OTP is: ${params.otpCode}`,
+    '',
+    `This OTP is valid for ${expiresMinutes} minutes.`,
+    'Security Warning: Do not share your OTP with anyone. ScholarPress will never ask you for this code.',
+    '',
+    'If you did not request a ScholarPress account, you can safely ignore this email.',
+    '',
+    '— ScholarPress Team',
+  ].join('\n');
+
+  const html = `
+    <div style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Arial, sans-serif; background-color: #EEF4FF; padding: 28px 14px; color: #0A1E44;">
+      <div style="max-width: 560px; margin: 0 auto; background-color: #FFFFFF; border-radius: 18px; overflow: hidden; border: 1px solid #DCE6F7; box-shadow: 0 12px 30px rgba(10, 30, 68, 0.08);">
+        <div style="background: linear-gradient(135deg, #0A1647 0%, #0F52FC 100%); padding: 26px 28px; text-align: center; color: #FFFFFF;">
+          <div style="font-size: 24px; font-weight: 800; letter-spacing: -0.3px;">ScholarPress</div>
+          <div style="font-size: 13px; color: #DBEAFE; margin-top: 4px; font-weight: 500;">Your Knowledge, Our Mission</div>
+        </div>
+
+        <div style="padding: 30px 28px;">
+          <h1 style="margin: 0 0 10px 0; font-size: 20px; font-weight: 700; color: #0A1647;">Verify Your Email Address</h1>
+          <p style="margin: 0 0 18px 0; font-size: 14px; line-height: 1.6; color: #334155;">
+            Hello <strong>${escapeHtml(params.userName || 'Scholar')}</strong>, thank you for registering with <strong>ScholarPress</strong>. Enter the 4-digit verification code below to complete your account signup:
+          </p>
+
+          <div style="background: #F0F6FF; border: 1.5px solid #BFDBFE; border-radius: 14px; padding: 22px 16px; text-align: center; margin: 22px 0;">
+            <div style="font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: 1.5px; color: #1D4ED8; margin-bottom: 8px;">Your 4-Digit Verification OTP</div>
+            <div style="font-family: 'Courier New', Courier, monospace; font-size: 38px; font-weight: 800; letter-spacing: 14px; color: #0A1647; padding-left: 14px;">${escapeHtml(params.otpCode)}</div>
+            <div style="font-size: 13px; font-weight: 600; color: #1E40AF; margin-top: 10px;">
+              OTP will expire in ${expiresMinutes} minutes.
+            </div>
+          </div>
+
+          <div style="background: #FEF2F2; border: 1px solid #FECACA; border-radius: 10px; padding: 12px 14px; margin: 18px 0;">
+            <div style="font-size: 12.5px; font-weight: 700; color: #991B1B; margin-bottom: 2px;">Security Warning</div>
+            <div style="font-size: 12.5px; line-height: 1.5; color: #7F1D1D;">
+              Do not share your OTP with anyone. ScholarPress staff will never call or email asking for your verification code.
+            </div>
+          </div>
+
+          <p style="margin: 18px 0 0 0; font-size: 12.5px; line-height: 1.5; color: #64748B;">
+            If you did not initiate this signup on ScholarPress, please disregard this email. No account will be created without OTP verification.
+          </p>
+        </div>
+
+        <div style="background: #F8FAFC; border-top: 1px solid #E2E8F0; padding: 16px 28px; text-align: center; font-size: 12px; color: #64748B;">
+          &copy; ${new Date().getFullYear()} ScholarPress &bull; Secure Email Verification
+        </div>
+      </div>
+    </div>
+  `;
+
+  try {
+    const info = await transporter.sendMail({
+      from,
+      to: params.toEmail,
+      subject,
+      text,
+      html,
+    });
+    return {
+      sent: true,
+      configured: true,
+      provider: 'smtp',
+      note: `OTP email sent to ${params.toEmail} (Message ID: ${info.messageId || 'sent'}).`,
+    };
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : 'SMTP delivery failed';
+    console.error('Failed to send signup OTP email:', msg);
+    return {
+      sent: false,
+      configured: true,
+      provider: 'smtp',
+      note: `SMTP error: ${msg}`,
+    };
+  }
+}
+
+export async function sendPasswordResetEmail(params: {
+  toEmail: string;
+  userName?: string | null;
+  resetUrl: string;
+  expiresMinutes?: number;
+}): Promise<EmailSendResult> {
+  const transporter = createTransporter();
+  if (!transporter) {
+    return {
+      sent: false,
+      configured: false,
+      provider: 'smtp',
+      note: 'SMTP credentials (SMTP_HOST, SMTP_PORT, SMTP_SECURE, SMTP_USER, SMTP_PASS) are not configured on the server.',
+    };
+  }
+
+  const expiresMinutes = params.expiresMinutes ?? 15;
+  const from = process.env.SMTP_FROM?.trim() || `ScholarPress <${process.env.SMTP_USER}>`;
+  const subject = 'Reset Your ScholarPress Password';
+  const safeResetUrl = escapeHtml(params.resetUrl);
+
+  const text = [
+    'Hello,',
+    '',
+    'We received a request to reset your ScholarPress account password.',
+    '',
+    'Click the link below to create a new password:',
+    params.resetUrl,
+    '',
+    `This link will expire in ${expiresMinutes} minutes.`,
+    '',
+    'If you did not request this password reset, you can safely ignore this email. Your existing password will remain unchanged.',
+    '',
+    'Regards,',
+    'ScholarPress Team',
+  ].join('\n');
+
+  const html = `
+    <div style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Arial, sans-serif; background-color: #EEF4FF; padding: 30px 14px; color: #0A1E44;">
+      <div style="max-width: 560px; margin: 0 auto; background-color: #FFFFFF; border-radius: 18px; overflow: hidden; border: 1px solid #DCE6F7; box-shadow: 0 12px 30px rgba(10, 30, 68, 0.08);">
+        <div style="background: linear-gradient(135deg, #0A1647 0%, #0F52FC 100%); padding: 28px 28px; text-align: center; color: #FFFFFF;">
+          <div style="font-size: 25px; font-weight: 800; letter-spacing: -0.3px;">ScholarPress</div>
+          <div style="font-size: 13px; color: #DBEAFE; margin-top: 4px; font-weight: 500;">Your Knowledge, Our Mission</div>
+        </div>
+
+        <div style="padding: 32px 28px;">
+          <h1 style="margin: 0 0 12px 0; font-size: 21px; font-weight: 700; color: #0A1647;">Reset Your Password</h1>
+          <p style="margin: 0 0 14px 0; font-size: 14.5px; line-height: 1.65; color: #334155;">Hello,</p>
+          <p style="margin: 0 0 14px 0; font-size: 14.5px; line-height: 1.65; color: #334155;">
+            We received a request to reset your <strong>ScholarPress</strong> account password.
+          </p>
+          <p style="margin: 0 0 24px 0; font-size: 14.5px; line-height: 1.65; color: #334155;">
+            Click the button below to create a new password.
+          </p>
+
+          <div style="text-align: center; margin: 28px 0;">
+            <a
+              href="${safeResetUrl}"
+              target="_blank"
+              rel="noopener noreferrer"
+              style="display: inline-block; background: linear-gradient(135deg, #0F76FF 0%, #004AE2 55%, #002EC4 100%); background-color: #004AE2; color: #FFFFFF; text-decoration: none; font-weight: 700; font-size: 15px; padding: 14px 34px; border-radius: 12px; box-shadow: 0 8px 20px rgba(0, 62, 216, 0.28);"
+            >
+              Reset Password
+            </a>
+          </div>
+
+          <div style="background: #F0F6FF; border: 1px solid #BFDBFE; border-radius: 10px; padding: 12px 15px; margin: 20px 0; text-align: center;">
+            <span style="font-size: 13px; font-weight: 600; color: #1E40AF;">
+              This link will expire in ${expiresMinutes} minutes.
+            </span>
+          </div>
+
+          <p style="margin: 18px 0 0 0; font-size: 13.5px; line-height: 1.6; color: #475569;">
+            If you did not request this password reset, you can safely ignore this email. Your existing password will remain unchanged.
+          </p>
+
+          <p style="margin: 22px 0 0 0; font-size: 14px; line-height: 1.6; color: #0A1647;">
+            Regards,<br />
+            <strong>ScholarPress Team</strong>
+          </p>
+
+          <div style="margin-top: 24px; padding-top: 16px; border-top: 1px solid #E2E8F0; font-size: 11.5px; color: #64748B; word-break: break-all;">
+            If the button above does not work, copy and paste this secure link into your browser:<br />
+            <a href="${safeResetUrl}" style="color: #0F52FC; text-decoration: underline;">${safeResetUrl}</a>
+          </div>
+        </div>
+
+        <div style="background: #F8FAFC; border-top: 1px solid #E2E8F0; padding: 16px 28px; text-align: center; font-size: 12px; color: #64748B;">
+          &copy; ${new Date().getFullYear()} ScholarPress &bull; Account Security
+        </div>
+      </div>
+    </div>
+  `;
+
+  try {
+    const info = await transporter.sendMail({
+      from,
+      to: params.toEmail,
+      subject,
+      text,
+      html,
+    });
+    return {
+      sent: true,
+      configured: true,
+      provider: 'smtp',
+      note: `Password reset email sent (Message ID: ${info.messageId || 'sent'}).`,
+    };
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : 'SMTP delivery failed';
+    console.error('Failed to send password reset email:', msg);
+    return {
+      sent: false,
+      configured: true,
+      provider: 'smtp',
+      note: `SMTP error: ${msg}`,
+    };
+  }
+}
+
+

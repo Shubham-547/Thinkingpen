@@ -50,7 +50,7 @@ function normalizeImages(images) {
   return seen;
 }
 
-export function openImageLightbox({ images = [], startIndex = 0 } = {}) {
+export function openImageLightbox({ images = [], startIndex = 0, watermarkText = '' } = {}) {
   const validImages = normalizeImages(images);
   if (!validImages.length) return;
 
@@ -85,6 +85,10 @@ export function openImageLightbox({ images = [], startIndex = 0 } = {}) {
   overlay.setAttribute('role', 'dialog');
   overlay.setAttribute('aria-modal', 'true');
   overlay.setAttribute('aria-label', 'Full-screen image viewer');
+  const isProtected = Boolean(String(watermarkText || '').trim());
+  if (isProtected) {
+    overlay.dataset.paidProtected = '1';
+  }
   overlay.style.cssText = [
     'position:fixed',
     'inset:0',
@@ -186,6 +190,69 @@ export function openImageLightbox({ images = [], startIndex = 0 } = {}) {
   const prevSlide = createSlide(-1);
   const currSlide = createSlide(0);
   const nextSlide = createSlide(1);
+
+  let watermarkLayer = null;
+  let movingWatermarkEl = null;
+  let movingWatermarkTimer = null;
+  let watermarkObserver = null;
+  let blurTimeout = null;
+
+  const setLightboxShield = (hidden) => {
+    if (!isProtected) return;
+    stage.style.filter = hidden ? 'blur(26px) brightness(0.15)' : '';
+  };
+
+  if (isProtected) {
+    const safeWm = String(watermarkText).replace(/[<>&"']/g, '');
+    const wmSvg = `<svg xmlns="http://www.w3.org/2000/svg" width="320" height="190"><g transform="rotate(-24 160 95)"><text x="14" y="90" fill="rgba(15,23,42,0.28)" stroke="rgba(255,255,255,0.45)" stroke-width="0.6" paint-order="stroke" font-family="system-ui,sans-serif" font-size="13" font-weight="700">${safeWm}</text></g></svg>`;
+    watermarkLayer = document.createElement('div');
+    watermarkLayer.dataset.spProtectedWatermark = '1';
+    watermarkLayer.style.cssText = [
+      'position:absolute',
+      'inset:0',
+      'z-index:15',
+      'pointer-events:none',
+      'user-select:none',
+      `background-image:url("data:image/svg+xml,${encodeURIComponent(wmSvg)}")`,
+      'background-repeat:repeat',
+    ].join(';');
+    overlay.appendChild(watermarkLayer);
+
+    movingWatermarkEl = document.createElement('div');
+    movingWatermarkEl.dataset.spMovingWatermark = '1';
+    movingWatermarkEl.textContent = safeWm;
+    movingWatermarkEl.style.cssText = [
+      'position:fixed',
+      'top:18%',
+      'left:12%',
+      'z-index:16',
+      'pointer-events:none',
+      'user-select:none',
+      'padding:4px 10px',
+      'border-radius:6px',
+      'background:rgba(15,23,42,0.52)',
+      'border:1px solid rgba(255,255,255,0.22)',
+      'color:rgba(255,255,255,0.88)',
+      'font-size:11px',
+      'font-weight:600',
+      'font-family:ui-monospace,SFMono-Regular,monospace',
+      'max-width:76vw',
+      'white-space:nowrap',
+      'overflow:hidden',
+      'text-overflow:ellipsis',
+      'transition:top 900ms ease, left 900ms ease',
+    ].join(';');
+    overlay.appendChild(movingWatermarkEl);
+
+    const moveBadge = () => {
+      if (!movingWatermarkEl || isClosing) return;
+      const topPct = 14 + Math.floor(Math.random() * 68);
+      const leftPct = 8 + Math.floor(Math.random() * 52);
+      movingWatermarkEl.style.top = `${topPct}%`;
+      movingWatermarkEl.style.left = `${leftPct}%`;
+    };
+    movingWatermarkTimer = setInterval(moveBadge, 3600);
+  }
 
   // Small floating Close (X) button — minimal, unobtrusive, always accessible
   const closeBtn = document.createElement('button');
@@ -950,6 +1017,20 @@ export function openImageLightbox({ images = [], startIndex = 0 } = {}) {
   // ===== KEYBOARD & RESIZE =====
   function onKeyDown(e) {
     if (isClosing) return;
+    if (isProtected) {
+      const k = String(e.key || '').toLowerCase();
+      if (
+        e.key === 'PrintScreen' ||
+        ((e.ctrlKey || e.metaKey) && ['s', 'p', 'u', 'c'].includes(k)) ||
+        e.key === 'F12'
+      ) {
+        e.preventDefault();
+        setLightboxShield(true);
+        clearTimeout(blurTimeout);
+        blurTimeout = setTimeout(() => setLightboxShield(false), 1400);
+        return;
+      }
+    }
     if (e.key === 'Escape') {
       e.preventDefault();
       close();
@@ -963,6 +1044,22 @@ export function openImageLightbox({ images = [], startIndex = 0 } = {}) {
       e.preventDefault();
       resetTransform(true);
     }
+  }
+
+  function onProtectedBlur() {
+    setLightboxShield(true);
+  }
+
+  function onProtectedFocus() {
+    if (!document.hidden) setLightboxShield(false);
+  }
+
+  function onProtectedVisibility() {
+    setLightboxShield(document.hidden);
+  }
+
+  function onProtectedContextOrDrag(e) {
+    if (isProtected) e.preventDefault();
   }
 
   function onResize() {
@@ -983,11 +1080,22 @@ export function openImageLightbox({ images = [], startIndex = 0 } = {}) {
     isClosing = true;
     stopInertia();
     clearTimeout(slideTimer);
+    clearTimeout(blurTimeout);
+    clearInterval(movingWatermarkTimer);
+    if (watermarkObserver) {
+      watermarkObserver.disconnect();
+      watermarkObserver = null;
+    }
 
     document.removeEventListener('keydown', onKeyDown);
     window.removeEventListener('resize', onResize);
     window.removeEventListener('mousemove', onMouseMove);
     window.removeEventListener('mouseup', onMouseUp);
+    window.removeEventListener('blur', onProtectedBlur);
+    window.removeEventListener('focus', onProtectedFocus);
+    document.removeEventListener('visibilitychange', onProtectedVisibility);
+    overlay.removeEventListener('contextmenu', onProtectedContextOrDrag);
+    overlay.removeEventListener('dragstart', onProtectedContextOrDrag);
 
     stage.removeEventListener('touchstart', onTouchStart);
     stage.removeEventListener('touchmove', onTouchMove);
@@ -1030,6 +1138,13 @@ export function openImageLightbox({ images = [], startIndex = 0 } = {}) {
   window.addEventListener('resize', onResize);
   window.addEventListener('mousemove', onMouseMove);
   window.addEventListener('mouseup', onMouseUp);
+  if (isProtected) {
+    window.addEventListener('blur', onProtectedBlur);
+    window.addEventListener('focus', onProtectedFocus);
+    document.addEventListener('visibilitychange', onProtectedVisibility);
+    overlay.addEventListener('contextmenu', onProtectedContextOrDrag);
+    overlay.addEventListener('dragstart', onProtectedContextOrDrag);
+  }
 
   stage.addEventListener('touchstart', onTouchStart, { passive: false });
   stage.addEventListener('touchmove', onTouchMove, { passive: false });
@@ -1042,6 +1157,31 @@ export function openImageLightbox({ images = [], startIndex = 0 } = {}) {
   // Mount & fade in smoothly
   document.body.appendChild(overlay);
   syncSlides();
+
+  if (isProtected && watermarkLayer) {
+    watermarkObserver = new MutationObserver(() => {
+      if (isClosing) return;
+      const cs = window.getComputedStyle(watermarkLayer);
+      if (
+        !overlay.contains(watermarkLayer) ||
+        cs.display === 'none' ||
+        cs.visibility === 'hidden' ||
+        Number(cs.opacity) < 0.5 ||
+        !watermarkLayer.style.backgroundImage
+      ) {
+        prevSlide.img.src = '';
+        currSlide.img.src = '';
+        nextSlide.img.src = '';
+        close(true);
+      }
+    });
+    watermarkObserver.observe(overlay, {
+      childList: true,
+      subtree: true,
+      attributes: true,
+      attributeFilter: ['style', 'class', 'hidden'],
+    });
+  }
 
   currSlide.img.style.transform = 'translate3d(0, 0, 0) scale(0.96)';
   requestAnimationFrame(() => {

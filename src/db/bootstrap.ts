@@ -322,6 +322,28 @@ async function syncCurriculumTaxonomy(): Promise<void> {
  */
 export async function ensureBaselineCatalog(): Promise<void> {
   try {
+    try {
+      await db.execute(sql`
+        ALTER TABLE contents
+        ADD COLUMN IF NOT EXISTS downloads_count INTEGER NOT NULL DEFAULT 0
+      `);
+      await db.execute(sql`
+        CREATE TABLE IF NOT EXISTS content_downloads (
+          id SERIAL PRIMARY KEY,
+          content_id INTEGER NOT NULL REFERENCES contents(id) ON DELETE CASCADE,
+          file_id INTEGER REFERENCES content_files(id) ON DELETE SET NULL,
+          user_id INTEGER REFERENCES users(id) ON DELETE SET NULL,
+          created_at TIMESTAMP NOT NULL DEFAULT NOW()
+        )
+      `);
+      await db.execute(sql`
+        CREATE INDEX IF NOT EXISTS idx_content_downloads_content_created
+        ON content_downloads(content_id, created_at)
+      `);
+    } catch {
+      // Managed Cloud SQL environments apply schema changes via Drizzle UpdateSchema (admin role)
+    }
+
     await db.insert(adminSettings).values(DEFAULT_SETTINGS).onConflictDoNothing();
 
     await syncCurriculumTaxonomy();

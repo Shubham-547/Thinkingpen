@@ -8,8 +8,8 @@ import {
   generatePaymentSignature,
   getPaymentGatewayConfig,
   refundCapturedPayment,
-  resolveCommissionRate,
   settleVerifiedPayment,
+  verifyAndCaptureRazorpayPayment,
   verifyPaymentSignature,
   verifyRazorpayWebhookSignature,
 } from '../lib/payments.ts';
@@ -98,15 +98,13 @@ router.post('/create-order', requireAuth, async (req: AuthRequest, res) => {
       })
       .returning();
 
-    const commissionPreview = await resolveCommissionRate(content.id, content.creatorId);
-
-    // For sandbox/test mode, also provide a deterministic test token for simulated checkout
-    const sandboxPaymentId =
-      order.mode === 'sandbox'
-        ? `pay_sandbox_${crypto.randomBytes(8).toString('hex')}`
-        : null;
+    // Only generate simulated sandbox token when no Razorpay keys are configured yet
+    const isSimulatedSandbox = !order.keyId;
+    const sandboxPaymentId = isSimulatedSandbox
+      ? `pay_sandbox_${crypto.randomBytes(8).toString('hex')}`
+      : null;
     const sandboxSignature =
-      order.mode === 'sandbox' && sandboxPaymentId
+      isSimulatedSandbox && sandboxPaymentId
         ? generatePaymentSignature(order.orderId, sandboxPaymentId)
         : null;
 
@@ -118,16 +116,14 @@ router.post('/create-order', requireAuth, async (req: AuthRequest, res) => {
       amountPaise: Math.round(amountInr * 100),
       currency: 'INR',
       mode: order.mode,
+      configured: Boolean(order.keyId),
       keyId: order.keyId,
       contentTitle: content.title,
-      commissionRate: commissionPreview.rate,
       sandboxCheckout:
-        order.mode === 'sandbox'
+        isSimulatedSandbox
           ? {
               providerPaymentId: sandboxPaymentId,
               providerSignature: sandboxSignature,
-              notice:
-                'Sandbox / Test Mode active. Configure RAZORPAY_KEY_ID and RAZORPAY_KEY_SECRET environment variables to process live INR payments.',
             }
           : null,
     });
@@ -165,6 +161,15 @@ router.post('/verify', requireAuth, async (req: AuthRequest, res) => {
         .set({ status: 'failed', updatedAt: new Date() })
         .where(eq(payments.id, payment.id));
       return res.status(400).json({ error: 'Payment signature verification failed.' });
+    }
+
+    const gwCfg = getPaymentGatewayConfig();
+    if (gwCfg.configured && !providerPaymentId.startsWith('pay_sandbox_')) {
+      await verifyAndCaptureRazorpayPayment({
+        providerPaymentId,
+        expectedOrderId: orderId,
+        expectedAmountInr: Number(payment.amountInr),
+      });
     }
 
     const settled = await settleVerifiedPayment({
@@ -222,6 +227,9 @@ router.post('/fail', requireAuth, async (req: AuthRequest, res) => {
 // POST /api/payments/webhook/razorpay (Verified HMAC-SHA256 webhook receiver)
 router.post('/webhook/razorpay', async (req, res) => {
   try {
+    if (!process.env.RAZORPAY_WEBHOOK_SECRET?.trim()) {
+      return res.status(503).json({ error: 'Razorpay webhook secret is not configured.' });
+    }
     const signature = String(req.headers['x-razorpay-signature'] || '');
     const rawBody =
       typeof (req as unknown as { rawBody?: string }).rawBody === 'string'
@@ -262,7 +270,7 @@ router.post('/webhook/razorpay', async (req, res) => {
         .where(eq(payments.providerOrderId, entity.order_id))
         .limit(1);
       if (payment && payment.status === 'captured') {
-        await refundCapturedPayment(payment.id, 'Refunded via Razorpay webhook');
+        await refundCapturedPayment(payment.id, 'Refunded via Razorpay webhook', { skipGatewayApi: true });
       }
     }
 

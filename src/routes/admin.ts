@@ -2,6 +2,7 @@ import { Router } from 'express';
 import { and, asc, count, desc, eq, gte, inArray, isNull, lte, sql } from 'drizzle-orm';
 import { db } from '../db/index.ts';
 import { invalidateCatalogCache } from '../lib/cache.ts';
+import { syncContentEmbedding } from '../lib/embeddings.ts';
 import {
   adminSettings,
   auditLogs,
@@ -1261,6 +1262,7 @@ router.patch('/contents/:id', async (req: AuthRequest, res) => {
       req.ip
     );
     invalidateCatalogCache();
+    syncContentEmbedding(updated.id).catch(() => {});
     return res.json({ content: updated, message: 'Content status updated.' });
   } catch (error) {
     console.error('Admin patch content error:', error);

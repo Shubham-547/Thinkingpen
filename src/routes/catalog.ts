@@ -9,6 +9,7 @@ import {
   categories,
   comments,
   contactMessages,
+  contentDownloads,
   contentFiles,
   contents,
   contentTags,
@@ -18,6 +19,7 @@ import {
   reviews,
   subjects,
   users,
+  videoWatchProgress,
 } from '../db/schema.ts';
 import { getOrCompute, setCache } from '../lib/cache.ts';
 import { queueContentView } from '../lib/jobs.ts';
@@ -27,11 +29,16 @@ import {
   negotiateImageFormat,
   normalizeRequestedWidth,
 } from '../lib/media.ts';
+import { logSearchHistoryEntry, runSmartSearch } from '../lib/search-engine.ts';
 import {
   createSignedFileToken,
   getStorageRoot,
   normalizeExternalVideoUrl,
 } from '../lib/security.ts';
+import {
+  isYouTubeDiscoveryConfigured,
+  searchExternalEducationalVideos,
+} from '../lib/youtube-discovery.ts';
 import { optionalAuth, requireAuth, type AuthRequest } from '../middleware/auth.ts';
 
 const router = Router();
@@ -165,8 +172,8 @@ router.get('/home', async (_req, res) => {
   }
 });
 
-// GET /api/catalog/categories (Authenticated members only — Single-flight deduplicated + 90s TTL cache)
-router.get('/categories', requireAuth, async (_req, res) => {
+// GET /api/catalog/categories (Publicly browsable — Single-flight deduplicated + 90s TTL cache)
+router.get('/categories', optionalAuth, async (_req, res) => {
   try {
     const payload = await getOrCompute('catalog:categories', 90_000, async () => {
       const [cats, subjs, counts] = await Promise.all([
@@ -199,7 +206,7 @@ router.get('/categories', requireAuth, async (_req, res) => {
       return { categories: grouped, subjects: subjs };
     });
 
-    res.setHeader('Cache-Control', 'private, max-age=45');
+    res.setHeader('Cache-Control', 'public, max-age=45, stale-while-revalidate=120');
     return res.json(payload);
   } catch (error) {
     console.error('Categories error:', error);
@@ -207,26 +214,109 @@ router.get('/categories', requireAuth, async (_req, res) => {
   }
 });
 
-// GET /api/catalog/contents (Cursor-based Infinite Scroll feed — authenticated members only)
-router.get('/contents', requireAuth, async (req, res) => {
+// GET /api/catalog/contents (Publicly browsable Explore + Smart AI Search feed)
+router.get('/contents', optionalAuth, async (req: AuthRequest, res) => {
   try {
-    const q = String(req.query.q || '').trim().slice(0, 120);
+    const q = String(req.query.q || '').trim().slice(0, 160);
     const categorySlug = String(req.query.category || '').trim().slice(0, 80);
     const subjectSlug = String(req.query.subject || '').trim().slice(0, 80);
     const contentType = String(req.query.contentType || '').trim().slice(0, 60);
     const language = String(req.query.language || '').trim().slice(0, 40);
     const pricing = String(req.query.pricing || 'all').trim(); // 'all' | 'free' | 'paid'
-    const sort = String(req.query.sort || 'latest').trim();
+    const classLevel = String(req.query.classLevel || '').trim().slice(0, 60);
+    const chapter = String(req.query.chapter || '').trim().slice(0, 120);
+    const topic = String(req.query.topic || '').trim().slice(0, 120);
+    const duration = String(req.query.duration || 'all').trim().slice(0, 20);
+    const teacher = String(req.query.teacher || '').trim().slice(0, 120);
+    const sort = String(req.query.sort || (q ? 'relevant' : 'latest')).trim();
     const limit = Math.min(30, Math.max(1, Number(req.query.limit || 10)));
     const cursorRaw = String(req.query.cursor || '').trim();
+
+    const useSmartEngine =
+      Boolean(q) ||
+      sort === 'relevant' ||
+      Boolean(classLevel && classLevel !== 'all') ||
+      Boolean(chapter) ||
+      Boolean(topic) ||
+      Boolean(duration && duration !== 'all') ||
+      Boolean(teacher);
+
+    if (useSmartEngine) {
+      const offset = cursorRaw.startsWith('off:')
+        ? Math.max(0, Number(cursorRaw.slice(4)) || 0)
+        : Math.max(0, Number(req.query.offset || 0));
+
+      const includeExternal =
+        req.query.includeExternal !== '0' &&
+        isYouTubeDiscoveryConfigured() &&
+        q.length >= 2 &&
+        offset === 0;
+
+      const [smart, externalRes] = await Promise.all([
+        runSmartSearch(
+          {
+            q,
+            category: categorySlug,
+            subject: subjectSlug,
+            contentType,
+            language,
+            pricing,
+            classLevel,
+            chapter,
+            topic,
+            duration,
+            teacher,
+            sort,
+            limit,
+            offset,
+          },
+          req.user?.id
+        ),
+        includeExternal
+          ? searchExternalEducationalVideos(q, 4)
+          : Promise.resolve({ enabled: isYouTubeDiscoveryConfigured(), items: [] }),
+      ]);
+
+      let historyEntryId: number | null = null;
+      if (q.length >= 2 && req.user?.id && offset === 0 && req.query.log !== '0') {
+        historyEntryId = await logSearchHistoryEntry({
+          userId: req.user.id,
+          query: q,
+          filters: Object.fromEntries(
+            Object.entries({
+              category: categorySlug,
+              subject: subjectSlug,
+              contentType,
+              language,
+              pricing,
+              classLevel,
+              chapter,
+              topic,
+              duration,
+              teacher,
+            }).filter(([, v]) => Boolean(v && v !== 'all'))
+          ),
+          resultsCount: smart.total,
+        });
+      }
+
+      res.setHeader('Cache-Control', 'private, max-age=10');
+      return res.json({
+        ...smart,
+        nextCursor: smart.hasMore ? `off:${offset + smart.items.length}` : null,
+        historyEntryId,
+        externalVideos: externalRes.items,
+        features: {
+          youtubeDiscovery: isYouTubeDiscoveryConfigured(),
+        },
+      });
+    }
+
     const cursor = cursorRaw ? decodeFeedCursor(cursorRaw) : null;
     const includeTotal = !cursor || req.query.includeTotal === '1';
 
     // Cache non-search feed pages briefly with single-flight deduplication
-    const cacheKey =
-      !q
-        ? `catalog:feed:${categorySlug}:${subjectSlug}:${contentType}:${language}:${pricing}:${sort}:${limit}:${cursorRaw || 'first'}`
-        : null;
+    const cacheKey = `catalog:feed:${categorySlug}:${subjectSlug}:${contentType}:${language}:${pricing}:${sort}:${limit}:${cursorRaw || 'first'}`;
 
     const computeFeed = async () => {
       const conditions = [eq(contents.status, 'approved'), isNull(contents.deletedAt)];
@@ -372,6 +462,12 @@ router.get('/contents', requireAuth, async (req, res) => {
           avgRating: contents.avgRating,
           reviewsCount: contents.reviewsCount,
           readingTimeMins: contents.readingTimeMins,
+          classLevel: contents.classLevel,
+          chapter: contents.chapter,
+          topic: contents.topic,
+          chapterOrder: contents.chapterOrder,
+          durationSeconds: contents.durationSeconds,
+          studyLabel: contents.studyLabel,
           publishedAt: contents.publishedAt,
           createdAt: contents.createdAt,
           categoryName: categories.name,
@@ -578,31 +674,58 @@ router.get('/contents/:slugOrId', optionalAuth, async (req: AuthRequest, res) =>
     let isLiked = false;
     let isFollowingCreator = false;
 
+    let watchProgress: {
+      watchedSeconds: number;
+      durationSeconds: number;
+      lastPositionSeconds: number;
+      progressPercent: number;
+      completed: boolean;
+    } | null = null;
+
     if (req.user) {
-      const stateResult = await db.execute(sql`
-        SELECT
-          EXISTS (
-            SELECT 1 FROM purchases
-            WHERE user_id = ${req.user.id} AND content_id = ${item.id} AND status = 'active'
-          ) AS has_purchased,
-          EXISTS (
-            SELECT 1 FROM bookmarks
-            WHERE user_id = ${req.user.id} AND content_id = ${item.id}
-          ) AS is_bookmarked,
-          EXISTS (
-            SELECT 1 FROM likes
-            WHERE user_id = ${req.user.id} AND content_id = ${item.id}
-          ) AS is_liked,
-          EXISTS (
-            SELECT 1 FROM followers
-            WHERE follower_id = ${req.user.id} AND creator_id = ${item.creatorId}
-          ) AS is_following
-      `);
+      const [stateResult, wpRows] = await Promise.all([
+        db.execute(sql`
+          SELECT
+            EXISTS (
+              SELECT 1 FROM purchases
+              WHERE user_id = ${req.user.id} AND content_id = ${item.id} AND status = 'active'
+            ) AS has_purchased,
+            EXISTS (
+              SELECT 1 FROM bookmarks
+              WHERE user_id = ${req.user.id} AND content_id = ${item.id}
+            ) AS is_bookmarked,
+            EXISTS (
+              SELECT 1 FROM likes
+              WHERE user_id = ${req.user.id} AND content_id = ${item.id}
+            ) AS is_liked,
+            EXISTS (
+              SELECT 1 FROM followers
+              WHERE follower_id = ${req.user.id} AND creator_id = ${item.creatorId}
+            ) AS is_following
+        `),
+        db
+          .select({
+            watchedSeconds: videoWatchProgress.watchedSeconds,
+            durationSeconds: videoWatchProgress.durationSeconds,
+            lastPositionSeconds: videoWatchProgress.lastPositionSeconds,
+            progressPercent: videoWatchProgress.progressPercent,
+            completed: videoWatchProgress.completed,
+          })
+          .from(videoWatchProgress)
+          .where(
+            and(
+              eq(videoWatchProgress.userId, req.user.id),
+              eq(videoWatchProgress.contentId, item.id)
+            )
+          )
+          .limit(1),
+      ]);
       const st = (stateResult.rows?.[0] || {}) as Record<string, unknown>;
       hasPurchased = Boolean(st.has_purchased);
       isBookmarked = Boolean(st.is_bookmarked);
       isLiked = Boolean(st.is_liked);
       isFollowingCreator = Boolean(st.is_following);
+      watchProgress = wpRows[0] || null;
     }
 
     const isAuthenticated = Boolean(req.user);
@@ -660,6 +783,12 @@ router.get('/contents/:slugOrId', optionalAuth, async (req: AuthRequest, res) =>
         subjectName: row.subjectName,
         language: item.language,
         contentType: item.contentType,
+        classLevel: item.classLevel,
+        chapter: item.chapter,
+        topic: item.topic,
+        chapterOrder: item.chapterOrder,
+        durationSeconds: item.durationSeconds,
+        studyLabel: item.studyLabel,
         priceInr: item.priceInr,
         isFree: item.isFree,
         status: item.status,
@@ -696,6 +825,7 @@ router.get('/contents/:slugOrId', optionalAuth, async (req: AuthRequest, res) =>
         isBookmarked,
         isLiked,
         isFollowingCreator,
+        watchProgress,
       },
     });
   } catch (error) {
@@ -772,6 +902,31 @@ router.get('/files/:fileId', optionalAuth, async (req: AuthRequest, res) => {
       });
     }
 
+    const isDownload = req.query.download === '1';
+    const shouldTrackDownload =
+      isDownload &&
+      !isCoverFile &&
+      content.status === 'approved' &&
+      !content.deletedAt &&
+      !isOwner;
+
+    const trackDownload = () => {
+      if (!shouldTrackDownload) return;
+      Promise.all([
+        db.insert(contentDownloads).values({
+          contentId: content.id,
+          fileId: file.id,
+          userId: req.user?.id ?? null,
+        }),
+        db
+          .update(contents)
+          .set({ downloadsCount: sql`${contents.downloadsCount} + 1` })
+          .where(eq(contents.id, content.id)),
+      ]).catch((err) => {
+        console.warn('Download metric update skipped:', (err as Error).message);
+      });
+    };
+
     // Direct object storage redirect (S3 / R2 / GCS) with short-lived presigned GET URL
     if (file.storageProvider === 's3' && file.storageKey) {
       const signed = createPresignedObjectUrl({
@@ -780,6 +935,7 @@ router.get('/files/:fileId', optionalAuth, async (req: AuthRequest, res) => {
         expiresInSeconds: 600,
       });
       if (signed) {
+        trackDownload();
         res.setHeader('Cache-Control', 'private, max-age=300');
         return res.redirect(302, signed.publicUrl && (isCoverFile || content.isFree) ? signed.publicUrl : signed.url);
       }
@@ -791,7 +947,8 @@ router.get('/files/:fileId', optionalAuth, async (req: AuthRequest, res) => {
       return res.status(404).json({ error: 'Stored file asset is unavailable.' });
     }
 
-    const isDownload = req.query.download === '1';
+    trackDownload();
+
     const isOptimizableImage =
       !isDownload &&
       file.mimeType.startsWith('image/') &&
@@ -853,8 +1010,8 @@ router.get('/files/:fileId', optionalAuth, async (req: AuthRequest, res) => {
   }
 });
 
-// GET /api/catalog/creators (Authenticated members only — cached 45s)
-router.get('/creators', requireAuth, async (_req, res) => {
+// GET /api/catalog/creators (Public directory — cached 45s)
+router.get('/creators', optionalAuth, async (_req, res) => {
   try {
     const payload = await getOrCompute('catalog:creators', 45_000, async () => {
       const [rows, counts] = await Promise.all([
@@ -896,8 +1053,8 @@ router.get('/creators', requireAuth, async (_req, res) => {
   }
 });
 
-// GET /api/catalog/creators/:id (Authenticated members only — parallelized)
-router.get('/creators/:id', requireAuth, async (req: AuthRequest, res) => {
+// GET /api/catalog/creators/:id (Public creator profile — parallelized)
+router.get('/creators/:id', optionalAuth, async (req: AuthRequest, res) => {
   try {
     const creatorId = Number(req.params.id);
     if (!Number.isInteger(creatorId) || creatorId <= 0) {

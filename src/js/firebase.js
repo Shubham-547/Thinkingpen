@@ -37,7 +37,6 @@ async function ensureFirebaseLoaded() {
 
       const facebookAuthProvider = new authMod.FacebookAuthProvider();
       facebookAuthProvider.addScope('email');
-      facebookAuthProvider.setCustomParameters({ display: 'popup' });
 
       const twitterAuthProvider = new authMod.TwitterAuthProvider();
 
@@ -57,6 +56,12 @@ async function ensureFirebaseLoaded() {
 async function runPopupSignIn(providerKey) {
   const loaded = await ensureFirebaseLoaded();
   const provider = loaded[providerKey];
+  if (providerKey === 'facebookAuthProvider') {
+    const isMobile =
+      typeof window !== 'undefined' &&
+      (window.innerWidth < 768 || /Android|iPhone|iPad|iPod/i.test(navigator.userAgent || ''));
+    provider.setCustomParameters({ display: isMobile ? 'touch' : 'popup' });
+  }
   const result = await loaded.authMod.signInWithPopup(loaded.auth, provider);
   setFirebaseHint(true);
   const idToken = await result.user.getIdToken(true);

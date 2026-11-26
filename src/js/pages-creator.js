@@ -7,6 +7,7 @@ import {
   formatDateTime,
   formatInr,
   formatRelativeAge,
+  getResponsiveImageSources,
   LANGUAGES,
   loadGlobalCatalogMeta,
   notifyStore,
@@ -19,6 +20,502 @@ import {
   uploadFileResilient,
 } from './api.js';
 
+function renderOverviewSkeletonHtml() {
+  return `
+    <div class="space-y-6 animate-pulse" aria-busy="true" aria-label="Loading Creator Studio Overview">
+      <div class="h-24 rounded-2xl bg-slate-200/70 dark:bg-slate-800/70"></div>
+      <div class="grid grid-cols-2 lg:grid-cols-4 gap-3 sm:gap-4">
+        <div class="h-28 rounded-xl bg-slate-200/70 dark:bg-slate-800/70"></div>
+        <div class="h-28 rounded-xl bg-slate-200/70 dark:bg-slate-800/70"></div>
+        <div class="h-28 rounded-xl bg-slate-200/70 dark:bg-slate-800/70"></div>
+        <div class="h-28 rounded-xl bg-slate-200/70 dark:bg-slate-800/70"></div>
+      </div>
+      <div class="h-48 rounded-2xl bg-slate-200/70 dark:bg-slate-800/70"></div>
+      <div class="grid grid-cols-1 lg:grid-cols-2 gap-4">
+        <div class="h-44 rounded-2xl bg-slate-200/70 dark:bg-slate-800/70"></div>
+        <div class="h-44 rounded-2xl bg-slate-200/70 dark:bg-slate-800/70"></div>
+      </div>
+      <div class="h-56 rounded-2xl bg-slate-200/70 dark:bg-slate-800/70"></div>
+    </div>
+  `;
+}
+
+function getCreatorInitials(name) {
+  const parts = String(name || 'SP').trim().split(/\s+/).filter(Boolean);
+  if (parts.length === 0) return 'SP';
+  if (parts.length === 1) return parts[0].slice(0, 2).toUpperCase();
+  return `${parts[0][0]}${parts[parts.length - 1][0]}`.toUpperCase();
+}
+
+function renderOverviewCompactThumb(url, title) {
+  const initials = getCreatorInitials(title || 'SP');
+  if (!url) {
+    return `<div class="w-14 h-11 rounded-lg bg-gradient-to-br from-[#0F2547] to-[#2B4C80] text-white flex items-center justify-center text-xs font-semibold shrink-0">${esc(initials)}</div>`;
+  }
+  const sources = getResponsiveImageSources(url, 240);
+  const src = sources?.fallbackSrc || url;
+  return `
+    <div class="w-14 h-11 rounded-lg overflow-hidden bg-slate-100 dark:bg-slate-900 border border-slate-200/80 dark:border-slate-700/70 shrink-0 relative">
+      <img src="${esc(src)}" alt="${esc(title)}" loading="lazy" decoding="async" referrerpolicy="no-referrer" class="w-full h-full object-cover" onerror="this.style.display='none';this.nextElementSibling.style.display='flex';" />
+      <div style="display:none" class="absolute inset-0 bg-gradient-to-br from-[#0F2547] to-[#2B4C80] text-white items-center justify-center text-xs font-semibold">${esc(initials)}</div>
+    </div>
+  `;
+}
+
+function renderGrowthBadge(pct, comparisonLabel) {
+  if (pct === null || pct === undefined || Number.isNaN(Number(pct))) {
+    return '';
+  }
+  const num = Number(pct);
+  const isUp = num > 0;
+  const isDown = num < 0;
+  const tone = isUp
+    ? 'text-emerald-700 dark:text-emerald-400'
+    : isDown
+    ? 'text-red-600 dark:text-red-400'
+    : 'text-slate-500 dark:text-slate-400';
+  const arrow = isUp ? '↑' : isDown ? '↓' : '•';
+  return `<span class="inline-flex items-center gap-1 text-xs font-semibold tabular-nums ${tone}">${arrow} ${Math.abs(num).toFixed(1)}%${comparisonLabel ? ` <span class="font-normal text-slate-500 dark:text-slate-400">${esc(comparisonLabel)}</span>` : ''}</span>`;
+}
+
+function renderCreatorOverviewSectionHtml(ov, state = {}) {
+  const hdr = ov.creatorHeader || {};
+  const flt = ov.filter || {};
+  const qs = ov.quickStats || {};
+  const eo = ov.earningsOverview || {};
+  const cp = ov.contentPerformance || {};
+  const top = Array.isArray(ov.topContent) ? ov.topContent : [];
+  const act = Array.isArray(ov.recentActivity) ? ov.recentActivity : [];
+
+  const activeRange = state.range || flt.range || '30d';
+  const activeSort = state.sortBy || flt.sortBy || 'views';
+  const startDateVal = state.startDate || flt.startDate || '';
+  const endDateVal = state.endDate || flt.endDate || '';
+  const displayName = hdr.displayName || hdr.name || store.user?.name || 'Creator';
+  const initials = getCreatorInitials(displayName);
+  const commRate = Number(hdr.effectiveCommissionRate ?? 10);
+  const compLabel = flt.comparisonLabel || '';
+
+  const activityIconHtml = (category, status) => {
+    if (category === 'sale') {
+      const isRev = status === 'reversed';
+      return `<span class="w-8 h-8 rounded-full flex items-center justify-center shrink-0 ${isRev ? 'bg-red-50 text-red-600 dark:bg-red-950/50 dark:text-red-400' : 'bg-emerald-50 text-emerald-700 dark:bg-emerald-950/50 dark:text-emerald-400'}">
+        <svg class="w-4 h-4" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M3 3h2l.4 2M7 13h10l4-8H5.4M7 13L5.4 5M7 13l-2.3 2.3a1 1 0 00.7 1.7H17m0 0a2 2 0 100 4 2 2 0 000-4zm-8 2a2 2 0 100 4 2 2 0 000-4z"/></svg>
+      </span>`;
+    }
+    if (category === 'withdrawal') {
+      return `<span class="w-8 h-8 rounded-full flex items-center justify-center shrink-0 bg-amber-50 text-amber-700 dark:bg-amber-950/50 dark:text-amber-400">
+        <svg class="w-4 h-4" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M3 10h18M7 15h1m4 0h1m-7 4h12a3 3 0 003-3V8a3 3 0 00-3-3H6a3 3 0 00-3 3v8a3 3 0 003 3z"/></svg>
+      </span>`;
+    }
+    if (category === 'follower') {
+      return `<span class="w-8 h-8 rounded-full flex items-center justify-center shrink-0 bg-sky-50 text-sky-700 dark:bg-sky-950/50 dark:text-sky-400">
+        <svg class="w-4 h-4" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M18 9v3m0 0v3m0-3h3m-3 0h-3m-2-5a4 4 0 11-8 0 4 4 0 018 0zM3 20a6 6 0 0112 0v1H3v-1z"/></svg>
+      </span>`;
+    }
+    if (category === 'moderation') {
+      const ok = status === 'approved';
+      return `<span class="w-8 h-8 rounded-full flex items-center justify-center shrink-0 ${ok ? 'bg-emerald-50 text-emerald-700 dark:bg-emerald-950/50 dark:text-emerald-400' : 'bg-red-50 text-red-600 dark:bg-red-950/50 dark:text-red-400'}">
+        <svg class="w-4 h-4" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="${ok ? 'M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z' : 'M12 9v2m0 4h.01M5.07 19h13.86c1.54 0 2.5-1.67 1.73-3L13.73 4c-.77-1.33-2.69-1.33-3.46 0L3.34 16c-.77 1.33.19 3 1.73 3z'}"/></svg>
+      </span>`;
+    }
+    return `<span class="w-8 h-8 rounded-full flex items-center justify-center shrink-0 bg-indigo-50 text-indigo-700 dark:bg-indigo-950/50 dark:text-sky-400">
+      <svg class="w-4 h-4" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M12 6v6m0 0v6m0-6h6m-6 0H6"/></svg>
+    </span>`;
+  };
+
+  const quickStatCards = [
+    {
+      label: 'Total Views',
+      value: Number(qs.totalViews || 0).toLocaleString('en-IN'),
+      growthHtml:
+        qs.viewsGrowthPct !== null && qs.viewsGrowthPct !== undefined
+          ? renderGrowthBadge(qs.viewsGrowthPct, compLabel)
+          : `<span class="text-xs text-slate-500 dark:text-slate-400">All-time views</span>`,
+      iconWrap: 'bg-sky-50 text-sky-600 dark:bg-sky-950/60 dark:text-sky-400',
+      iconPath: 'M14.752 11.168l-3.197-2.132A1 1 0 0010 9.87v4.263a1 1 0 001.555.832l3.197-2.132a1 1 0 000-1.664z M21 12a9 9 0 11-18 0 9 9 0 0118 0z',
+    },
+    {
+      label: 'Total Downloads',
+      value: Number(qs.totalDownloads || 0).toLocaleString('en-IN'),
+      growthHtml:
+        qs.downloadsGrowthPct !== null && qs.downloadsGrowthPct !== undefined
+          ? renderGrowthBadge(qs.downloadsGrowthPct, compLabel)
+          : `<span class="text-xs text-slate-500 dark:text-slate-400 tabular-nums">${Number(qs.rangeDownloadsCount || 0).toLocaleString('en-IN')} in ${esc(flt.rangeLabel || 'period')}</span>`,
+      iconWrap: 'bg-indigo-50 text-indigo-600 dark:bg-indigo-950/60 dark:text-indigo-400',
+      iconPath: 'M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4',
+    },
+    {
+      label: 'Total Sales',
+      value: Number(qs.totalSales || 0).toLocaleString('en-IN'),
+      growthHtml:
+        qs.salesGrowthPct !== null && qs.salesGrowthPct !== undefined
+          ? renderGrowthBadge(qs.salesGrowthPct, compLabel)
+          : `<span class="text-xs text-slate-500 dark:text-slate-400 tabular-nums">${Number(qs.rangeSalesCount || 0).toLocaleString('en-IN')} in ${esc(flt.rangeLabel || 'period')}</span>`,
+      iconWrap: 'bg-emerald-50 text-emerald-700 dark:bg-emerald-950/60 dark:text-emerald-400',
+      iconPath: 'M3 3h2l.4 2M7 13h10l4-8H5.4M7 13L5.4 5M7 13l-2.3 2.3a1 1 0 00.7 1.7H17m0 0a2 2 0 100 4 2 2 0 000-4zm-8 2a2 2 0 100 4 2 2 0 000-4z',
+    },
+    {
+      label: 'Total Earnings',
+      value: formatInr(qs.totalEarningsInr || 0),
+      growthHtml:
+        qs.earningsGrowthPct !== null && qs.earningsGrowthPct !== undefined
+          ? renderGrowthBadge(qs.earningsGrowthPct, compLabel)
+          : `<span class="text-xs text-slate-500 dark:text-slate-400 tabular-nums">${formatInr(qs.rangeEarningsInr || 0)} in ${esc(flt.rangeLabel || 'period')}</span>`,
+      iconWrap: 'bg-blue-50 text-[#0F2547] dark:bg-sky-950/60 dark:text-sky-300',
+      iconPath: 'M3 10h18M7 15h1m4 0h1m-7 4h12a3 3 0 003-3V8a3 3 0 00-3-3H6a3 3 0 00-3 3v8a3 3 0 003 3z',
+    },
+  ];
+
+  return `
+    <div id="creator-overview-root" class="space-y-5 sm:space-y-6">
+      <!-- 1. Creator Header -->
+      <section class="bg-white dark:bg-[#111A2E] border border-slate-200 dark:border-slate-800 rounded-2xl p-4 sm:p-5">
+        <div class="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+          <div class="flex items-center gap-3.5 sm:gap-4 min-w-0">
+            <div class="relative shrink-0">
+              ${
+                hdr.avatarUrl
+                  ? `<img src="${esc(hdr.avatarUrl)}" alt="${esc(displayName)}" referrerpolicy="no-referrer" class="w-14 h-14 sm:w-16 sm:h-16 rounded-full object-cover border border-slate-200 dark:border-slate-700" onerror="this.style.display='none';this.nextElementSibling.style.display='flex';" />
+                     <div style="display:none" class="w-14 h-14 sm:w-16 sm:h-16 rounded-full bg-gradient-to-br from-[#0F2547] to-[#27467B] text-white font-semibold text-lg items-center justify-center border border-slate-200 dark:border-slate-700">${esc(initials)}</div>`
+                  : `<div class="w-14 h-14 sm:w-16 sm:h-16 rounded-full bg-gradient-to-br from-[#0F2547] to-[#27467B] text-white font-semibold text-lg flex items-center justify-center border border-slate-200 dark:border-slate-700">${esc(initials)}</div>`
+              }
+            </div>
+            <div class="min-w-0">
+              <div class="text-xs font-medium text-slate-500 dark:text-slate-400">Welcome back,</div>
+              <div class="flex items-center gap-1.5 min-w-0 mt-0.5">
+                <h1 class="font-display text-lg sm:text-2xl font-semibold text-slate-900 dark:text-white truncate">${esc(displayName)}</h1>
+                ${
+                  hdr.verified === true
+                    ? `<svg class="w-5 h-5 text-sky-500 shrink-0" viewBox="0 0 24 24" fill="currentColor" aria-label="Verified Creator" title="Verified ScholarPress Creator"><path d="M12 2l2.39 1.65 2.86-.24 1.24 2.59 2.59 1.24-.24 2.86L22 12l-1.16 2.65.24 2.86-2.59 1.24-1.24 2.59-2.86-.24L12 22l-2.39-1.65-2.86.24-1.24-2.59-2.59-1.24.24-2.86L2 12l1.16-2.65-.24-2.86 2.59-1.24 1.24-2.59 2.86.24L12 2zm-1.15 13.5l5.3-5.3-1.4-1.42-3.9 3.88-1.65-1.66-1.42 1.42 3.07 3.08z"/></svg>`
+                    : ''
+                }
+              </div>
+              <div class="flex flex-wrap items-center gap-x-2.5 gap-y-1 text-xs text-slate-500 dark:text-slate-400 mt-1">
+                <span>${esc(hdr.motto || 'Create • Share • Earn')}</span>
+                <span aria-hidden="true">·</span>
+                <span class="tabular-nums">${Number(hdr.followerCount || 0).toLocaleString('en-IN')} followers</span>
+                <span aria-hidden="true">·</span>
+                <span class="tabular-nums">Creator share <strong class="font-mono text-emerald-700 dark:text-emerald-400">${(100 - commRate).toFixed(1)}%</strong></span>
+              </div>
+            </div>
+          </div>
+
+          <div class="flex flex-wrap sm:flex-col items-start sm:items-end justify-between gap-2 shrink-0">
+            <div class="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-[#0B1120] text-xs font-medium text-slate-700 dark:text-slate-200">
+              <span class="w-2 h-2 rounded-full ${hdr.accountStatus === 'active' ? 'bg-emerald-500' : 'bg-amber-500'}"></span>
+              <span>${hdr.role === 'admin' ? 'Admin &amp; Creator' : 'Creator Account'}</span>
+            </div>
+            <div class="flex items-center gap-3 text-xs font-medium">
+              <a href="#/creator/profile" class="text-[#0F2547] dark:text-sky-400 hover:underline">Edit Profile</a>
+              <span class="text-slate-300 dark:text-slate-700">|</span>
+              <a href="#/creator-profile/${esc(hdr.id || store.user?.id)}" class="text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white">Public Page</a>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- 2. Quick Performance Statistics (4 Cards) -->
+      <section aria-label="Quick Performance Statistics" class="grid grid-cols-2 lg:grid-cols-4 gap-3 sm:gap-4">
+        ${quickStatCards
+          .map(
+            (card) => `
+          <div class="bg-white dark:bg-[#111A2E] border border-slate-200 dark:border-slate-800 rounded-2xl p-4 sm:p-5 flex items-start gap-3 sm:gap-3.5">
+            <div class="w-10 h-10 rounded-full flex items-center justify-center shrink-0 ${card.iconWrap}">
+              <svg class="w-5 h-5" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
+                <path stroke-linecap="round" stroke-linejoin="round" d="${card.iconPath}" />
+              </svg>
+            </div>
+            <div class="min-w-0 flex-1">
+              <div class="text-xs font-medium text-slate-500 dark:text-slate-400 truncate">${esc(card.label)}</div>
+              <div class="font-mono text-xl sm:text-2xl font-semibold text-slate-900 dark:text-white mt-0.5 tabular-nums truncate">${esc(card.value)}</div>
+              <div class="mt-1 truncate">${card.growthHtml}</div>
+            </div>
+          </div>
+        `
+          )
+          .join('')}
+      </section>
+
+      <!-- 3. Earnings Overview (No Charts / No Graphs — Pure Ledger Summary + Date Filter) -->
+      <section id="co-earnings-section" class="bg-white dark:bg-[#111A2E] border border-slate-200 dark:border-slate-800 rounded-2xl p-4 sm:p-6">
+        <div class="flex flex-wrap items-center justify-between gap-3 pb-4 border-b border-slate-100 dark:border-slate-800">
+          <div class="flex items-center gap-2.5">
+            <div class="w-9 h-9 rounded-lg bg-indigo-50 dark:bg-sky-950/60 text-[#0F2547] dark:text-sky-400 flex items-center justify-center shrink-0">
+              <svg class="w-4.5 h-4.5" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M12 8c-1.657 0-3 .895-3 2s1.343 2 3 2 3 .895 3 2-1.343 2-3 2m0-8c1.11 0 2.08.402 2.599 1M12 8V7m0 1v8m0 0v1m0-1c-1.11 0-2.08-.402-2.599-1M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>
+            </div>
+            <div>
+              <h2 class="font-display text-base sm:text-lg font-semibold text-slate-900 dark:text-white">Earnings Overview</h2>
+              <p class="text-[11px] text-slate-500 dark:text-slate-400">Net creator revenue after ${commRate}% platform commission</p>
+            </div>
+          </div>
+
+          <div class="flex items-center gap-2">
+            <label for="co-date-range" class="sr-only">Earnings date filter</label>
+            <select id="co-date-range" class="px-3 py-1.5 text-xs font-medium rounded-lg border border-slate-300 dark:border-slate-700 bg-slate-50 dark:bg-[#0B1120] text-slate-800 dark:text-slate-100 outline-none focus:border-[#0F2547] dark:focus:border-sky-400">
+              <option value="today" ${activeRange === 'today' ? 'selected' : ''}>Today</option>
+              <option value="7d" ${activeRange === '7d' ? 'selected' : ''}>Last 7 Days</option>
+              <option value="30d" ${activeRange === '30d' ? 'selected' : ''}>Last 30 Days</option>
+              <option value="90d" ${activeRange === '90d' ? 'selected' : ''}>Last 90 Days</option>
+              <option value="year" ${activeRange === 'year' ? 'selected' : ''}>This Year</option>
+              <option value="custom" ${activeRange === 'custom' ? 'selected' : ''}>Custom Date Range</option>
+            </select>
+            <button type="button" id="co-refresh-btn" title="Refresh overview data" aria-label="Refresh overview data" class="p-2 rounded-lg border border-slate-200 dark:border-slate-700 text-slate-600 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors">
+              <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"/></svg>
+            </button>
+          </div>
+        </div>
+
+        <div id="co-custom-date-bar" class="${activeRange === 'custom' ? 'flex' : 'hidden'} flex-wrap items-end gap-3 pt-4 pb-2">
+          <div>
+            <label for="co-start-date" class="block text-[11px] font-medium text-slate-500 dark:text-slate-400 mb-1">Start Date</label>
+            <input type="date" id="co-start-date" value="${esc(startDateVal)}" class="px-3 py-1.5 text-xs font-mono rounded-lg border border-slate-300 dark:border-slate-700 bg-slate-50 dark:bg-[#0B1120] text-slate-900 dark:text-slate-100" />
+          </div>
+          <div>
+            <label for="co-end-date" class="block text-[11px] font-medium text-slate-500 dark:text-slate-400 mb-1">End Date</label>
+            <input type="date" id="co-end-date" value="${esc(endDateVal)}" class="px-3 py-1.5 text-xs font-mono rounded-lg border border-slate-300 dark:border-slate-700 bg-slate-50 dark:bg-[#0B1120] text-slate-900 dark:text-slate-100" />
+          </div>
+          <button type="button" id="co-apply-custom-btn" class="px-4 py-1.5 text-xs font-semibold rounded-lg bg-[#0F2547] hover:bg-[#1B3B6F] dark:bg-sky-500 dark:hover:bg-sky-400 text-white dark:text-slate-950 transition-colors">Apply Range</button>
+        </div>
+
+        <div class="pt-4 pb-5 flex flex-col sm:flex-row sm:items-end justify-between gap-4 border-b border-slate-100 dark:border-slate-800">
+          <div>
+            <div class="text-xs text-slate-500 dark:text-slate-400">Net Earnings · ${esc(flt.rangeLabel || 'Last 30 Days')}</div>
+            <div class="flex flex-wrap items-baseline gap-3 mt-1">
+              <span class="font-mono text-2xl sm:text-3xl font-bold text-slate-900 dark:text-white tabular-nums">${formatInr(eo.rangeEarningsInr || 0)}</span>
+              ${renderGrowthBadge(eo.growthPct, compLabel)}
+            </div>
+            <div class="text-xs text-slate-500 dark:text-slate-400 mt-1 tabular-nums">
+              ${Number(eo.rangeSalesCount || 0).toLocaleString('en-IN')} paid sale${Number(eo.rangeSalesCount || 0) === 1 ? '' : 's'} · Gross ${formatInr(eo.rangeGrossInr || 0)} · Platform commission ${formatInr(eo.rangeCommissionInr || 0)}
+            </div>
+          </div>
+          <div class="sm:text-right">
+            <div class="text-xs text-slate-500 dark:text-slate-400">Lifetime Total Earnings</div>
+            <div class="font-mono text-lg sm:text-xl font-semibold text-slate-900 dark:text-white tabular-nums mt-0.5">${formatInr(eo.lifetimeEarningsInr || 0)}</div>
+          </div>
+        </div>
+
+        <div class="grid grid-cols-2 lg:grid-cols-4 gap-4 pt-4">
+          <div>
+            <div class="text-xs text-slate-500 dark:text-slate-400">Available Balance</div>
+            <div class="font-mono text-base sm:text-lg font-semibold text-emerald-700 dark:text-emerald-400 tabular-nums mt-0.5">${formatInr(eo.availableBalanceInr || 0)}</div>
+          </div>
+          <div>
+            <div class="text-xs text-slate-500 dark:text-slate-400">Pending Balance</div>
+            <div class="font-mono text-base sm:text-lg font-semibold text-amber-700 dark:text-amber-400 tabular-nums mt-0.5">${formatInr(eo.pendingBalanceInr || 0)}</div>
+          </div>
+          <div>
+            <div class="text-xs text-slate-500 dark:text-slate-400">Earnings This Month</div>
+            <div class="font-mono text-base sm:text-lg font-semibold text-slate-900 dark:text-white tabular-nums mt-0.5">${formatInr(eo.thisMonthEarningsInr || 0)}</div>
+          </div>
+          <div>
+            <div class="text-xs text-slate-500 dark:text-slate-400">Already Paid Out</div>
+            <div class="font-mono text-base sm:text-lg font-semibold text-slate-900 dark:text-white tabular-nums mt-0.5">${formatInr(eo.withdrawnAmountInr || 0)}</div>
+          </div>
+        </div>
+      </section>
+
+      <!-- 4 & 7. Content Performance Summary + Wallet Balance Summary -->
+      <div class="grid grid-cols-1 lg:grid-cols-12 gap-4 sm:gap-5">
+        <!-- 4. Content Performance -->
+        <section class="lg:col-span-7 bg-white dark:bg-[#111A2E] border border-slate-200 dark:border-slate-800 rounded-2xl p-4 sm:p-6 flex flex-col justify-between">
+          <div class="flex items-center justify-between gap-3 mb-4">
+            <div class="flex items-center gap-2.5">
+              <div class="w-9 h-9 rounded-lg bg-blue-50 dark:bg-sky-950/60 text-blue-600 dark:text-sky-400 flex items-center justify-center shrink-0">
+                <svg class="w-4.5 h-4.5" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M19 11H5m14 0a2 2 0 012 2v6a2 2 0 01-2 2H5a2 2 0 01-2-2v-6a2 2 0 012-2m14 0V9a2 2 0 00-2-2M5 11V9a2 2 0 012-2m0 0V5a2 2 0 012-2h6a2 2 0 012 2v2M7 7h10"/></svg>
+              </div>
+              <h2 class="font-display text-base sm:text-lg font-semibold text-slate-900 dark:text-white">Content Performance</h2>
+            </div>
+            <a href="#/creator/published" class="text-xs font-semibold text-[#0F2547] dark:text-sky-400 hover:underline whitespace-nowrap">View All →</a>
+          </div>
+
+          <div class="grid grid-cols-2 sm:grid-cols-5 gap-3 sm:gap-4 pt-1">
+            <a href="#/creator/published" class="p-3 rounded-xl bg-slate-50 dark:bg-[#0B1120] border border-slate-100 dark:border-slate-800/80 hover:border-slate-300 dark:hover:border-slate-700 transition-colors">
+              <div class="font-mono text-xl font-bold text-slate-900 dark:text-white tabular-nums">${Number(cp.totalCount || 0)}</div>
+              <div class="text-xs text-slate-500 dark:text-slate-400 mt-0.5">Total</div>
+            </a>
+            <a href="#/creator/published" class="p-3 rounded-xl bg-slate-50 dark:bg-[#0B1120] border border-slate-100 dark:border-slate-800/80 hover:border-slate-300 dark:hover:border-slate-700 transition-colors">
+              <div class="font-mono text-xl font-bold text-emerald-700 dark:text-emerald-400 tabular-nums">${Number(cp.publishedCount || 0)}</div>
+              <div class="text-xs text-slate-500 dark:text-slate-400 mt-0.5">Published</div>
+            </a>
+            <a href="#/creator/drafts" class="p-3 rounded-xl bg-slate-50 dark:bg-[#0B1120] border border-slate-100 dark:border-slate-800/80 hover:border-slate-300 dark:hover:border-slate-700 transition-colors">
+              <div class="font-mono text-xl font-bold text-slate-700 dark:text-slate-200 tabular-nums">${Number(cp.draftCount || 0)}</div>
+              <div class="text-xs text-slate-500 dark:text-slate-400 mt-0.5">Draft</div>
+            </a>
+            <a href="#/creator/pending" class="p-3 rounded-xl bg-slate-50 dark:bg-[#0B1120] border border-slate-100 dark:border-slate-800/80 hover:border-slate-300 dark:hover:border-slate-700 transition-colors">
+              <div class="font-mono text-xl font-bold text-amber-700 dark:text-amber-400 tabular-nums">${Number(cp.pendingCount || 0)}</div>
+              <div class="text-xs text-slate-500 dark:text-slate-400 mt-0.5">Pending</div>
+            </a>
+            <a href="#/creator/pending" class="col-span-2 sm:col-span-1 p-3 rounded-xl bg-slate-50 dark:bg-[#0B1120] border border-slate-100 dark:border-slate-800/80 hover:border-slate-300 dark:hover:border-slate-700 transition-colors">
+              <div class="font-mono text-xl font-bold text-red-600 dark:text-red-400 tabular-nums">${Number(cp.rejectedCount || 0)}</div>
+              <div class="text-xs text-slate-500 dark:text-slate-400 mt-0.5">Rejected</div>
+            </a>
+          </div>
+        </section>
+
+        <!-- 7. Wallet Balance Summary -->
+        <section class="lg:col-span-5 bg-white dark:bg-[#111A2E] border border-slate-200 dark:border-slate-800 rounded-2xl p-4 sm:p-6 flex flex-col justify-between gap-4">
+          <div class="flex items-start justify-between gap-3">
+            <div class="flex items-center gap-3">
+              <div class="w-10 h-10 rounded-xl bg-blue-50 dark:bg-sky-950/60 text-[#0F2547] dark:text-sky-400 flex items-center justify-center shrink-0">
+                <svg class="w-5 h-5" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M3 10h18M7 15h1m4 0h1m-7 4h12a3 3 0 003-3V8a3 3 0 00-3-3H6a3 3 0 00-3 3v8a3 3 0 003 3z"/></svg>
+              </div>
+              <div>
+                <div class="text-xs font-medium text-slate-500 dark:text-slate-400">Your Balance</div>
+                <div class="font-mono text-2xl font-bold text-slate-900 dark:text-white tabular-nums">${formatInr(eo.availableBalanceInr || 0)}</div>
+              </div>
+            </div>
+            <a href="#/creator/wallet" class="inline-flex items-center gap-1 px-3.5 py-2 text-xs font-semibold rounded-lg border border-slate-200 dark:border-slate-700 text-[#0F2547] dark:text-sky-400 hover:bg-slate-50 dark:hover:bg-slate-800 whitespace-nowrap shrink-0 transition-colors">
+              View Wallet →
+            </a>
+          </div>
+
+          <div class="grid grid-cols-2 gap-3 pt-3 border-t border-slate-100 dark:border-slate-800 text-xs">
+            <div>
+              <div class="text-slate-500 dark:text-slate-400">Pending Payouts</div>
+              <div class="font-mono font-semibold text-amber-700 dark:text-amber-400 tabular-nums mt-0.5">${formatInr(eo.pendingBalanceInr || 0)}</div>
+            </div>
+            <div>
+              <div class="text-slate-500 dark:text-slate-400">Withdrawn Total</div>
+              <div class="font-mono font-semibold text-slate-800 dark:text-slate-200 tabular-nums mt-0.5">${formatInr(eo.withdrawnAmountInr || 0)}</div>
+            </div>
+          </div>
+          <div class="text-[11px] text-slate-500 dark:text-slate-400">
+            Min withdrawal ${formatInr(eo.minWithdrawalInr || 100)} · Requests reviewed in <a href="#/creator/wallet" class="text-[#0F2547] dark:text-sky-400 hover:underline font-medium">Wallet &amp; Payouts</a>
+          </div>
+        </section>
+      </div>
+
+      <!-- 5. Top Performing Content -->
+      <section class="bg-white dark:bg-[#111A2E] border border-slate-200 dark:border-slate-800 rounded-2xl p-4 sm:p-6">
+        <div class="flex flex-wrap items-center justify-between gap-3 mb-4">
+          <div>
+            <h2 class="font-display text-base sm:text-lg font-semibold text-slate-900 dark:text-white">Top Performing Content</h2>
+            <p class="text-xs text-slate-500 dark:text-slate-400 mt-0.5">Your highest-performing active publications</p>
+          </div>
+          <div class="flex items-center gap-2 sm:gap-3">
+            <div class="inline-flex rounded-lg border border-slate-200 dark:border-slate-700 p-0.5 bg-slate-50 dark:bg-[#0B1120] text-xs">
+              <button type="button" data-sort-by="views" class="co-sort-btn px-2.5 py-1 rounded-md font-medium transition-colors ${activeSort === 'views' ? 'bg-white dark:bg-[#111A2E] text-slate-900 dark:text-white shadow-xs' : 'text-slate-500 dark:text-slate-400 hover:text-slate-800 dark:hover:text-slate-200'}">Most Viewed</button>
+              <button type="button" data-sort-by="earnings" class="co-sort-btn px-2.5 py-1 rounded-md font-medium transition-colors ${activeSort === 'sales' || activeSort === 'earnings' ? 'bg-white dark:bg-[#111A2E] text-slate-900 dark:text-white shadow-xs' : 'text-slate-500 dark:text-slate-400 hover:text-slate-800 dark:hover:text-slate-200'}">Top Earning</button>
+            </div>
+            <a href="#/creator/published" class="text-xs font-semibold text-[#0F2547] dark:text-sky-400 hover:underline whitespace-nowrap">View All →</a>
+          </div>
+        </div>
+
+        ${
+          Number(cp.totalCount || 0) === 0 || top.length === 0
+            ? `<div class="py-10 px-4 text-center rounded-xl border border-dashed border-slate-200 dark:border-slate-800 bg-slate-50/50 dark:bg-[#0B1120]/50">
+                <div class="text-sm font-semibold text-slate-900 dark:text-white">No publications created yet</div>
+                <p class="text-xs text-slate-500 dark:text-slate-400 mt-1 max-w-md mx-auto">Upload study notes, PDFs, e-books, or video lectures to track views, downloads, sales, and earnings here.</p>
+                <a href="#/creator/upload" class="inline-flex items-center gap-1.5 mt-4 px-4 py-2 text-xs font-semibold rounded-lg bg-[#0F2547] hover:bg-[#1B3B6F] dark:bg-sky-500 dark:hover:bg-sky-400 text-white dark:text-slate-950 transition-colors">
+                  Upload Your First Content
+                </a>
+              </div>`
+            : `<div class="divide-y divide-slate-100 dark:divide-slate-800">
+                ${top
+                  .map(
+                    (item) => `
+                  <div class="py-3.5 first:pt-1 last:pb-1 flex flex-col md:flex-row md:items-center justify-between gap-3">
+                    <div class="flex items-center gap-3 min-w-0">
+                      <a href="#/content/${esc(item.slug)}" class="shrink-0">${renderOverviewCompactThumb(item.coverImageUrl, item.title)}</a>
+                      <div class="min-w-0">
+                        <div class="flex items-center gap-2 min-w-0">
+                          <a href="#/content/${esc(item.slug)}" class="font-medium text-sm text-slate-900 dark:text-white hover:text-[#1B3B6F] dark:hover:text-sky-300 truncate">${esc(item.title)}</a>
+                          ${item.status !== 'approved' ? renderStatusLabel(item.status) : ''}
+                        </div>
+                        <div class="flex flex-wrap items-center gap-x-2 gap-y-0.5 text-xs text-slate-500 dark:text-slate-400 mt-0.5">
+                          <span>${esc(item.contentType)}</span>
+                          <span aria-hidden="true">·</span>
+                          <span class="font-mono font-semibold ${item.isFree ? 'text-emerald-700 dark:text-emerald-400' : 'text-slate-700 dark:text-slate-300'}">${item.isFree ? 'Free' : formatInr(item.priceInr)}</span>
+                          ${item.categoryName ? `<span aria-hidden="true">·</span><span>${esc(item.categoryName)}</span>` : ''}
+                        </div>
+                      </div>
+                    </div>
+
+                    <div class="grid grid-cols-4 gap-3 sm:gap-5 text-xs md:text-right shrink-0 pl-0 md:pl-4">
+                      <div>
+                        <div class="text-[11px] text-slate-400 dark:text-slate-500">Views</div>
+                        <div class="font-mono font-semibold text-slate-800 dark:text-slate-200 tabular-nums">${Number(item.viewsCount || 0).toLocaleString('en-IN')}</div>
+                      </div>
+                      <div>
+                        <div class="text-[11px] text-slate-400 dark:text-slate-500">Downloads</div>
+                        <div class="font-mono font-semibold text-slate-800 dark:text-slate-200 tabular-nums">${Number(item.downloadsCount || 0).toLocaleString('en-IN')}</div>
+                      </div>
+                      <div>
+                        <div class="text-[11px] text-slate-400 dark:text-slate-500">Sales</div>
+                        <div class="font-mono font-semibold text-slate-800 dark:text-slate-200 tabular-nums">${Number(item.purchasesCount || 0).toLocaleString('en-IN')}</div>
+                      </div>
+                      <div>
+                        <div class="text-[11px] text-slate-400 dark:text-slate-500">Earnings</div>
+                        <div class="font-mono font-semibold text-emerald-700 dark:text-emerald-400 tabular-nums">${formatInr(item.earningsInr || 0)}</div>
+                      </div>
+                    </div>
+                  </div>
+                `
+                  )
+                  .join('')}
+              </div>`
+        }
+      </section>
+
+      <!-- 6. Recent Activity -->
+      <section class="bg-white dark:bg-[#111A2E] border border-slate-200 dark:border-slate-800 rounded-2xl p-4 sm:p-6">
+        <div class="flex items-center justify-between gap-3 mb-4">
+          <div class="flex items-center gap-2.5">
+            <div class="w-9 h-9 rounded-lg bg-amber-50 dark:bg-amber-950/50 text-amber-600 dark:text-amber-400 flex items-center justify-center shrink-0">
+              <svg class="w-4.5 h-4.5" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M13 10V3L4 14h7v7l9-11h-7z"/></svg>
+            </div>
+            <h2 class="font-display text-base sm:text-lg font-semibold text-slate-900 dark:text-white">Recent Activity</h2>
+          </div>
+          <a href="#/creator/history" class="text-xs font-semibold text-[#0F2547] dark:text-sky-400 hover:underline whitespace-nowrap">View All →</a>
+        </div>
+
+        ${
+          act.length
+            ? `<div class="divide-y divide-slate-100 dark:divide-slate-800">
+                ${act
+                  .map(
+                    (ev) => `
+                  <a href="${esc(ev.link || '#/creator/history')}" class="py-3 first:pt-1 last:pb-1 flex items-start sm:items-center justify-between gap-3 group hover:bg-slate-50/70 dark:hover:bg-slate-900/30 -mx-2 px-2 rounded-lg transition-colors">
+                    <div class="flex items-start sm:items-center gap-3 min-w-0">
+                      ${activityIconHtml(ev.category, ev.status)}
+                      <div class="min-w-0">
+                        <div class="text-xs sm:text-sm font-medium text-slate-900 dark:text-slate-100 group-hover:text-[#1B3B6F] dark:group-hover:text-sky-300 truncate">${esc(ev.title)}</div>
+                        <div class="text-xs text-slate-500 dark:text-slate-400 truncate mt-0.5">${esc(ev.reference || '')}</div>
+                      </div>
+                    </div>
+                    <div class="text-[11px] text-slate-400 dark:text-slate-500 whitespace-nowrap shrink-0 tabular-nums" title="${esc(formatDateTime(ev.createdAt))}">
+                      ${esc(formatRelativeAge(ev.createdAt))}
+                    </div>
+                  </a>
+                `
+                  )
+                  .join('')}
+              </div>`
+            : `<p class="text-xs text-slate-500 dark:text-slate-400 py-6 text-center">No recent creator activity recorded yet.</p>`
+        }
+      </section>
+
+      <!-- 8. Quick Actions -->
+      <section aria-label="Quick Actions" class="grid grid-cols-2 lg:grid-cols-4 gap-3">
+        <a href="#/creator/upload" class="flex items-center justify-center gap-2 px-4 py-3 rounded-xl bg-[#0F2547] hover:bg-[#1B3B6F] dark:bg-sky-500 dark:hover:bg-sky-400 text-white dark:text-slate-950 text-xs sm:text-sm font-semibold transition-colors">
+          <svg class="w-4 h-4 shrink-0" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M12 4v16m8-8H4"/></svg>
+          <span>Upload New Content</span>
+        </a>
+        <a href="#/creator/published" class="flex items-center justify-center gap-2 px-4 py-3 rounded-xl bg-white dark:bg-[#111A2E] border border-slate-200 dark:border-slate-800 hover:border-slate-300 dark:hover:border-slate-700 text-slate-800 dark:text-slate-100 text-xs sm:text-sm font-semibold transition-colors">
+          <span>Manage Content</span>
+        </a>
+        <a href="#/creator/analytics" class="flex items-center justify-center gap-2 px-4 py-3 rounded-xl bg-white dark:bg-[#111A2E] border border-slate-200 dark:border-slate-800 hover:border-slate-300 dark:hover:border-slate-700 text-slate-800 dark:text-slate-100 text-xs sm:text-sm font-semibold transition-colors">
+          <span>View Analytics</span>
+        </a>
+        <a href="#/creator/earnings" class="flex items-center justify-center gap-2 px-4 py-3 rounded-xl bg-white dark:bg-[#111A2E] border border-slate-200 dark:border-slate-800 hover:border-slate-300 dark:hover:border-slate-700 text-slate-800 dark:text-slate-100 text-xs sm:text-sm font-semibold transition-colors">
+          <span>View Earnings</span>
+        </a>
+      </section>
+    </div>
+  `;
+}
+
 export async function renderCreatorDashboardPage(container, activeTab = 'overview', editId = null) {
   if (!store.user) {
     window.location.hash = '#/login';
@@ -29,19 +526,57 @@ export async function renderCreatorDashboardPage(container, activeTab = 'overvie
     return;
   }
 
-  container.innerHTML = `<div class="max-w-7xl mx-auto px-4 py-12 text-sm text-slate-500">Loading Creator Studio...</div>`;
+  container.innerHTML =
+    activeTab === 'overview'
+      ? `<div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-6 sm:py-8">${renderOverviewSkeletonHtml()}</div>`
+      : `<div class="max-w-7xl mx-auto px-4 py-12 text-sm text-slate-500">Loading Creator Studio...</div>`;
+
+  const overviewState = {
+    range: '30d',
+    startDate: '',
+    endDate: '',
+    sortBy: 'views',
+  };
+
+  const buildOverviewUrl = () => {
+    const qs = new URLSearchParams();
+    qs.set('range', overviewState.range);
+    qs.set('sortBy', overviewState.sortBy);
+    if (overviewState.range === 'custom' && overviewState.startDate && overviewState.endDate) {
+      qs.set('startDate', overviewState.startDate);
+      qs.set('endDate', overviewState.endDate);
+    }
+    return `/api/creator/overview?${qs.toString()}`;
+  };
 
   try {
-    const [data, editPayload, historyPayload] = await Promise.all([
-      apiFetch('/api/creator/dashboard'),
-      activeTab === 'upload' && editId ? apiFetch(`/api/creator/contents/${editId}`) : Promise.resolve(null),
-      activeTab === 'history' ? apiFetch('/api/creator/history') : Promise.resolve(null),
-      activeTab === 'upload' && (!store.categories?.length || !store.subjects?.length)
-        ? loadGlobalCatalogMeta()
-        : Promise.resolve(null),
-    ]);
+    let data = null;
+    let overviewData = null;
+    let editPayload = null;
+    let historyPayload = null;
 
-    const deletedCount = Number(data.analytics?.deletedCount || 0);
+    if (activeTab === 'overview') {
+      overviewData = await apiFetch(buildOverviewUrl(), { noCache: true });
+      overviewState.range = overviewData.filter?.range || '30d';
+      overviewState.startDate = overviewData.filter?.startDate || '';
+      overviewState.endDate = overviewData.filter?.endDate || '';
+      overviewState.sortBy = overviewData.filter?.sortBy || 'views';
+    } else {
+      [data, editPayload, historyPayload] = await Promise.all([
+        apiFetch('/api/creator/dashboard'),
+        activeTab === 'upload' && editId ? apiFetch(`/api/creator/contents/${editId}`) : Promise.resolve(null),
+        activeTab === 'history' ? apiFetch('/api/creator/history') : Promise.resolve(null),
+        activeTab === 'upload' && (!store.categories?.length || !store.subjects?.length)
+          ? loadGlobalCatalogMeta()
+          : Promise.resolve(null),
+      ]);
+    }
+
+    const deletedCount = Number(
+      activeTab === 'overview'
+        ? overviewData?.contentPerformance?.deletedCount || 0
+        : data?.analytics?.deletedCount || 0
+    );
     const tabs = [
       { id: 'overview', label: 'Overview' },
       { id: 'upload', label: editId ? 'Edit Content' : 'Upload Content' },
@@ -57,59 +592,34 @@ export async function renderCreatorDashboardPage(container, activeTab = 'overvie
       { id: 'profile', label: 'Creator Profile' },
     ];
 
-    const wallet = data.wallet || {
-      totalEarningsInr: '0.00',
-      pendingEarningsInr: '0.00',
-      availableBalanceInr: '0.00',
-      withdrawnAmountInr: '0.00',
-    };
-    const commRate = Number(data.effectiveCommissionRate || 10);
+    const wallet =
+      activeTab === 'overview'
+        ? {
+            totalEarningsInr: String(overviewData?.earningsOverview?.lifetimeEarningsInr ?? '0.00'),
+            pendingEarningsInr: String(overviewData?.earningsOverview?.pendingBalanceInr ?? '0.00'),
+            availableBalanceInr: String(overviewData?.earningsOverview?.availableBalanceInr ?? '0.00'),
+            withdrawnAmountInr: String(overviewData?.earningsOverview?.withdrawnAmountInr ?? '0.00'),
+          }
+        : data?.wallet || {
+            totalEarningsInr: '0.00',
+            pendingEarningsInr: '0.00',
+            availableBalanceInr: '0.00',
+            withdrawnAmountInr: '0.00',
+          };
+    const commRate = Number(
+      activeTab === 'overview'
+        ? overviewData?.creatorHeader?.effectiveCommissionRate ?? 10
+        : data?.effectiveCommissionRate ?? 10
+    );
+    const sidebarName =
+      activeTab === 'overview'
+        ? overviewData?.creatorHeader?.displayName || store.user.name
+        : data?.profile?.displayName || store.user.name;
 
     let bodyHtml = '';
 
     if (activeTab === 'overview') {
-      bodyHtml = `
-        <div class="space-y-8">
-          <div class="flex flex-wrap items-center justify-between gap-4">
-            <div>
-              <h1 class="font-display text-2xl sm:text-3xl font-semibold text-slate-900 dark:text-white">Creator Studio</h1>
-              <p class="text-xs text-slate-500 dark:text-slate-400 mt-1">
-                Active platform commission rate: <strong class="font-mono text-slate-900 dark:text-white">${commRate}%</strong> · You earn <strong class="font-mono text-emerald-700 dark:text-emerald-400">${(100 - commRate).toFixed(1)}%</strong> per paid sale.
-              </p>
-            </div>
-            <a href="#/creator/upload" class="px-4 py-2.5 text-xs font-semibold rounded-lg bg-[#0F2547] hover:bg-[#1B3B6F] dark:bg-sky-500 text-white dark:text-slate-950 whitespace-nowrap shrink-0">
-              + Publish New Content
-            </a>
-          </div>
-
-          <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
-            <div class="p-5 rounded-xl bg-white dark:bg-[#111A2E] border border-slate-200 dark:border-slate-800">
-              <div class="text-xs text-slate-500 dark:text-slate-400">Available Balance</div>
-              <div class="font-mono text-2xl font-semibold text-emerald-700 dark:text-emerald-400 mt-1 tabular-nums">${formatInr(wallet.availableBalanceInr)}</div>
-            </div>
-            <div class="p-5 rounded-xl bg-white dark:bg-[#111A2E] border border-slate-200 dark:border-slate-800">
-              <div class="text-xs text-slate-500 dark:text-slate-400">Total Lifetime Earnings</div>
-              <div class="font-mono text-2xl font-semibold text-slate-900 dark:text-white mt-1 tabular-nums">${formatInr(wallet.totalEarningsInr)}</div>
-            </div>
-            <div class="p-5 rounded-xl bg-white dark:bg-[#111A2E] border border-slate-200 dark:border-slate-800">
-              <div class="text-xs text-slate-500 dark:text-slate-400">Published / Pending</div>
-              <div class="font-mono text-2xl font-semibold text-slate-900 dark:text-white mt-1 tabular-nums">${data.analytics.publishedCount} / ${data.analytics.pendingCount}</div>
-            </div>
-            <div class="p-5 rounded-xl bg-white dark:bg-[#111A2E] border border-slate-200 dark:border-slate-800">
-              <div class="text-xs text-slate-500 dark:text-slate-400">Total Views / Sales</div>
-              <div class="font-mono text-2xl font-semibold text-slate-900 dark:text-white mt-1 tabular-nums">${data.analytics.totalViews} / ${data.analytics.totalPurchases}</div>
-            </div>
-          </div>
-
-          <div>
-            <div class="flex items-baseline justify-between mb-4">
-              <h2 class="font-display text-xl font-semibold text-slate-900 dark:text-white">Your Recent Works</h2>
-              <a href="#/creator/published" class="text-xs font-semibold text-[#0F2547] dark:text-sky-400 hover:underline">Manage all →</a>
-            </div>
-            ${renderCreatorContentTable(data.contents.slice(0, 6))}
-          </div>
-        </div>
-      `;
+      bodyHtml = renderCreatorOverviewSectionHtml(overviewData, overviewState);
     } else if (activeTab === 'upload') {
       bodyHtml = renderContentEditorHtml(editPayload, commRate);
     } else if (activeTab === 'published') {
@@ -426,7 +936,7 @@ export async function renderCreatorDashboardPage(container, activeTab = 'overvie
             <div class="bg-white dark:bg-[#111A2E] border border-slate-200 dark:border-slate-800 rounded-xl p-3 sm:p-4">
               <div class="flex items-center justify-between gap-3 px-2 sm:px-3 pb-2.5 mb-2.5 border-b border-slate-100 dark:border-slate-800">
                 <div class="min-w-0">
-                  <div class="font-semibold text-sm text-slate-900 dark:text-white truncate">${esc(data.profile?.displayName || store.user.name)}</div>
+                  <div class="font-semibold text-sm text-slate-900 dark:text-white truncate">${esc(sidebarName)}</div>
                   <div class="text-xs text-emerald-700 dark:text-emerald-400 font-mono tabular-nums">${formatInr(wallet.availableBalanceInr)} available</div>
                 </div>
                 <div class="flex lg:hidden items-center gap-2.5 shrink-0">
@@ -453,10 +963,84 @@ export async function renderCreatorDashboardPage(container, activeTab = 'overvie
               </div>
             </div>
           </aside>
-          <div class="flex-1 min-w-0">${bodyHtml}</div>
+          <div id="creator-tab-body" class="flex-1 min-w-0">${bodyHtml}</div>
         </div>
       </div>
     `;
+
+    // Wire Overview interactive date filters, sort toggle, and live refresh without reloading sidebar shell
+    if (activeTab === 'overview') {
+      const reloadOverview = async () => {
+        const bodyEl = document.getElementById('creator-tab-body');
+        if (!bodyEl) return;
+        bodyEl.style.opacity = '0.6';
+        try {
+          const fresh = await apiFetch(buildOverviewUrl(), { noCache: true });
+          overviewState.range = fresh.filter?.range || overviewState.range;
+          overviewState.startDate = fresh.filter?.startDate || overviewState.startDate;
+          overviewState.endDate = fresh.filter?.endDate || overviewState.endDate;
+          overviewState.sortBy = fresh.filter?.sortBy || overviewState.sortBy;
+          bodyEl.innerHTML = renderCreatorOverviewSectionHtml(fresh, overviewState);
+          bodyEl.style.opacity = '1';
+          bindOverviewEvents();
+        } catch (err) {
+          bodyEl.style.opacity = '1';
+          showToast(err.message || 'Unable to refresh creator overview.', 'error');
+        }
+      };
+
+      const bindOverviewEvents = () => {
+        const rangeSelect = document.getElementById('co-date-range');
+        const customBar = document.getElementById('co-custom-date-bar');
+        const startInput = document.getElementById('co-start-date');
+        const endInput = document.getElementById('co-end-date');
+
+        rangeSelect?.addEventListener('change', () => {
+          const val = rangeSelect.value;
+          overviewState.range = val;
+          if (val === 'custom') {
+            customBar?.classList.remove('hidden');
+            customBar?.classList.add('flex');
+            return;
+          }
+          customBar?.classList.add('hidden');
+          customBar?.classList.remove('flex');
+          reloadOverview();
+        });
+
+        document.getElementById('co-apply-custom-btn')?.addEventListener('click', () => {
+          const s = startInput?.value || '';
+          const e = endInput?.value || '';
+          if (!s || !e) {
+            showToast('Please select both start and end dates.', 'error');
+            return;
+          }
+          if (s > e) {
+            showToast('Start date cannot be later than end date.', 'error');
+            return;
+          }
+          overviewState.range = 'custom';
+          overviewState.startDate = s;
+          overviewState.endDate = e;
+          reloadOverview();
+        });
+
+        document.getElementById('co-refresh-btn')?.addEventListener('click', () => {
+          reloadOverview();
+        });
+
+        document.querySelectorAll('.co-sort-btn').forEach((btn) => {
+          btn.addEventListener('click', () => {
+            const nextSort = btn.dataset.sortBy === 'earnings' ? 'earnings' : 'views';
+            if (overviewState.sortBy === nextSort) return;
+            overviewState.sortBy = nextSort;
+            reloadOverview();
+          });
+        });
+      };
+
+      bindOverviewEvents();
+    }
 
     // Wire table actions (Soft-Delete to 15-Day History & Recovery Bin)
     container.querySelectorAll('.creator-delete-btn').forEach((btn) => {
@@ -541,7 +1125,22 @@ export async function renderCreatorDashboardPage(container, activeTab = 'overvie
       }
     });
   } catch (err) {
-    container.innerHTML = `<div class="max-w-3xl mx-auto p-12 text-red-600">${esc(err.message)}</div>`;
+    container.innerHTML = `
+      <div class="max-w-2xl mx-auto px-4 py-12">
+        <div class="bg-white dark:bg-[#111A2E] border border-red-200 dark:border-red-900/60 rounded-2xl p-6 text-center space-y-3">
+          <div class="text-sm font-semibold text-red-700 dark:text-red-400">Unable to load Creator Studio</div>
+          <p class="text-xs text-slate-600 dark:text-slate-400">${esc(err?.message || 'A temporary connection error occurred while loading your creator data.')}</p>
+          <div class="pt-1">
+            <button type="button" id="creator-retry-load" class="px-4 py-2 text-xs font-semibold rounded-lg bg-[#0F2547] hover:bg-[#1B3B6F] dark:bg-sky-500 dark:hover:bg-sky-400 text-white dark:text-slate-950 transition-colors">
+              Try Again
+            </button>
+          </div>
+        </div>
+      </div>
+    `;
+    document.getElementById('creator-retry-load')?.addEventListener('click', () => {
+      renderCreatorDashboardPage(container, activeTab, editId);
+    });
   }
 }
 
@@ -717,6 +1316,40 @@ function renderContentEditorHtml(editPayload, commRate) {
                 placeholder="Write custom subject name (optional)..."
                 class="w-full px-3 py-2 text-xs rounded-lg border border-indigo-200 dark:border-slate-700 bg-white dark:bg-[#0B1120]"
               />
+            </div>
+          </div>
+          <div class="md:col-span-2 grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4 pt-2 border-t border-slate-100 dark:border-slate-800">
+            <div>
+              <label for="ed-class-level" class="block text-xs font-semibold text-slate-600 dark:text-slate-300 mb-1">Class / Academic Level (optional)</label>
+              <input name="classLevel" id="ed-class-level" maxlength="60" value="${esc(item?.classLevel || '')}" placeholder="e.g. Class 10, Class 12, JEE, BSc" class="w-full px-3.5 py-2 text-sm rounded-lg border border-slate-300 dark:border-slate-700 bg-slate-50 dark:bg-[#0B1120]" />
+            </div>
+            <div>
+              <label for="ed-study-label" class="block text-xs font-semibold text-slate-600 dark:text-slate-300 mb-1">Educational Label (optional)</label>
+              <select name="studyLabel" id="ed-study-label" class="w-full px-3 py-2 text-sm rounded-lg border border-slate-300 dark:border-slate-700 bg-slate-50 dark:bg-[#0B1120]">
+                <option value="">General / Unspecified</option>
+                ${['Lecture', 'Exercise Solution', 'Chapter Summary', 'Revision', 'Practice', 'Previous Year Questions']
+                  .map(
+                    (lbl) =>
+                      `<option value="${esc(lbl)}" ${item?.studyLabel === lbl ? 'selected' : ''}>${esc(lbl)}</option>`
+                  )
+                  .join('')}
+              </select>
+            </div>
+            <div>
+              <label for="ed-duration-mins" class="block text-xs font-semibold text-slate-600 dark:text-slate-300 mb-1">Duration (Minutes, optional)</label>
+              <input type="number" name="durationMinutes" id="ed-duration-mins" min="1" max="1440" value="${item?.durationSeconds ? Math.max(1, Math.round(Number(item.durationSeconds) / 60)) : ''}" placeholder="e.g. 25" class="w-full px-3.5 py-2 text-sm font-mono rounded-lg border border-slate-300 dark:border-slate-700 bg-slate-50 dark:bg-[#0B1120]" />
+            </div>
+            <div>
+              <label for="ed-chapter" class="block text-xs font-semibold text-slate-600 dark:text-slate-300 mb-1">Chapter Name (optional)</label>
+              <input name="chapter" id="ed-chapter" maxlength="120" value="${esc(item?.chapter || '')}" placeholder="e.g. Chapter 2: Quadratic Equations" class="w-full px-3.5 py-2 text-sm rounded-lg border border-slate-300 dark:border-slate-700 bg-slate-50 dark:bg-[#0B1120]" />
+            </div>
+            <div>
+              <label for="ed-chapter-order" class="block text-xs font-semibold text-slate-600 dark:text-slate-300 mb-1">Chapter Sequence No. (optional)</label>
+              <input type="number" name="chapterOrder" id="ed-chapter-order" min="1" max="200" value="${item?.chapterOrder ?? ''}" placeholder="e.g. 2" class="w-full px-3.5 py-2 text-sm font-mono rounded-lg border border-slate-300 dark:border-slate-700 bg-slate-50 dark:bg-[#0B1120]" />
+            </div>
+            <div>
+              <label for="ed-topic" class="block text-xs font-semibold text-slate-600 dark:text-slate-300 mb-1">Key Topic (optional)</label>
+              <input name="topic" id="ed-topic" maxlength="120" value="${esc(item?.topic || '')}" placeholder="e.g. Factorization, Newton's Laws" class="w-full px-3.5 py-2 text-sm rounded-lg border border-slate-300 dark:border-slate-700 bg-slate-50 dark:bg-[#0B1120]" />
             </div>
           </div>
           <div class="md:col-span-2">
@@ -1765,6 +2398,20 @@ function wireContentEditor(container, editPayload, commRate) {
       subjectId: document.getElementById('ed-subject')?.value || null,
       language: document.getElementById('ed-language')?.value || 'English',
       contentType: document.getElementById('ed-type')?.value || 'Notes',
+      classLevel: document.getElementById('ed-class-level')?.value.trim() || null,
+      studyLabel: document.getElementById('ed-study-label')?.value.trim() || null,
+      chapter: document.getElementById('ed-chapter')?.value.trim() || null,
+      chapterOrder: (() => {
+        const raw = document.getElementById('ed-chapter-order')?.value.trim();
+        const n = Number(raw);
+        return raw && Number.isInteger(n) && n > 0 ? n : null;
+      })(),
+      topic: document.getElementById('ed-topic')?.value.trim() || null,
+      durationSeconds: (() => {
+        const raw = document.getElementById('ed-duration-mins')?.value.trim();
+        const m = Number(raw);
+        return raw && Number.isFinite(m) && m > 0 ? Math.round(m * 60) : null;
+      })(),
       isFree,
       priceInr: isFree ? 0 : Number(document.getElementById('ed-price')?.value || 0),
       tags: [

@@ -17,36 +17,96 @@ import {
   signOutFirebase,
   subscribeFirebaseAuth,
 } from './js/firebase.js';
+import { attachSmartSearch } from './js/smart-search.js';
 import { notifyRouteChange, startActivityTracker } from './js/tracker.js';
 
 // Route-level dynamic code splitting caches (loads Admin, Creator Studio, Reader, Auth chunks strictly on demand)
 let loadedPublicMod = null;
 let loadedReaderMod = null;
+let loadedAuthMod = null;
 const loadPublicPages = () =>
   loadedPublicMod ? Promise.resolve(loadedPublicMod) : import('./js/pages-public.js').then((m) => (loadedPublicMod = m));
 const loadReaderPages = () =>
   loadedReaderMod ? Promise.resolve(loadedReaderMod) : import('./js/pages-reader.js').then((m) => (loadedReaderMod = m));
-const loadAuthUserPages = () => import('./js/pages-auth-user.js');
+const loadAuthUserPages = () =>
+  loadedAuthMod ? Promise.resolve(loadedAuthMod) : import('./js/pages-auth-user.js').then((m) => (loadedAuthMod = m));
 const loadCreatorPages = () => import('./js/pages-creator.js');
 const loadAdminPages = () => import('./js/pages-admin.js');
 
 const routeScrollPositions = new Map();
 let lastHashKey = window.location.hash || '#/';
+let activePasswordResetToken = '';
+
+function captureAndScrubPasswordResetToken() {
+  const pathName = window.location.pathname;
+  const hashRaw = window.location.hash || '';
+  const searchQs = new URLSearchParams(window.location.search || '');
+  const hashQueryIdx = hashRaw.indexOf('?');
+  const hashQs =
+    hashQueryIdx !== -1 ? new URLSearchParams(hashRaw.slice(hashQueryIdx + 1)) : new URLSearchParams();
+
+  const token = (searchQs.get('token') || hashQs.get('token') || '').trim();
+  const isResetPath =
+    pathName === '/reset-password' ||
+    pathName === '/reset-password/' ||
+    hashRaw.startsWith('#/reset-password');
+
+  if (token && isResetPath) {
+    activePasswordResetToken = token;
+    try {
+      window.history.replaceState(null, '', '/#/reset-password');
+    } catch {}
+  } else if ((pathName === '/reset-password' || pathName === '/reset-password/') && !hashRaw) {
+    try {
+      window.history.replaceState(null, '', '/#/reset-password');
+    } catch {}
+  }
+}
+
+function applyReferrerPolicyForRoute(path) {
+  let meta = document.querySelector('meta[name="referrer"]');
+  if (!meta) {
+    meta = document.createElement('meta');
+    meta.setAttribute('name', 'referrer');
+    document.head.appendChild(meta);
+  }
+  meta.setAttribute(
+    'content',
+    path === '/reset-password' ? 'no-referrer' : 'strict-origin-when-cross-origin'
+  );
+}
 
 function getRoutePath() {
+  if (
+    (window.location.pathname === '/reset-password' ||
+      window.location.pathname === '/reset-password/') &&
+    !window.location.hash
+  ) {
+    return '/reset-password';
+  }
   const raw = window.location.hash.replace(/^#/, '') || '/';
   const [pathPart] = raw.split('?');
   return pathPart || '/';
 }
 
-// Strict access policy: ONLY Home, Content Summary Detail, Auth, and Legal pages are accessible without login.
-// All Explore, Search, Upload, Categories, Creators, Dashboard, and Admin pages require verified authentication.
+// Public discovery & content summary policy: Home, Search/Explore, Categories, Content Summary Detail, Auth, and Legal pages are open to browse.
+// Full study bodies/files/paid unlocks, Dashboard, Creator Studio, and Admin Console require verified authentication.
 function isPublicRoute(path) {
   if (path === '/' || path === '') return true;
-  if (path.startsWith('/content/')) return true;
+  if (path.startsWith('/content/') || path.startsWith('/creator-profile/')) return true;
   return [
+    '/explore',
+    '/notes',
+    '/study-materials',
+    '/pdf-library',
+    '/articles',
+    '/videos',
+    '/poems-stories',
+    '/categories',
+    '/creators',
     '/login',
     '/signup',
+    '/verify-otp',
     '/forgot-password',
     '/reset-password',
     '/verify-email',
@@ -166,6 +226,10 @@ function renderHeaderHtml() {
   const rightAction = user
     ? `
       <div class="relative flex items-center gap-1.5 sm:gap-2 shrink-0">
+        <button type="button" id="mobile-search-trigger" aria-label="Search resources"
+          class="xl:hidden w-8 h-8 sm:w-9 sm:h-9 rounded-full bg-white/90 dark:bg-slate-800 border border-indigo-100 dark:border-slate-700 text-[#0f0f4d] dark:text-slate-200 flex items-center justify-center shrink-0">
+          <svg class="w-4 h-4" fill="none" stroke="currentColor" stroke-width="2.2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M21 21l-4.35-4.35m1.85-5.15a7 7 0 11-14 0 7 7 0 0114 0z"/></svg>
+        </button>
         <button type="button" id="theme-toggle-btn" aria-label="Toggle light and dark theme" title="${isDark ? 'Switch to light mode' : 'Switch to dark mode'}"
           class="p-2 rounded-full text-slate-600 dark:text-slate-300 hover:bg-indigo-50 dark:hover:bg-slate-800 transition-colors shrink-0">
           ${themeIcon}
@@ -200,7 +264,7 @@ function renderHeaderHtml() {
     : `
       <div class="flex items-center gap-1.5 sm:gap-2 shrink-0">
         <button type="button" id="mobile-search-trigger" aria-label="Search resources"
-          class="lg:hidden w-8 h-8 sm:w-9 sm:h-9 rounded-full bg-white/90 dark:bg-slate-800 border border-indigo-100 dark:border-slate-700 text-[#0f0f4d] dark:text-slate-200 flex items-center justify-center shrink-0">
+          class="xl:hidden w-8 h-8 sm:w-9 sm:h-9 rounded-full bg-white/90 dark:bg-slate-800 border border-indigo-100 dark:border-slate-700 text-[#0f0f4d] dark:text-slate-200 flex items-center justify-center shrink-0">
           <svg class="w-4 h-4" fill="none" stroke="currentColor" stroke-width="2.2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M21 21l-4.35-4.35m1.85-5.15a7 7 0 11-14 0 7 7 0 0114 0z"/></svg>
         </button>
         <button type="button" id="theme-toggle-btn" aria-label="Toggle light and dark theme" title="${isDark ? 'Switch to light mode' : 'Switch to dark mode'}"
@@ -218,7 +282,7 @@ function renderHeaderHtml() {
     `;
 
   return `
-    <header class="sticky top-0 z-40 bg-[#eaf1ff]/95 dark:bg-[#0B1120]/95 backdrop-blur border-b border-indigo-100/90 dark:border-slate-800">
+    <header class="fixed top-0 inset-x-0 z-40 bg-[#eaf1ff]/95 dark:bg-[#0B1120]/95 backdrop-blur-md border-b border-indigo-100/90 dark:border-slate-800 shadow-[0_2px_10px_rgba(15,23,42,0.04)]">
       <div class="max-w-[1440px] mx-auto px-3 sm:px-6 lg:px-8 h-14 sm:h-[68px] flex items-center justify-between gap-2 sm:gap-4">
         <!-- Left Zone: Mobile Hamburger + Brand Logo & Wordmark -->
         <div class="flex items-center gap-1.5 sm:gap-2.5 min-w-0 shrink-0">
@@ -267,7 +331,7 @@ function renderHeaderHtml() {
       </div>
 
       <!-- Mobile Navigation Drawer -->
-      <div id="mobile-nav-drawer" class="hidden lg:hidden border-t border-indigo-100 dark:border-slate-800 bg-white dark:bg-[#0B1120] px-4 py-3 space-y-1 text-sm max-h-[75vh] overflow-y-auto shadow-lg">
+      <div id="mobile-nav-drawer" class="hidden lg:hidden border-t border-indigo-100 dark:border-slate-800 bg-white dark:bg-[#0B1120] px-4 py-3 space-y-1 text-sm max-h-[calc(100vh-3.75rem)] overflow-y-auto shadow-lg">
         ${navLinks
           .map(
             (l) =>
@@ -303,6 +367,7 @@ function renderHeaderHtml() {
         }
       </div>
     </header>
+    <div id="sp-header-spacer" class="h-14 sm:h-[68px] w-full shrink-0" aria-hidden="true"></div>
   `;
 }
 
@@ -439,8 +504,16 @@ function wireHeaderEvents() {
   document.getElementById('mobile-drawer-theme-btn')?.addEventListener('click', toggleTheme);
 
   document.getElementById('mobile-search-trigger')?.addEventListener('click', () => {
+    const exploreInput = document.getElementById('ex-q');
+    const stickyBar = document.getElementById('home-sticky-search-bar');
+    const stickyInput = document.getElementById('home-sticky-search-input');
     const heroInput = document.getElementById('hero-search-input');
-    if (heroInput) {
+    if (exploreInput) {
+      exploreInput.focus();
+      window.scrollTo({ top: 0, behavior: 'smooth' });
+    } else if (stickyBar && !stickyBar.classList.contains('hidden') && stickyInput) {
+      stickyInput.focus();
+    } else if (heroInput) {
       heroInput.focus();
       heroInput.scrollIntoView({ behavior: 'smooth', block: 'center' });
     } else {
@@ -448,10 +521,18 @@ function wireHeaderEvents() {
     }
   });
 
-  document.getElementById('header-search-form')?.addEventListener('submit', (e) => {
+  const headerSearchForm = document.getElementById('header-search-form');
+  const headerSearchInput = document.getElementById('header-search-input');
+  headerSearchForm?.addEventListener('submit', (e) => {
     e.preventDefault();
-    const q = document.getElementById('header-search-input')?.value.trim() || '';
+    const q = headerSearchInput?.value.trim() || '';
     window.location.hash = q ? `#/explore?q=${encodeURIComponent(q)}` : '#/explore';
+  });
+  attachSmartSearch({
+    formEl: headerSearchForm,
+    inputEl: headerSearchInput,
+    dropdownAlign: 'right',
+    minDropdownWidthClass: 'w-[340px] sm:w-[390px]',
   });
 
   const mobileBtn = document.getElementById('mobile-nav-btn');
@@ -490,6 +571,12 @@ let routeSeq = 0;
 
 async function routeCurrentView() {
   const mySeq = ++routeSeq;
+  captureAndScrubPasswordResetToken();
+  const path = getRoutePath();
+  applyReferrerPolicyForRoute(path);
+  if (path !== '/reset-password') {
+    activePasswordResetToken = '';
+  }
   // Save previous route scroll position so navigating Back restores exact reading/feed position
   const nextHashKey = window.location.hash || '#/';
   if (lastHashKey && lastHashKey !== nextHashKey) {
@@ -503,11 +590,13 @@ async function routeCurrentView() {
   if (loadedPublicMod?.cleanupExploreObservers) {
     loadedPublicMod.cleanupExploreObservers();
   }
+  if (path !== '/verify-otp' && loadedAuthMod?.cleanupOtpVerificationTimer) {
+    loadedAuthMod.cleanupOtpVerificationTimer();
+  }
   renderHeaderAndFooter();
 
   const main = document.getElementById('page-root');
   if (!main) return;
-  const path = getRoutePath();
 
   // Strict frontend gate (backed by mandatory server-side HTTP 401 enforcement on every protected API)
   if (!isPublicRoute(path) && !store.user) {
@@ -539,6 +628,9 @@ async function routeCurrentView() {
   if (!path.startsWith('/content/')) {
     const labelMap = {
       '/': 'Home Page',
+      '/verify-otp': 'OTP Verification',
+      '/forgot-password': 'Forgot Password',
+      '/reset-password': 'Reset Password',
       '/explore': 'Explore Catalog',
       '/notes': 'Educational Notes',
       '/study-materials': 'Study Materials',
@@ -641,12 +733,21 @@ async function routeCurrentView() {
     const { renderStaticPage } = await loadPublicPages();
     if (mySeq !== routeSeq) return;
     renderStaticPage(main, path.slice(1));
-  } else if (['/login', '/signup', '/forgot-password', '/reset-password', '/verify-email'].includes(path)) {
+  } else if (path === '/verify-otp') {
+    const { renderVerifyOtpPage } = await loadAuthUserPages();
+    if (mySeq !== routeSeq) return;
+    await renderVerifyOtpPage(main);
+  } else if (path === '/reset-password') {
+    const { renderResetPasswordPage } = await loadAuthUserPages();
+    if (mySeq !== routeSeq) return;
+    await renderResetPasswordPage(main, activePasswordResetToken, () => {
+      activePasswordResetToken = '';
+    });
+  } else if (['/login', '/signup', '/forgot-password', '/verify-email'].includes(path)) {
     const modeMap = {
       '/login': 'login',
       '/signup': 'signup',
       '/forgot-password': 'forgot',
-      '/reset-password': 'reset',
       '/verify-email': 'verify',
     };
     const { renderAuthPage } = await loadAuthUserPages();
@@ -702,6 +803,7 @@ async function routeCurrentView() {
 async function bootstrap() {
   renderShell();
   loadStoredSessionToken();
+  loadGlobalCatalogMeta();
   startActivityTracker();
 
   let lastMetaUserId = null;
@@ -717,7 +819,9 @@ async function bootstrap() {
     routeCurrentView();
   });
 
+  captureAndScrubPasswordResetToken();
   const initialPath = getRoutePath();
+  applyReferrerPolicyForRoute(initialPath);
   const needsAuthBeforeRender = !isPublicRoute(initialPath);
 
   // Render Home & public routes IMMEDIATELY (0ms startup delay, zero extra network calls)

@@ -310,7 +310,12 @@ async function resolveUserFromToken(token: string, expectedFileId?: number): Pro
     const payload = verifySessionToken(token);
     if (!payload) return null;
     try {
-      return await resolveUserById(payload.userId);
+      const user = await resolveUserById(payload.userId);
+      if (!user) return null;
+      if ((payload.sv ?? 1) !== (user.sessionVersion ?? 1)) {
+        return null;
+      }
+      return user;
     } catch (error) {
       console.error('Session lookup failed:', error);
       return null;

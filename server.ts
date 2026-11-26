@@ -5,13 +5,15 @@ import compression from 'compression';
 import helmet from 'helmet';
 import rateLimit from 'express-rate-limit';
 import dotenv from 'dotenv';
-import authRoutes from './src/routes/auth.ts';
+import authRoutes, { purgeExpiredPasswordResetTokens, purgeExpiredPendingSignups } from './src/routes/auth.ts';
 import catalogRoutes, { warmHomeCache } from './src/routes/catalog.ts';
 import communityRoutes from './src/routes/community.ts';
 import creatorRoutes, { purgeExpiredDeletedContents } from './src/routes/creator.ts';
 import paymentRoutes from './src/routes/payments.ts';
 import adminRoutes from './src/routes/admin.ts';
+import { discoveryRouter, searchRouter } from './src/routes/search.ts';
 import { ensureBaselineCatalog } from './src/db/bootstrap.ts';
+import { backfillMissingEmbeddings } from './src/lib/embeddings.ts';
 import { flushPendingViews } from './src/lib/jobs.ts';
 
 dotenv.config();
@@ -122,7 +124,10 @@ async function startServer() {
   );
 
   app.use((_req, res, next) => {
-    res.setHeader('Permissions-Policy', 'camera=(), microphone=(), geolocation=(), payment=(self)');
+    res.setHeader(
+      'Permissions-Policy',
+      'camera=(), microphone=(), geolocation=(), payment=(self "https://api.razorpay.com" "https://checkout.razorpay.com")'
+    );
     next();
   });
 
@@ -151,6 +156,48 @@ async function startServer() {
     standardHeaders: true,
     legacyHeaders: false,
     message: { error: 'Too many attempts. Please wait 15 minutes and try again.' },
+  });
+
+  // Dedicated OTP endpoint rate limiters
+  const otpInitiateLimiter = rateLimit({
+    windowMs: 15 * 60 * 1000,
+    max: 12,
+    standardHeaders: true,
+    legacyHeaders: false,
+    message: { error: 'Too many signup verification requests. Please wait 15 minutes and try again.' },
+  });
+
+  const otpVerifyLimiter = rateLimit({
+    windowMs: 15 * 60 * 1000,
+    max: 25,
+    standardHeaders: true,
+    legacyHeaders: false,
+    message: { error: 'Too many OTP verification attempts. Please try again later.' },
+  });
+
+  const otpResendLimiter = rateLimit({
+    windowMs: 15 * 60 * 1000,
+    max: 10,
+    standardHeaders: true,
+    legacyHeaders: false,
+    message: { error: 'Too many OTP resend requests. Please wait before trying again.' },
+  });
+
+  // Dedicated Password Reset rate limiters (anti-abuse + anti-brute-force)
+  const passwordResetRequestLimiter = rateLimit({
+    windowMs: 15 * 60 * 1000,
+    max: 10,
+    standardHeaders: true,
+    legacyHeaders: false,
+    message: { error: 'Too many password reset requests. Please wait 15 minutes and try again.' },
+  });
+
+  const passwordResetValidateLimiter = rateLimit({
+    windowMs: 15 * 60 * 1000,
+    max: 30,
+    standardHeaders: true,
+    legacyHeaders: false,
+    message: { error: 'Too many token validation attempts. Please try again later.' },
   });
 
   // General auth session limiter
@@ -187,20 +234,41 @@ async function startServer() {
     legacyHeaders: false,
   });
 
-  app.use('/api/auth/login', strictAuthLimiter);
-  app.use('/api/auth/register', strictAuthLimiter);
-  app.use('/api/auth/forgot-password', strictAuthLimiter);
-  app.use('/api/auth/reset-password', strictAuthLimiter);
+  // Strict Referrer-Policy & no-store caching on the password reset landing route so tokens never leak via Referer
+  app.use('/reset-password', (_req, res, next) => {
+    res.setHeader('Referrer-Policy', 'no-referrer');
+    res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, private');
+    next();
+  });
+
+  app.post('/api/auth/login', strictAuthLimiter);
+  app.post('/api/auth/register', strictAuthLimiter);
+  app.post('/api/auth/signup/initiate', otpInitiateLimiter);
+  app.post('/api/auth/otp/verify', otpVerifyLimiter);
+  app.post('/api/auth/otp/resend', otpResendLimiter);
+  app.post('/api/auth/forgot-password', passwordResetRequestLimiter);
+  app.post('/api/auth/reset-password/validate', passwordResetValidateLimiter);
+  app.post('/api/auth/reset-password', strictAuthLimiter);
   app.use('/api/catalog/contact', contactLimiter);
   app.use('/api/creator/uploads', uploadLimiter);
   app.use('/api/creator/editor-image', uploadLimiter);
 
+  const searchLimiter = rateLimit({
+    windowMs: 60 * 1000,
+    max: 180,
+    standardHeaders: true,
+    legacyHeaders: false,
+    message: { error: 'Too many search requests. Please slow down briefly.' },
+  });
+
   app.use('/api/auth', authLimiter, authRoutes);
   app.use('/api/catalog', apiLimiter, catalogRoutes);
+  app.use('/api/search', searchLimiter, searchRouter);
   app.use('/api/community', apiLimiter, communityRoutes);
   app.use('/api/creator', apiLimiter, creatorRoutes);
   app.use('/api/payments', apiLimiter, paymentRoutes);
   app.use('/api/admin', apiLimiter, adminRoutes);
+  app.use('/api', apiLimiter, discoveryRouter);
 
   app.get('/api/health', (_req, res) => {
     res.setHeader('Cache-Control', 'no-store');
@@ -305,12 +373,27 @@ async function startServer() {
 
   await ensureBaselineCatalog();
   warmHomeCache().catch(() => {});
+  backfillMissingEmbeddings().catch((err) => {
+    console.warn('Initial embedding backfill warning:', err);
+  });
   purgeExpiredDeletedContents().catch((err) => {
     console.warn('Initial 15-day soft-delete purge warning:', err);
+  });
+  purgeExpiredPendingSignups().catch((err) => {
+    console.warn('Initial pending signup purge warning:', err);
+  });
+  purgeExpiredPasswordResetTokens().catch((err) => {
+    console.warn('Initial password reset token purge warning:', err);
   });
   const purgeTimer = setInterval(() => {
     purgeExpiredDeletedContents().catch((err) => {
       console.warn('Scheduled 15-day soft-delete purge warning:', err);
+    });
+    purgeExpiredPendingSignups().catch((err) => {
+      console.warn('Scheduled pending signup purge warning:', err);
+    });
+    purgeExpiredPasswordResetTokens().catch((err) => {
+      console.warn('Scheduled password reset token purge warning:', err);
     });
   }, 60 * 60 * 1000);
   purgeTimer.unref?.();

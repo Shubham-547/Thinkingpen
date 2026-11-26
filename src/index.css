@@ -25,19 +25,23 @@
   }
 
   html {
-    font-family: "Plus Jakarta Sans", system-ui, -apple-system, sans-serif;
+    font-family: "Inter", "Roboto", system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
     scroll-behavior: smooth;
     overflow-x: clip;
   }
 
   body {
+    font-family: "Inter", "Roboto", system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
     overflow-x: clip;
   }
 
   h1,
   h2,
+  h3,
+  h4,
   .font-display {
-    font-family: "Fraunces", Georgia, serif;
+    font-family: "Inter", "Roboto", system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    letter-spacing: -0.015em;
     text-wrap: balance;
   }
 
@@ -51,7 +55,8 @@
   }
 
   .font-script {
-    font-family: "Caveat", cursive;
+    font-family: "Inter", "Roboto", system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    letter-spacing: -0.01em;
   }
 
   button:not(:disabled),
@@ -66,6 +71,70 @@
 
   .dark *:focus-visible {
     outline-color: #60a5fa;
+  }
+
+  /* Keep every input, textarea, and select background completely stable on typing, copy-paste, focus, and autofill */
+  input,
+  textarea,
+  select {
+    background-clip: padding-box;
+    -webkit-tap-highlight-color: transparent;
+  }
+
+  input:-webkit-autofill,
+  input:-webkit-autofill:hover,
+  input:-webkit-autofill:focus,
+  input:-webkit-autofill:active,
+  textarea:-webkit-autofill,
+  textarea:-webkit-autofill:hover,
+  textarea:-webkit-autofill:focus,
+  textarea:-webkit-autofill:active,
+  select:-webkit-autofill,
+  select:-webkit-autofill:hover,
+  select:-webkit-autofill:focus,
+  select:-webkit-autofill:active,
+  input:autofill,
+  textarea:autofill,
+  select:autofill {
+    -webkit-text-fill-color: #0f172a !important;
+    caret-color: #0f172a;
+    background-image: none !important;
+    transition: background-color 9999999s ease-in-out 0s, background 9999999s ease-in-out 0s, color 9999999s ease-in-out 0s !important;
+    -webkit-transition: background-color 9999999s ease-in-out 0s, color 9999999s ease-in-out 0s !important;
+  }
+
+  input.bg-white:-webkit-autofill:not(:focus),
+  input.bg-white:-webkit-autofill:hover:not(:focus),
+  textarea.bg-white:-webkit-autofill:not(:focus),
+  select.bg-white:-webkit-autofill:not(:focus) {
+    -webkit-box-shadow: 0 0 0 1000px #ffffff inset;
+  }
+
+  input.bg-slate-50:-webkit-autofill:not(:focus),
+  input.bg-slate-50:-webkit-autofill:hover:not(:focus),
+  textarea.bg-slate-50:-webkit-autofill:not(:focus),
+  select.bg-slate-50:-webkit-autofill:not(:focus) {
+    -webkit-box-shadow: 0 0 0 1000px #f8fafc inset;
+  }
+
+  .dark input:not(.bg-white):-webkit-autofill,
+  .dark input:not(.bg-white):-webkit-autofill:hover,
+  .dark input:not(.bg-white):-webkit-autofill:focus,
+  .dark input:not(.bg-white):-webkit-autofill:active,
+  .dark textarea:not(.bg-white):-webkit-autofill,
+  .dark select:not(.bg-white):-webkit-autofill,
+  .dark input:not(.bg-white):autofill,
+  .dark textarea:not(.bg-white):autofill,
+  .dark select:not(.bg-white):autofill {
+    -webkit-text-fill-color: #f1f5f9 !important;
+    caret-color: #f1f5f9;
+  }
+
+  .dark input.bg-slate-50:-webkit-autofill:not(:focus),
+  .dark input.bg-slate-50:-webkit-autofill:hover:not(:focus),
+  .dark textarea.bg-slate-50:-webkit-autofill:not(:focus),
+  .dark select.bg-slate-50:-webkit-autofill:not(:focus) {
+    -webkit-box-shadow: 0 0 0 1000px #0b1120 inset;
   }
 
   /* Prevent iOS zoom on focused inputs on small touch screens */
@@ -108,13 +177,13 @@
 .reading-prose h1,
 .reading-prose h2,
 .reading-prose h3 {
-  font-family: "Fraunces", Georgia, serif;
+  font-family: "Inter", "Roboto", system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
   color: #0f172a;
-  font-weight: 600;
+  font-weight: 700;
   margin-top: 2rem;
   margin-bottom: 0.75rem;
   line-height: 1.3;
-  scroll-margin-top: 5.5rem;
+  scroll-margin-top: 6rem;
 }
 
 .dark .reading-prose h1,
@@ -231,6 +300,27 @@
 
 .dark #reading-progress-bar {
   background: #38bdf8;
+}
+
+/* Protected paid reader & lightbox deterrence */
+.sp-protected-reader,
+.sp-protected-reader * {
+  -webkit-user-select: none;
+  user-select: none;
+  -webkit-touch-callout: none;
+}
+
+.sp-protected-blur {
+  filter: blur(22px) brightness(0.35);
+  transition: filter 120ms ease;
+}
+
+@media print {
+  #rd-unlocked-content[data-paid-protected="1"],
+  #sp-image-lightbox[data-paid-protected="1"] {
+    display: none !important;
+    visibility: hidden !important;
+  }
 }
 
 @media (prefers-reduced-motion: reduce) {

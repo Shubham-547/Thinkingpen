@@ -204,20 +204,13 @@ export async function refreshCurrentUser() {
 
 export async function loadGlobalCatalogMeta() {
   try {
-    const token = await getAuthToken();
-    const tasks = [apiFetch('/api/payments/config')];
-    if (token) {
-      tasks.unshift(apiFetch('/api/catalog/categories'));
-    }
-    const results = await Promise.all(tasks);
-    if (token) {
-      const [catData, payCfg] = results;
-      store.categories = catData.categories || [];
-      store.subjects = catData.subjects || [];
-      store.paymentConfig = payCfg || store.paymentConfig;
-    } else {
-      store.paymentConfig = results[0] || store.paymentConfig;
-    }
+    const [catData, payCfg] = await Promise.all([
+      apiFetch('/api/catalog/categories'),
+      apiFetch('/api/payments/config'),
+    ]);
+    store.categories = catData.categories || [];
+    store.subjects = catData.subjects || [];
+    store.paymentConfig = payCfg || store.paymentConfig;
   } catch (err) {
     console.warn('Could not load global catalog metadata:', err);
   }
@@ -636,31 +629,63 @@ export async function uploadFileResilient({
   return res;
 }
 
+export function formatDurationShort(seconds) {
+  const s = Number(seconds || 0);
+  if (!Number.isFinite(s) || s <= 0) return '';
+  const mins = Math.max(1, Math.round(s / 60));
+  if (mins >= 60) {
+    const hrs = Math.floor(mins / 60);
+    const rem = mins % 60;
+    return rem > 0 ? `${hrs}h ${rem}m` : `${hrs}h`;
+  }
+  return `${mins} min`;
+}
+
 /**
  * Renders a clean, editorial publication card following strict zero-pill metadata rules.
  */
 export function renderContentCard(item) {
-  const priceLabel = item.isFree || Number(item.priceInr) <= 0
-    ? `<span class="font-mono text-sm font-semibold text-emerald-700 dark:text-emerald-400">Free</span>`
-    : `<span class="font-mono text-sm font-semibold text-[#0F2547] dark:text-sky-300">${formatInr(item.priceInr)}</span>`;
+  const isUnlockedForUser =
+    Boolean(item.hasPurchased) ||
+    (Array.isArray(store.user?.purchasedContentIds) &&
+      store.user.purchasedContentIds.includes(Number(item.id)));
+  const priceLabel =
+    item.isFree || Number(item.priceInr) <= 0
+      ? `<span class="font-mono text-sm font-semibold text-emerald-700 dark:text-emerald-400">Free</span>`
+      : isUnlockedForUser
+      ? `<span class="inline-flex items-center gap-1 font-mono text-xs font-semibold text-emerald-700 dark:text-emerald-400">Unlocked · Free</span>`
+      : `<span class="font-mono text-sm font-semibold text-[#0F2547] dark:text-sky-300">${formatInr(item.priceInr)}</span>`;
 
   const ratingText =
     Number(item.avgRating || 0) > 0
       ? `<span>★ ${Number(item.avgRating).toFixed(1)}</span>`
       : `<span>New</span>`;
 
+  const durationText = formatDurationShort(item.durationSeconds);
+  const progressPct = Number(item.watchProgress?.progressPercent || 0);
+  const metaParts = [
+    item.classLevel,
+    item.subjectName || item.categoryName || 'General',
+    item.contentType,
+    item.studyLabel,
+    durationText,
+  ].filter(Boolean);
+
   return `
     <article data-content-id="${esc(item.id)}" style="content-visibility:auto;contain-intrinsic-size:0 370px;" class="group bg-white dark:bg-[#111A2E] border border-slate-200 dark:border-slate-800 rounded-xl overflow-hidden flex flex-col transition-colors hover:border-slate-300 dark:hover:border-slate-700">
-      <a href="#/content/${esc(item.slug)}" class="block overflow-hidden">
+      <a href="#/content/${esc(item.slug)}" class="block relative overflow-hidden">
         ${renderCoverImage(item.coverImageUrl, item.title)}
+        ${
+          progressPct > 0
+            ? `<div class="absolute inset-x-0 bottom-0 h-1 bg-slate-900/35">
+                 <div class="h-full bg-[#5a1fd8] dark:bg-sky-400" style="width:${Math.min(100, progressPct)}%"></div>
+               </div>`
+            : ''
+        }
       </a>
       <div class="p-5 flex-1 flex flex-col">
         <div class="flex items-center flex-wrap gap-x-2 gap-y-0.5 text-xs text-slate-500 dark:text-slate-400 mb-2">
-          <span>${esc(item.categoryName || 'General')}</span>
-          <span aria-hidden="true">·</span>
-          <span>${esc(item.contentType)}</span>
-          <span aria-hidden="true">·</span>
-          <span>${esc(item.language || 'English')}</span>
+          ${metaParts.map((m) => `<span>${esc(m)}</span>`).join('<span aria-hidden="true">·</span>')}
         </div>
         <a href="#/content/${esc(item.slug)}" class="font-display text-lg font-semibold text-slate-900 dark:text-slate-100 leading-snug hover:text-[#1B3B6F] dark:hover:text-sky-300 transition-colors line-clamp-2 mb-2">
           ${esc(item.title)}
@@ -668,6 +693,13 @@ export function renderContentCard(item) {
         <p class="text-sm text-slate-600 dark:text-slate-400 line-clamp-2 mb-4 flex-1">
           ${esc(item.shortDescription)}
         </p>
+        ${
+          progressPct > 0
+            ? `<div class="text-[11px] font-medium text-[#5a1fd8] dark:text-sky-400 mb-2 tabular-nums">${
+                item.watchProgress?.completed ? 'Completed' : `Resume · ${progressPct}% watched`
+              }</div>`
+            : ''
+        }
         <div class="pt-3 border-t border-slate-100 dark:border-slate-800 flex items-center justify-between gap-3 text-xs">
           <div class="min-w-0 truncate text-slate-600 dark:text-slate-400">
             <a href="#/creator-profile/${esc(item.creatorId)}" class="hover:text-slate-900 dark:hover:text-white font-medium">${esc(item.creatorName)}</a>
@@ -767,6 +799,7 @@ export function resolveVideoEmbed(raw) {
       const startSec = parseStartSeconds(parsed.searchParams.get('start') || parsed.searchParams.get('t'));
       const embed = new URL(`https://www.youtube.com/embed/${videoId}`);
       embed.searchParams.set('rel', '0');
+      embed.searchParams.set('enablejsapi', '1');
       if (startSec > 0) embed.searchParams.set('start', String(startSec));
       return {
         embedUrl: embed.toString(),

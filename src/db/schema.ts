@@ -32,6 +32,7 @@ export const users = pgTable(
     emailVerified: boolean('email_verified').notNull().default(false),
     avatarUrl: text('avatar_url'),
     bio: text('bio'),
+    sessionVersion: integer('session_version').notNull().default(1),
     createdAt: timestamp('created_at').defaultNow().notNull(),
     updatedAt: timestamp('updated_at').defaultNow().notNull(),
   },
@@ -62,6 +63,7 @@ export const userProfiles = pgTable('user_profiles', {
   languagePreference: text('language_preference').default('English'),
   websiteUrl: text('website_url'),
   socialLinks: jsonb('social_links').$type<Record<string, string>>(),
+  personalizationEnabled: boolean('personalization_enabled').notNull().default(true),
   updatedAt: timestamp('updated_at').defaultNow().notNull(),
 });
 
@@ -140,6 +142,12 @@ export const contents = pgTable(
     subjectId: integer('subject_id').references(() => subjects.id, { onDelete: 'set null' }),
     language: text('language').notNull().default('English'),
     contentType: text('content_type').notNull(), // 'Notes' | 'PDF / Documents' | 'Articles' | 'E-books' | 'Video Lectures' | 'Online Tutorials' | 'Poems' | 'Stories' | 'Research Papers' | 'Other Educational Content'
+    classLevel: text('class_level'), // e.g. 'Class 7', 'Class 10', 'Class 12', 'BSc', 'JEE Main', 'GATE'
+    chapter: text('chapter'),
+    topic: text('topic'),
+    chapterOrder: integer('chapter_order'),
+    durationSeconds: integer('duration_seconds'),
+    studyLabel: text('study_label'), // 'Full Chapter' | 'Exercise Solution' | 'Revision' | 'Practice' | 'Previous Year Questions'
     priceInr: numeric('price_inr', { precision: 10, scale: 2 }).notNull().default('0.00'),
     isFree: boolean('is_free').notNull().default(true),
     customCommissionRate: numeric('custom_commission_rate', { precision: 5, scale: 2 }),
@@ -152,6 +160,7 @@ export const contents = pgTable(
     isFeatured: boolean('is_featured').notNull().default(false),
     ownershipConfirmed: boolean('ownership_confirmed').notNull().default(false),
     viewsCount: integer('views_count').notNull().default(0),
+    downloadsCount: integer('downloads_count').notNull().default(0),
     likesCount: integer('likes_count').notNull().default(0),
     purchasesCount: integer('purchases_count').notNull().default(0),
     avgRating: numeric('avg_rating', { precision: 3, scale: 2 }).notNull().default('0.00'),
@@ -654,6 +663,162 @@ export const creatorContentHistory = pgTable(
   (table) => [
     index('idx_creator_history_creator').on(table.creatorId),
     index('idx_creator_history_created').on(table.createdAt),
+  ]
+);
+
+// 30. Pending Signups & Email OTP Verification (Accounts are ONLY created after OTP verification)
+export const pendingSignups = pgTable(
+  'pending_signups',
+  {
+    id: serial('id').primaryKey(),
+    pendingToken: text('pending_token').notNull().unique(),
+    email: text('email').notNull(),
+    username: text('username'),
+    name: text('name').notNull(),
+    passwordHash: text('password_hash').notNull(),
+    role: text('role').notNull().default('user'),
+    profilePayload: jsonb('profile_payload').$type<Record<string, string | null>>(),
+    otpHash: text('otp_hash').notNull(),
+    otpExpiresAt: timestamp('otp_expires_at').notNull(),
+    attemptsCount: integer('attempts_count').notNull().default(0),
+    resendCount: integer('resend_count').notNull().default(0),
+    lastSentAt: timestamp('last_sent_at').defaultNow().notNull(),
+    status: text('status').notNull().default('pending'), // 'pending' | 'verified' | 'expired' | 'locked'
+    verifiedAt: timestamp('verified_at'),
+    ipAddress: text('ip_address'),
+    createdAt: timestamp('created_at').defaultNow().notNull(),
+    updatedAt: timestamp('updated_at').defaultNow().notNull(),
+  },
+  (table) => [
+    index('idx_pending_signups_email').on(table.email),
+    index('idx_pending_signups_status_expires').on(table.status, table.otpExpiresAt),
+    index('idx_pending_signups_created').on(table.createdAt),
+  ]
+);
+
+// 31. Password Reset Tokens (SHA-256 hashed, single-use, 15-minute expiry)
+export const passwordResetTokens = pgTable(
+  'password_reset_tokens',
+  {
+    id: serial('id').primaryKey(),
+    userId: integer('user_id')
+      .references(() => users.id, { onDelete: 'cascade' })
+      .notNull(),
+    tokenHash: text('token_hash').notNull().unique(),
+    expiresAt: timestamp('expires_at').notNull(),
+    usedAt: timestamp('used_at'),
+    ipAddress: text('ip_address'),
+    createdAt: timestamp('created_at').defaultNow().notNull(),
+  },
+  (table) => [
+    index('idx_password_reset_tokens_user').on(table.userId),
+    index('idx_password_reset_tokens_expires').on(table.expiresAt),
+  ]
+);
+
+// 32. Content Embeddings & Semantic Index (JSONB vector storage — zero PG extension dependency)
+export const contentEmbeddings = pgTable(
+  'content_embeddings',
+  {
+    id: serial('id').primaryKey(),
+    contentId: integer('content_id')
+      .references(() => contents.id, { onDelete: 'cascade' })
+      .notNull()
+      .unique(),
+    metadataHash: text('metadata_hash').notNull(),
+    embeddingModel: text('embedding_model').notNull().default('local-edu-v1'),
+    dimensions: integer('dimensions').notNull().default(128),
+    vectorJson: jsonb('vector_json').$type<number[]>().notNull(),
+    fallbackVectorJson: jsonb('fallback_vector_json').$type<number[]>(),
+    normalizedDoc: text('normalized_doc').notNull(),
+    extractedMeta: jsonb('extracted_meta').$type<Record<string, unknown>>(),
+    updatedAt: timestamp('updated_at').defaultNow().notNull(),
+  },
+  (table) => [index('idx_content_embeddings_model').on(table.embeddingModel)]
+);
+
+// 33. User Search History (Personalized Learning & Recent Searches, toggleable in user settings)
+export const userSearchHistory = pgTable(
+  'user_search_history',
+  {
+    id: serial('id').primaryKey(),
+    userId: integer('user_id')
+      .references(() => users.id, { onDelete: 'cascade' })
+      .notNull(),
+    query: text('query').notNull(),
+    normalizedQuery: text('normalized_query').notNull(),
+    filtersJson: jsonb('filters_json').$type<Record<string, string>>(),
+    resultsCount: integer('results_count').notNull().default(0),
+    clickedContentId: integer('clicked_content_id').references(() => contents.id, { onDelete: 'set null' }),
+    createdAt: timestamp('created_at').defaultNow().notNull(),
+  },
+  (table) => [
+    index('idx_search_history_user_created').on(table.userId, table.createdAt),
+    index('idx_search_history_norm').on(table.normalizedQuery),
+  ]
+);
+
+// 34. Video Watch Progress & Completion Tracking (Genuine >=88-90% or ended completion only)
+export const videoWatchProgress = pgTable(
+  'video_watch_progress',
+  {
+    id: serial('id').primaryKey(),
+    userId: integer('user_id')
+      .references(() => users.id, { onDelete: 'cascade' })
+      .notNull(),
+    contentId: integer('content_id')
+      .references(() => contents.id, { onDelete: 'cascade' })
+      .notNull(),
+    watchedSeconds: integer('watched_seconds').notNull().default(0),
+    durationSeconds: integer('duration_seconds').notNull().default(0),
+    lastPositionSeconds: integer('last_position_seconds').notNull().default(0),
+    progressPercent: integer('progress_percent').notNull().default(0),
+    completed: boolean('completed').notNull().default(false),
+    completedAt: timestamp('completed_at'),
+    watchCount: integer('watch_count').notNull().default(1),
+    updatedAt: timestamp('updated_at').defaultNow().notNull(),
+  },
+  (table) => [
+    uniqueIndex('uq_video_watch_user_content').on(table.userId, table.contentId),
+    index('idx_video_watch_user_updated').on(table.userId, table.updatedAt),
+  ]
+);
+
+// 35. Recommendation Impressions & Clicks (CTR Feedback Loop)
+export const recommendationEvents = pgTable(
+  'recommendation_events',
+  {
+    id: serial('id').primaryKey(),
+    userId: integer('user_id').references(() => users.id, { onDelete: 'set null' }),
+    sourceContentId: integer('source_content_id').references(() => contents.id, { onDelete: 'set null' }),
+    targetContentId: integer('target_content_id')
+      .references(() => contents.id, { onDelete: 'cascade' })
+      .notNull(),
+    section: text('section').notNull(),
+    eventType: text('event_type').notNull(), // 'impression' | 'click'
+    createdAt: timestamp('created_at').defaultNow().notNull(),
+  },
+  (table) => [
+    index('idx_rec_events_target_created').on(table.targetContentId, table.createdAt),
+    index('idx_rec_events_source').on(table.sourceContentId),
+  ]
+);
+
+// 36. Content File Downloads (Real timestamped download tracking for Creator Overview & analytics)
+export const contentDownloads = pgTable(
+  'content_downloads',
+  {
+    id: serial('id').primaryKey(),
+    contentId: integer('content_id')
+      .references(() => contents.id, { onDelete: 'cascade' })
+      .notNull(),
+    fileId: integer('file_id').references(() => contentFiles.id, { onDelete: 'set null' }),
+    userId: integer('user_id').references(() => users.id, { onDelete: 'set null' }),
+    createdAt: timestamp('created_at').defaultNow().notNull(),
+  },
+  (table) => [
+    index('idx_content_downloads_content_created').on(table.contentId, table.createdAt),
+    index('idx_content_downloads_created').on(table.createdAt),
   ]
 );
 

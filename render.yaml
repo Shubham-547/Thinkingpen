@@ -29,6 +29,8 @@ services:
         generateValue: true
       - key: ADMIN_EMAIL
         value: personal.shubham1872@gmail.com
+      - key: APP_BASE_URL
+        value: https://thinkingpen-ksf3.onrender.com
 
 databases:
   - name: scholarpress-db

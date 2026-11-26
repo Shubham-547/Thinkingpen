@@ -3,18 +3,20 @@ import path from 'node:path';
 import crypto from 'node:crypto';
 import { Router } from 'express';
 import multer from 'multer';
-import { and, count, desc, eq, isNotNull, isNull, lte } from 'drizzle-orm';
+import { and, count, desc, eq, inArray, isNotNull, isNull, lte, sql } from 'drizzle-orm';
 import { db } from '../db/index.ts';
 import {
   adminSettings,
   categories,
   commissionRecords,
+  contentDownloads,
   contentFiles,
   contents,
   contentTags,
   creatorContentHistory,
   creatorProfiles,
   creatorWallets,
+  followers,
   notifications,
   subjects,
   transactions,
@@ -22,6 +24,7 @@ import {
   withdrawals,
 } from '../db/schema.ts';
 import { invalidateCatalogCache } from '../lib/cache.ts';
+import { syncContentEmbedding } from '../lib/embeddings.ts';
 import {
   computeFileSha256,
   createPresignedObjectUrl,
@@ -242,6 +245,7 @@ router.get('/dashboard', requireAuth, requireCreator, async (req: AuthRequest, r
           rejectionReason: contents.rejectionReason,
           customCommissionRate: contents.customCommissionRate,
           viewsCount: contents.viewsCount,
+          downloadsCount: contents.downloadsCount,
           likesCount: contents.likesCount,
           purchasesCount: contents.purchasesCount,
           avgRating: contents.avgRating,
@@ -250,6 +254,12 @@ router.get('/dashboard', requireAuth, requireCreator, async (req: AuthRequest, r
           subjectId: contents.subjectId,
           categoryName: categories.name,
           subjectName: subjects.name,
+          classLevel: contents.classLevel,
+          chapter: contents.chapter,
+          topic: contents.topic,
+          chapterOrder: contents.chapterOrder,
+          durationSeconds: contents.durationSeconds,
+          studyLabel: contents.studyLabel,
           publishedAt: contents.publishedAt,
           createdAt: contents.createdAt,
           updatedAt: contents.updatedAt,
@@ -320,6 +330,7 @@ router.get('/dashboard', requireAuth, requireCreator, async (req: AuthRequest, r
       : Number(settingsMap.default_commission_rate || 10);
 
     const totalViews = myContents.reduce((sum, c) => sum + c.viewsCount, 0);
+    const totalDownloads = myContents.reduce((sum, c) => sum + Number(c.downloadsCount || 0), 0);
     const totalLikes = myContents.reduce((sum, c) => sum + c.likesCount, 0);
     const totalPurchases = myContents.reduce((sum, c) => sum + c.purchasesCount, 0);
 
@@ -330,6 +341,7 @@ router.get('/dashboard', requireAuth, requireCreator, async (req: AuthRequest, r
       effectiveCommissionRate,
       analytics: {
         totalViews,
+        totalDownloads,
         totalLikes,
         totalPurchases,
         publishedCount: myContents.filter((c) => c.status === 'approved').length,
@@ -346,6 +358,576 @@ router.get('/dashboard', requireAuth, requireCreator, async (req: AuthRequest, r
   } catch (error) {
     console.error('Creator dashboard error:', error);
     return res.status(500).json({ error: 'Unable to load creator dashboard.' });
+  }
+});
+
+// ===== OVERVIEW DATE RANGE HELPERS (Asia/Kolkata IST calendar alignment) =====
+const IST_OFFSET_MS = 330 * 60 * 1000;
+
+function formatIstYmd(date: Date): string {
+  const shifted = new Date(date.getTime() + IST_OFFSET_MS);
+  const y = shifted.getUTCFullYear();
+  const m = String(shifted.getUTCMonth() + 1).padStart(2, '0');
+  const d = String(shifted.getUTCDate()).padStart(2, '0');
+  return `${y}-${m}-${d}`;
+}
+
+function addDaysYmd(ymd: string, deltaDays: number): string {
+  const base = new Date(`${ymd}T00:00:00.000Z`);
+  base.setUTCDate(base.getUTCDate() + deltaDays);
+  return base.toISOString().slice(0, 10);
+}
+
+function parseStrictYmd(raw: unknown): string | null {
+  const s = String(raw || '').trim();
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(s)) return null;
+  const d = new Date(`${s}T00:00:00.000Z`);
+  if (Number.isNaN(d.getTime()) || d.toISOString().slice(0, 10) !== s) return null;
+  return s;
+}
+
+function istStartUtc(ymd: string): Date {
+  return new Date(`${ymd}T00:00:00.000+05:30`);
+}
+
+function istEndUtc(ymd: string): Date {
+  return new Date(`${ymd}T23:59:59.999+05:30`);
+}
+
+function computeGrowthPct(current: number, previous: number): number | null {
+  if (!Number.isFinite(previous) || previous <= 0) return null;
+  return Number((((current - previous) / previous) * 100).toFixed(1));
+}
+
+// GET /api/creator/overview (Dedicated, creator-isolated Creator Studio Overview metrics & feed)
+router.get('/overview', requireAuth, requireCreator, async (req: AuthRequest, res) => {
+  try {
+    const creatorId = req.user!.id;
+    const now = new Date();
+    const todayYmd = formatIstYmd(now);
+    const monthStartUtc = istStartUtc(`${todayYmd.slice(0, 7)}-01`);
+
+    const rawRange = String(req.query.range || '30d').trim().toLowerCase();
+    const validRanges = new Set(['today', '7d', '30d', '90d', 'year', 'custom']);
+    const rangeKey = validRanges.has(rawRange) ? rawRange : '30d';
+
+    const rawSortBy = String(req.query.sortBy || 'views').trim().toLowerCase();
+    const sortBy = rawSortBy === 'sales' || rawSortBy === 'earnings' ? rawSortBy : 'views';
+
+    let startDateYmd = addDaysYmd(todayYmd, -29);
+    let endDateYmd = todayYmd;
+    let rangeStartUtc = istStartUtc(startDateYmd);
+    let rangeEndUtc = now;
+    let prevStartUtc = new Date(rangeStartUtc.getTime() - 30 * 86_400_000);
+    let prevEndUtc = new Date(rangeStartUtc.getTime() - 1);
+    let rangeLabel = 'Last 30 Days';
+    let comparisonLabel = 'vs prior 30d';
+
+    if (rangeKey === 'today') {
+      startDateYmd = todayYmd;
+      endDateYmd = todayYmd;
+      rangeStartUtc = istStartUtc(todayYmd);
+      rangeEndUtc = now;
+      const yesterdayYmd = addDaysYmd(todayYmd, -1);
+      prevStartUtc = istStartUtc(yesterdayYmd);
+      prevEndUtc = istEndUtc(yesterdayYmd);
+      rangeLabel = 'Today';
+      comparisonLabel = 'vs yesterday';
+    } else if (rangeKey === '7d' || rangeKey === '30d' || rangeKey === '90d') {
+      const days = rangeKey === '7d' ? 7 : rangeKey === '90d' ? 90 : 30;
+      startDateYmd = addDaysYmd(todayYmd, -(days - 1));
+      endDateYmd = todayYmd;
+      rangeStartUtc = istStartUtc(startDateYmd);
+      rangeEndUtc = now;
+      prevEndUtc = new Date(rangeStartUtc.getTime() - 1);
+      prevStartUtc = new Date(rangeStartUtc.getTime() - days * 86_400_000);
+      rangeLabel = `Last ${days} Days`;
+      comparisonLabel = `vs prior ${days}d`;
+    } else if (rangeKey === 'year') {
+      startDateYmd = `${todayYmd.slice(0, 4)}-01-01`;
+      endDateYmd = todayYmd;
+      rangeStartUtc = istStartUtc(startDateYmd);
+      rangeEndUtc = now;
+      const spanMs = Math.max(86_400_000, rangeEndUtc.getTime() - rangeStartUtc.getTime());
+      prevEndUtc = new Date(rangeStartUtc.getTime() - 1);
+      prevStartUtc = new Date(rangeStartUtc.getTime() - spanMs);
+      rangeLabel = `This Year (${todayYmd.slice(0, 4)})`;
+      comparisonLabel = 'vs prior period';
+    } else if (rangeKey === 'custom') {
+      const parsedStart = parseStrictYmd(req.query.startDate);
+      const parsedEnd = parseStrictYmd(req.query.endDate);
+      if (!parsedStart || !parsedEnd) {
+        return res.status(400).json({
+          error: 'Please select valid start and end dates (YYYY-MM-DD) for custom date filtering.',
+        });
+      }
+      if (parsedStart > parsedEnd) {
+        return res.status(400).json({ error: 'Start date cannot be later than end date.' });
+      }
+      const sUtc = istStartUtc(parsedStart);
+      const eUtc = istEndUtc(parsedEnd);
+      const spanDays = Math.ceil((eUtc.getTime() - sUtc.getTime()) / 86_400_000);
+      if (spanDays > 1826) {
+        return res.status(400).json({ error: 'Custom date range cannot exceed 5 years.' });
+      }
+      startDateYmd = parsedStart;
+      endDateYmd = parsedEnd;
+      rangeStartUtc = sUtc;
+      rangeEndUtc = eUtc;
+      const spanMs = eUtc.getTime() - sUtc.getTime() + 1;
+      prevEndUtc = new Date(sUtc.getTime() - 1);
+      prevStartUtc = new Date(sUtc.getTime() - spanMs);
+      rangeLabel = parsedStart === parsedEnd ? parsedStart : `${parsedStart} to ${parsedEnd}`;
+      comparisonLabel = 'vs previous period';
+    }
+
+    const [
+      userRows,
+      profileRows,
+      walletRows,
+      settingsRows,
+      contentAggResult,
+      commissionAggResult,
+      downloadWindowResult,
+      topContentResult,
+      recentHistoryRows,
+      recentSaleRows,
+      recentWithdrawalRows,
+      recentFollowerRows,
+      recentModerationNotifs,
+    ] = await Promise.all([
+      db
+        .select({
+          id: users.id,
+          name: users.name,
+          username: users.username,
+          publicUid: users.publicUid,
+          avatarUrl: users.avatarUrl,
+          role: users.role,
+          status: users.status,
+          createdAt: users.createdAt,
+        })
+        .from(users)
+        .where(eq(users.id, creatorId))
+        .limit(1),
+      db.select().from(creatorProfiles).where(eq(creatorProfiles.userId, creatorId)).limit(1),
+      db.select().from(creatorWallets).where(eq(creatorWallets.creatorId, creatorId)).limit(1),
+      db.select().from(adminSettings),
+      db.execute(sql`
+        SELECT
+          COUNT(*) FILTER (WHERE deleted_at IS NULL)::int AS total_count,
+          COUNT(*) FILTER (WHERE deleted_at IS NULL AND status = 'approved')::int AS published_count,
+          COUNT(*) FILTER (WHERE deleted_at IS NULL AND status = 'draft')::int AS draft_count,
+          COUNT(*) FILTER (WHERE deleted_at IS NULL AND status = 'pending')::int AS pending_count,
+          COUNT(*) FILTER (WHERE deleted_at IS NULL AND status IN ('rejected', 'removed'))::int AS rejected_count,
+          COUNT(*) FILTER (WHERE deleted_at IS NOT NULL)::int AS deleted_count,
+          COALESCE(SUM(views_count) FILTER (WHERE deleted_at IS NULL), 0)::bigint AS total_views,
+          COALESCE(SUM(downloads_count) FILTER (WHERE deleted_at IS NULL), 0)::bigint AS total_downloads,
+          COALESCE(SUM(likes_count) FILTER (WHERE deleted_at IS NULL), 0)::bigint AS total_likes,
+          COALESCE(SUM(purchases_count) FILTER (WHERE deleted_at IS NULL), 0)::bigint AS total_content_sales
+        FROM contents
+        WHERE creator_id = ${creatorId}
+      `),
+      db.execute(sql`
+        SELECT
+          COALESCE(SUM(creator_earnings_inr), 0)::numeric(12,2) AS lifetime_earnings_inr,
+          COUNT(*)::int AS lifetime_sales_count,
+          COALESCE(SUM(creator_earnings_inr) FILTER (WHERE created_at >= ${monthStartUtc}), 0)::numeric(12,2) AS this_month_earnings_inr,
+          COUNT(*) FILTER (WHERE created_at >= ${monthStartUtc})::int AS this_month_sales_count,
+          COALESCE(SUM(creator_earnings_inr) FILTER (WHERE created_at >= ${rangeStartUtc} AND created_at <= ${rangeEndUtc}), 0)::numeric(12,2) AS range_earnings_inr,
+          COALESCE(SUM(gross_amount_inr) FILTER (WHERE created_at >= ${rangeStartUtc} AND created_at <= ${rangeEndUtc}), 0)::numeric(12,2) AS range_gross_inr,
+          COALESCE(SUM(platform_commission_inr) FILTER (WHERE created_at >= ${rangeStartUtc} AND created_at <= ${rangeEndUtc}), 0)::numeric(12,2) AS range_commission_inr,
+          COUNT(*) FILTER (WHERE created_at >= ${rangeStartUtc} AND created_at <= ${rangeEndUtc})::int AS range_sales_count,
+          COALESCE(SUM(creator_earnings_inr) FILTER (WHERE created_at >= ${prevStartUtc} AND created_at <= ${prevEndUtc}), 0)::numeric(12,2) AS prev_range_earnings_inr,
+          COUNT(*) FILTER (WHERE created_at >= ${prevStartUtc} AND created_at <= ${prevEndUtc})::int AS prev_range_sales_count
+        FROM commission_records
+        WHERE creator_id = ${creatorId} AND status = 'credited'
+      `),
+      db.execute(sql`
+        SELECT
+          COUNT(*) FILTER (WHERE cd.created_at >= ${rangeStartUtc} AND cd.created_at <= ${rangeEndUtc})::int AS range_downloads_count,
+          COUNT(*) FILTER (WHERE cd.created_at >= ${prevStartUtc} AND cd.created_at <= ${prevEndUtc})::int AS prev_range_downloads_count
+        FROM content_downloads cd
+        INNER JOIN contents c ON cd.content_id = c.id
+        WHERE c.creator_id = ${creatorId} AND c.deleted_at IS NULL
+      `),
+      db.execute(
+        sortBy === 'sales' || sortBy === 'earnings'
+          ? sql`
+              SELECT
+                c.id,
+                c.title,
+                c.slug,
+                c.cover_image_url AS cover_image_url,
+                c.content_type AS content_type,
+                c.status,
+                c.is_free AS is_free,
+                c.price_inr AS price_inr,
+                c.views_count AS views_count,
+                c.downloads_count AS downloads_count,
+                c.purchases_count AS purchases_count,
+                c.avg_rating AS avg_rating,
+                cat.name AS category_name,
+                COALESCE(cr.net_earnings_inr, 0)::numeric(12,2) AS net_earnings_inr
+              FROM contents c
+              LEFT JOIN categories cat ON cat.id = c.category_id
+              LEFT JOIN (
+                SELECT content_id, COALESCE(SUM(creator_earnings_inr), 0) AS net_earnings_inr
+                FROM commission_records
+                WHERE creator_id = ${creatorId} AND status = 'credited'
+                GROUP BY content_id
+              ) cr ON cr.content_id = c.id
+              WHERE c.creator_id = ${creatorId} AND c.deleted_at IS NULL
+              ORDER BY net_earnings_inr DESC, c.purchases_count DESC, c.views_count DESC, c.updated_at DESC
+              LIMIT 5
+            `
+          : sql`
+              SELECT
+                c.id,
+                c.title,
+                c.slug,
+                c.cover_image_url AS cover_image_url,
+                c.content_type AS content_type,
+                c.status,
+                c.is_free AS is_free,
+                c.price_inr AS price_inr,
+                c.views_count AS views_count,
+                c.downloads_count AS downloads_count,
+                c.purchases_count AS purchases_count,
+                c.avg_rating AS avg_rating,
+                cat.name AS category_name,
+                COALESCE(cr.net_earnings_inr, 0)::numeric(12,2) AS net_earnings_inr
+              FROM contents c
+              LEFT JOIN categories cat ON cat.id = c.category_id
+              LEFT JOIN (
+                SELECT content_id, COALESCE(SUM(creator_earnings_inr), 0) AS net_earnings_inr
+                FROM commission_records
+                WHERE creator_id = ${creatorId} AND status = 'credited'
+                GROUP BY content_id
+              ) cr ON cr.content_id = c.id
+              WHERE c.creator_id = ${creatorId} AND c.deleted_at IS NULL
+              ORDER BY c.views_count DESC, c.purchases_count DESC, net_earnings_inr DESC, c.updated_at DESC
+              LIMIT 5
+            `
+      ),
+      db
+        .select({
+          id: creatorContentHistory.id,
+          contentId: creatorContentHistory.contentId,
+          action: creatorContentHistory.action,
+          contentTitle: creatorContentHistory.contentTitle,
+          contentType: creatorContentHistory.contentType,
+          createdAt: creatorContentHistory.createdAt,
+          slug: contents.slug,
+          deletedAt: contents.deletedAt,
+        })
+        .from(creatorContentHistory)
+        .leftJoin(contents, eq(creatorContentHistory.contentId, contents.id))
+        .where(eq(creatorContentHistory.creatorId, creatorId))
+        .orderBy(desc(creatorContentHistory.createdAt))
+        .limit(8),
+      db
+        .select({
+          id: commissionRecords.id,
+          contentId: commissionRecords.contentId,
+          contentTitle: contents.title,
+          contentSlug: contents.slug,
+          grossAmountInr: commissionRecords.grossAmountInr,
+          creatorEarningsInr: commissionRecords.creatorEarningsInr,
+          status: commissionRecords.status,
+          createdAt: commissionRecords.createdAt,
+        })
+        .from(commissionRecords)
+        .innerJoin(contents, eq(commissionRecords.contentId, contents.id))
+        .where(eq(commissionRecords.creatorId, creatorId))
+        .orderBy(desc(commissionRecords.createdAt))
+        .limit(8),
+      db
+        .select({
+          id: withdrawals.id,
+          amountInr: withdrawals.amountInr,
+          payoutMethod: withdrawals.payoutMethod,
+          status: withdrawals.status,
+          payoutReference: withdrawals.payoutReference,
+          adminNote: withdrawals.adminNote,
+          reviewedAt: withdrawals.reviewedAt,
+          paidAt: withdrawals.paidAt,
+          createdAt: withdrawals.createdAt,
+        })
+        .from(withdrawals)
+        .where(eq(withdrawals.creatorId, creatorId))
+        .orderBy(desc(withdrawals.createdAt))
+        .limit(6),
+      db
+        .select({
+          id: followers.id,
+          followerName: users.name,
+          createdAt: followers.createdAt,
+        })
+        .from(followers)
+        .innerJoin(users, eq(followers.followerId, users.id))
+        .where(eq(followers.creatorId, creatorId))
+        .orderBy(desc(followers.createdAt))
+        .limit(6),
+      db
+        .select({
+          id: notifications.id,
+          type: notifications.type,
+          title: notifications.title,
+          message: notifications.message,
+          link: notifications.link,
+          createdAt: notifications.createdAt,
+        })
+        .from(notifications)
+        .where(
+          and(
+            eq(notifications.userId, creatorId),
+            inArray(notifications.type, [
+              'content_approved',
+              'content_rejected',
+              'creator_activated',
+            ])
+          )
+        )
+        .orderBy(desc(notifications.createdAt))
+        .limit(6),
+    ]);
+
+    let wallet = walletRows[0];
+    if (!wallet) {
+      [wallet] = await db
+        .insert(creatorWallets)
+        .values({ creatorId })
+        .onConflictDoNothing()
+        .returning();
+      if (!wallet) {
+        [wallet] = await db
+          .select()
+          .from(creatorWallets)
+          .where(eq(creatorWallets.creatorId, creatorId))
+          .limit(1);
+      }
+    }
+
+    const userRow = userRows[0];
+    if (!userRow) {
+      return res.status(404).json({ error: 'Creator account not found.' });
+    }
+
+    const profile = profileRows[0] || null;
+    const settingsMap: Record<string, string> = {};
+    for (const s of settingsRows) settingsMap[s.key] = s.value;
+
+    const effectiveCommissionRate = profile?.customCommissionRate
+      ? Number(profile.customCommissionRate)
+      : Number(settingsMap.default_commission_rate || 10);
+
+    const cAgg = (contentAggResult.rows?.[0] || {}) as Record<string, unknown>;
+    const fAgg = (commissionAggResult.rows?.[0] || {}) as Record<string, unknown>;
+    const dAgg = (downloadWindowResult.rows?.[0] || {}) as Record<string, unknown>;
+
+    const totalViews = Number(cAgg.total_views || 0);
+    const totalDownloads = Number(cAgg.total_downloads || 0);
+    const totalContentSales = Number(cAgg.total_content_sales || 0);
+    const lifetimeSalesCount = Math.max(Number(fAgg.lifetime_sales_count || 0), totalContentSales);
+    const lifetimeEarningsInr = Number(wallet?.totalEarningsInr || 0);
+    const availableBalanceInr = Number(wallet?.availableBalanceInr || 0);
+    const pendingBalanceInr = Number(wallet?.pendingEarningsInr || 0);
+    const withdrawnAmountInr = Number(wallet?.withdrawnAmountInr || 0);
+
+    const thisMonthEarningsInr = Number(fAgg.this_month_earnings_inr || 0);
+    const thisMonthSalesCount = Number(fAgg.this_month_sales_count || 0);
+    const rangeEarningsInr = Number(fAgg.range_earnings_inr || 0);
+    const rangeGrossInr = Number(fAgg.range_gross_inr || 0);
+    const rangeCommissionInr = Number(fAgg.range_commission_inr || 0);
+    const rangeSalesCount = Number(fAgg.range_sales_count || 0);
+    const prevRangeEarningsInr = Number(fAgg.prev_range_earnings_inr || 0);
+    const prevRangeSalesCount = Number(fAgg.prev_range_sales_count || 0);
+    const rangeDownloadsCount = Number(dAgg.range_downloads_count || 0);
+    const prevRangeDownloadsCount = Number(dAgg.prev_range_downloads_count || 0);
+
+    const topContent = (topContentResult.rows || []).map((r: Record<string, unknown>) => ({
+      id: Number(r.id),
+      title: String(r.title || ''),
+      slug: String(r.slug || ''),
+      coverImageUrl: (r.cover_image_url as string | null) || null,
+      contentType: String(r.content_type || 'Notes'),
+      categoryName: (r.category_name as string | null) || null,
+      status: String(r.status || 'draft'),
+      isFree: Boolean(r.is_free),
+      priceInr: Number(r.price_inr || 0),
+      viewsCount: Number(r.views_count || 0),
+      downloadsCount: Number(r.downloads_count || 0),
+      purchasesCount: Number(r.purchases_count || 0),
+      avgRating: Number(r.avg_rating || 0),
+      earningsInr: Number(r.net_earnings_inr || 0),
+    }));
+
+    type OverviewActivity = {
+      id: string;
+      category: 'content' | 'sale' | 'withdrawal' | 'follower' | 'moderation';
+      title: string;
+      reference: string;
+      status: string;
+      createdAt: string;
+      link: string;
+    };
+
+    const activities: OverviewActivity[] = [];
+
+    for (const h of recentHistoryRows) {
+      const actionLabelMap: Record<string, string> = {
+        created: 'Created content',
+        updated: 'Updated content',
+        deleted: 'Moved to Recovery Bin',
+        recovered: 'Recovered content',
+        permanently_deleted: 'Permanently deleted content',
+        auto_purged: 'Expired from Recovery Bin',
+      };
+      const label = actionLabelMap[h.action] || 'Content update';
+      const canOpenContent = Boolean(h.slug) && !h.deletedAt && h.action !== 'deleted' && h.action !== 'permanently_deleted' && h.action !== 'auto_purged';
+      activities.push({
+        id: `hist-${h.id}`,
+        category: 'content',
+        title: `${label}: ${h.contentTitle}`,
+        reference: h.contentType || 'Publication',
+        status: h.action,
+        createdAt: new Date(h.createdAt).toISOString(),
+        link: canOpenContent ? `#/content/${h.slug}` : '#/creator/history',
+      });
+    }
+
+    for (const s of recentSaleRows) {
+      const isReversed = s.status === 'reversed';
+      activities.push({
+        id: `sale-${s.id}`,
+        category: 'sale',
+        title: `${isReversed ? 'Sale refunded' : 'New sale'}: ${s.contentTitle}`,
+        reference: isReversed
+          ? `Reversed ₹${Number(s.creatorEarningsInr).toFixed(2)}`
+          : `Earned +₹${Number(s.creatorEarningsInr).toFixed(2)} (Gross ₹${Number(s.grossAmountInr).toFixed(0)})`,
+        status: s.status,
+        createdAt: new Date(s.createdAt).toISOString(),
+        link: '#/creator/earnings',
+      });
+    }
+
+    for (const w of recentWithdrawalRows) {
+      const eventDate = w.paidAt || w.reviewedAt || w.createdAt;
+      const statusTitles: Record<string, string> = {
+        pending: `Withdrawal requested: ₹${Number(w.amountInr).toFixed(2)}`,
+        approved: `Withdrawal approved: ₹${Number(w.amountInr).toFixed(2)}`,
+        paid: `Payout completed: ₹${Number(w.amountInr).toFixed(2)}`,
+        rejected: `Withdrawal declined: ₹${Number(w.amountInr).toFixed(2)}`,
+      };
+      activities.push({
+        id: `wd-${w.id}`,
+        category: 'withdrawal',
+        title: statusTitles[w.status] || `Withdrawal update: ₹${Number(w.amountInr).toFixed(2)}`,
+        reference: w.payoutReference
+          ? `Ref: ${w.payoutReference}`
+          : `${String(w.payoutMethod || 'upi').toUpperCase()} · ${w.adminNote || 'Pending review'}`,
+        status: w.status,
+        createdAt: new Date(eventDate).toISOString(),
+        link: '#/creator/withdrawals',
+      });
+    }
+
+    for (const f of recentFollowerRows) {
+      activities.push({
+        id: `fol-${f.id}`,
+        category: 'follower',
+        title: `New follower: ${f.followerName}`,
+        reference: 'Started following your publications',
+        status: 'active',
+        createdAt: new Date(f.createdAt).toISOString(),
+        link: `#/creator-profile/${creatorId}`,
+      });
+    }
+
+    for (const n of recentModerationNotifs) {
+      activities.push({
+        id: `notif-${n.id}`,
+        category: 'moderation',
+        title: n.title,
+        reference: n.message,
+        status: n.type === 'content_rejected' ? 'rejected' : 'approved',
+        createdAt: new Date(n.createdAt).toISOString(),
+        link: n.link || '#/creator/pending',
+      });
+    }
+
+    activities.sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
+
+    return res.json({
+      creatorHeader: {
+        id: userRow.id,
+        name: userRow.name,
+        displayName: profile?.displayName || userRow.name,
+        tagline: profile?.tagline || null,
+        expertise: profile?.expertise || null,
+        avatarUrl: userRow.avatarUrl || null,
+        verified: Boolean(profile?.verified),
+        accountStatus: userRow.status,
+        role: userRow.role,
+        publicUid: userRow.publicUid || null,
+        username: userRow.username || null,
+        followerCount: Number(profile?.followerCount || 0),
+        effectiveCommissionRate,
+        motto: 'Create • Share • Earn',
+      },
+      filter: {
+        range: rangeKey,
+        rangeLabel,
+        comparisonLabel,
+        startDate: startDateYmd,
+        endDate: endDateYmd,
+        sortBy,
+        timezone: 'Asia/Kolkata',
+      },
+      quickStats: {
+        totalViews,
+        viewsGrowthPct: null,
+        totalDownloads,
+        downloadsGrowthPct: computeGrowthPct(rangeDownloadsCount, prevRangeDownloadsCount),
+        rangeDownloadsCount,
+        totalSales: lifetimeSalesCount,
+        rangeSalesCount,
+        salesGrowthPct: computeGrowthPct(rangeSalesCount, prevRangeSalesCount),
+        totalEarningsInr: lifetimeEarningsInr,
+        rangeEarningsInr,
+        earningsGrowthPct: computeGrowthPct(rangeEarningsInr, prevRangeEarningsInr),
+      },
+      earningsOverview: {
+        lifetimeEarningsInr,
+        availableBalanceInr,
+        pendingBalanceInr,
+        withdrawnAmountInr,
+        thisMonthEarningsInr,
+        thisMonthSalesCount,
+        rangeEarningsInr,
+        rangeGrossInr,
+        rangeCommissionInr,
+        rangeSalesCount,
+        previousRangeEarningsInr: prevRangeEarningsInr,
+        growthPct: computeGrowthPct(rangeEarningsInr, prevRangeEarningsInr),
+        minWithdrawalInr: Number(settingsMap.min_withdrawal_inr || 100),
+      },
+      contentPerformance: {
+        totalCount: Number(cAgg.total_count || 0),
+        publishedCount: Number(cAgg.published_count || 0),
+        draftCount: Number(cAgg.draft_count || 0),
+        pendingCount: Number(cAgg.pending_count || 0),
+        rejectedCount: Number(cAgg.rejected_count || 0),
+        deletedCount: Number(cAgg.deleted_count || 0),
+        totalLikes: Number(cAgg.total_likes || 0),
+      },
+      topContent,
+      recentActivity: activities.slice(0, 10),
+    });
+  } catch (error) {
+    console.error('Creator overview error:', error);
+    return res.status(500).json({ error: 'Unable to load creator overview.' });
   }
 });
 
@@ -440,6 +1022,20 @@ router.post('/contents', requireAuth, requireCreator, async (req: AuthRequest, r
     const subjectId = req.body?.subjectId ? Number(req.body.subjectId) : null;
     const language = String(req.body?.language || 'English').trim();
     const contentType = String(req.body?.contentType || 'Notes').trim();
+    const classLevel = String(req.body?.classLevel || '').trim().slice(0, 60) || null;
+    const chapter = String(req.body?.chapter || '').trim().slice(0, 140) || null;
+    const topic = String(req.body?.topic || '').trim().slice(0, 140) || null;
+    const studyLabel = String(req.body?.studyLabel || '').trim().slice(0, 60) || null;
+    const rawChapterOrder = req.body?.chapterOrder ? Number(req.body.chapterOrder) : null;
+    const chapterOrder =
+      rawChapterOrder && Number.isInteger(rawChapterOrder) && rawChapterOrder > 0 && rawChapterOrder <= 500
+        ? rawChapterOrder
+        : null;
+    const rawDurationSeconds = req.body?.durationSeconds ? Number(req.body.durationSeconds) : null;
+    const durationSeconds =
+      rawDurationSeconds && Number.isFinite(rawDurationSeconds) && rawDurationSeconds > 0
+        ? Math.min(86400, Math.round(rawDurationSeconds))
+        : null;
     const isFree = Boolean(req.body?.isFree);
     const rawPrice = Number(req.body?.priceInr || 0);
     const ownershipConfirmed = Boolean(req.body?.ownershipConfirmed);
@@ -516,6 +1112,12 @@ router.post('/contents', requireAuth, requireCreator, async (req: AuthRequest, r
         subjectId,
         language,
         contentType,
+        classLevel,
+        chapter,
+        topic,
+        chapterOrder,
+        durationSeconds,
+        studyLabel,
         priceInr: finalPrice,
         isFree,
         status,
@@ -582,6 +1184,7 @@ router.post('/contents', requireAuth, requireCreator, async (req: AuthRequest, r
       },
     });
     invalidateCatalogCache();
+    syncContentEmbedding(created.id).catch(() => {});
 
     return res.status(201).json({
       content: created,
@@ -643,6 +1246,34 @@ router.put('/contents/:id', requireAuth, requireCreator, async (req: AuthRequest
         : existing.subjectId;
     const language = String(req.body?.language || existing.language).trim();
     const contentType = String(req.body?.contentType || existing.contentType).trim();
+    const classLevel =
+      req.body?.classLevel !== undefined
+        ? String(req.body.classLevel || '').trim().slice(0, 60) || null
+        : existing.classLevel;
+    const chapter =
+      req.body?.chapter !== undefined
+        ? String(req.body.chapter || '').trim().slice(0, 140) || null
+        : existing.chapter;
+    const topic =
+      req.body?.topic !== undefined
+        ? String(req.body.topic || '').trim().slice(0, 140) || null
+        : existing.topic;
+    const studyLabel =
+      req.body?.studyLabel !== undefined
+        ? String(req.body.studyLabel || '').trim().slice(0, 60) || null
+        : existing.studyLabel;
+    const chapterOrder =
+      req.body?.chapterOrder !== undefined
+        ? req.body.chapterOrder && Number.isInteger(Number(req.body.chapterOrder)) && Number(req.body.chapterOrder) > 0
+          ? Math.min(500, Number(req.body.chapterOrder))
+          : null
+        : existing.chapterOrder;
+    const durationSeconds =
+      req.body?.durationSeconds !== undefined
+        ? req.body.durationSeconds && Number.isFinite(Number(req.body.durationSeconds)) && Number(req.body.durationSeconds) > 0
+          ? Math.min(86400, Math.round(Number(req.body.durationSeconds)))
+          : null
+        : existing.durationSeconds;
     const isFree = req.body?.isFree !== undefined ? Boolean(req.body.isFree) : existing.isFree;
     const rawPrice =
       req.body?.priceInr !== undefined ? Number(req.body.priceInr) : Number(existing.priceInr);
@@ -693,6 +1324,12 @@ router.put('/contents/:id', requireAuth, requireCreator, async (req: AuthRequest
         subjectId,
         language,
         contentType,
+        classLevel,
+        chapter,
+        topic,
+        chapterOrder,
+        durationSeconds,
+        studyLabel,
         isFree,
         priceInr: isFree ? '0.00' : rawPrice.toFixed(2),
         ownershipConfirmed,
@@ -786,6 +1423,7 @@ router.put('/contents/:id', requireAuth, requireCreator, async (req: AuthRequest
       },
     });
     invalidateCatalogCache();
+    syncContentEmbedding(updated.id).catch(() => {});
 
     return res.json({ content: updated, message: 'Publication updated.' });
   } catch (error) {
@@ -913,6 +1551,7 @@ router.post('/contents/:id/recover', requireAuth, requireCreator, async (req: Au
       },
     });
     invalidateCatalogCache();
+    syncContentEmbedding(recovered.id).catch(() => {});
 
     return res.json({
       recovered: true,

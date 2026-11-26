@@ -1405,12 +1405,56 @@ export async function renderAdminDashboardPage(container, activeTab = 'overview'
         </div>
       `;
     } else if (activeTab === 'transactions') {
-      const data = await apiFetch('/api/admin/transactions');
+      const [data, gwCfg] = await Promise.all([
+        apiFetch('/api/admin/transactions'),
+        apiFetch('/api/payments/config').catch(() => ({
+          provider: 'razorpay',
+          mode: 'sandbox',
+          keyId: null,
+          configured: false,
+          webhookConfigured: false,
+        })),
+      ]);
+      const isLiveGateway = gwCfg.configured && gwCfg.mode === 'live';
+      const isTestGateway = gwCfg.configured && gwCfg.mode !== 'live';
+      const gwBadge = isLiveGateway
+        ? '<span class="px-2.5 py-1 rounded-full text-[11px] font-semibold bg-emerald-100 text-emerald-800 dark:bg-emerald-950/60 dark:text-emerald-300">Live Razorpay Active</span>'
+        : isTestGateway
+        ? '<span class="px-2.5 py-1 rounded-full text-[11px] font-semibold bg-amber-100 text-amber-800 dark:bg-amber-950/60 dark:text-amber-300">Razorpay Test Mode</span>'
+        : '<span class="px-2.5 py-1 rounded-full text-[11px] font-semibold bg-slate-100 text-slate-700 dark:bg-slate-800 dark:text-slate-300">Local Sandbox Mode</span>';
+      const maskedKey = gwCfg.keyId
+        ? `${String(gwCfg.keyId).slice(0, 12)}••••${String(gwCfg.keyId).slice(-4)}`
+        : 'Not set';
+      const webhookUrl = `${window.location.origin}/api/payments/webhook/razorpay`;
+
       bodyHtml = `
         <div class="space-y-5">
           <div>
             <h1 class="font-display text-2xl font-semibold text-slate-900 dark:text-white tracking-tight">Transactions &amp; Refunds Ledger</h1>
             <p class="text-xs text-slate-500 mt-1">All captured, pending, and refunded orders with platform commission split.</p>
+          </div>
+          <div class="bg-white dark:bg-[#111A2E] border border-slate-200 dark:border-slate-800 rounded-xl p-4 sm:p-5 flex flex-col lg:flex-row lg:items-center justify-between gap-4">
+            <div class="space-y-1.5">
+              <div class="flex flex-wrap items-center gap-2.5">
+                <span class="text-xs font-semibold uppercase tracking-wider text-slate-500">Razorpay Gateway</span>
+                ${gwBadge}
+                <span class="px-2 py-0.5 rounded text-[11px] font-mono ${gwCfg.webhookConfigured ? 'bg-emerald-50 text-emerald-700 dark:bg-emerald-950/40 dark:text-emerald-300' : 'bg-slate-100 text-slate-600 dark:bg-slate-800 dark:text-slate-400'}">
+                  Webhook: ${gwCfg.webhookConfigured ? 'Verified Secret Set' : 'Secret Not Set'}
+                </span>
+              </div>
+              <p class="text-xs text-slate-600 dark:text-slate-400">
+                Key ID: <code class="font-mono text-slate-800 dark:text-slate-200">${esc(maskedKey)}</code> ·
+                ${
+                  gwCfg.configured
+                    ? 'Orders, HMAC verification, payment capture, and refunds sync directly with Razorpay.'
+                    : 'Set RAZORPAY_KEY_ID, RAZORPAY_KEY_SECRET, and RAZORPAY_WEBHOOK_SECRET in server environment variables to process real INR payments.'
+                }
+              </p>
+            </div>
+            <div class="flex flex-wrap items-center gap-2 shrink-0">
+              <code class="px-2.5 py-1.5 rounded-lg bg-slate-50 dark:bg-[#0B1120] border border-slate-200 dark:border-slate-800 font-mono text-[11px] text-slate-700 dark:text-slate-300 max-w-[260px] sm:max-w-xs truncate">${esc(webhookUrl)}</code>
+              <button type="button" id="adm-copy-webhook-url" data-url="${esc(webhookUrl)}" class="px-3 py-1.5 text-xs font-semibold rounded-lg border border-slate-300 dark:border-slate-700 hover:bg-slate-50 dark:hover:bg-slate-800">Copy Webhook URL</button>
+            </div>
           </div>
           <div class="bg-white dark:bg-[#111A2E] border border-slate-200 dark:border-slate-800 rounded-xl overflow-x-auto touch-scroll-x">
             <table class="w-full min-w-[760px] text-left text-xs">
@@ -2310,6 +2354,17 @@ function wireAdminHandlers(container, activeTab, subParam = null) {
         showToast(err.message, 'error');
       }
     });
+  });
+
+  // Copy Razorpay webhook URL
+  document.getElementById('adm-copy-webhook-url')?.addEventListener('click', async (e) => {
+    const url = e.currentTarget.dataset.url || '';
+    try {
+      await navigator.clipboard.writeText(url);
+      showToast('Webhook URL copied to clipboard.', 'success');
+    } catch {
+      showToast(url, 'info');
+    }
   });
 
   // Refunds

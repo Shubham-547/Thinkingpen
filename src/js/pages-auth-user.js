@@ -388,6 +388,75 @@ async function handleFirebaseSocialAuth({
   }
 }
 
+const OFFICIAL_SCHOLARPRESS_LOGO =
+  '/assets/aistudio/file_00000000c1548211a47526d83420f44b_784076a2.png';
+const SIGNUP_DRAFT_STORAGE_KEY = 'sp_signup_draft';
+const PENDING_OTP_STORAGE_KEY = 'sp_otp_pending';
+let activeOtpCountdownTimer = null;
+
+export function cleanupOtpVerificationTimer() {
+  if (activeOtpCountdownTimer !== null) {
+    window.clearInterval(activeOtpCountdownTimer);
+    activeOtpCountdownTimer = null;
+  }
+}
+
+function saveSignupDraft(name, email) {
+  try {
+    // Store ONLY non-sensitive signup fields for Back navigation — NEVER store passwords.
+    sessionStorage.setItem(
+      SIGNUP_DRAFT_STORAGE_KEY,
+      JSON.stringify({ name: String(name || ''), email: String(email || '') })
+    );
+  } catch {}
+}
+
+function loadSignupDraft() {
+  try {
+    const raw = sessionStorage.getItem(SIGNUP_DRAFT_STORAGE_KEY);
+    return raw ? JSON.parse(raw) : null;
+  } catch {
+    return null;
+  }
+}
+
+function clearSignupDraft() {
+  try {
+    sessionStorage.removeItem(SIGNUP_DRAFT_STORAGE_KEY);
+  } catch {}
+}
+
+function savePendingOtpState(data) {
+  try {
+    sessionStorage.setItem(
+      PENDING_OTP_STORAGE_KEY,
+      JSON.stringify({
+        pendingToken: data.pendingToken,
+        maskedEmail: data.maskedEmail,
+        email: data.email || '',
+        name: data.name || '',
+        expiresAt: data.expiresAt,
+        serverTime: data.serverTime,
+      })
+    );
+  } catch {}
+}
+
+function loadPendingOtpState() {
+  try {
+    const raw = sessionStorage.getItem(PENDING_OTP_STORAGE_KEY);
+    return raw ? JSON.parse(raw) : null;
+  } catch {
+    return null;
+  }
+}
+
+function clearPendingOtpState() {
+  try {
+    sessionStorage.removeItem(PENDING_OTP_STORAGE_KEY);
+  } catch {}
+}
+
 function renderSignupPage(container) {
   const highlights = [
     {
@@ -420,7 +489,7 @@ function renderSignupPage(container) {
         <div class="pointer-events-none absolute -top-12 right-0 w-56 h-56 rounded-full bg-white/45 blur-2xl"></div>
         <div class="max-w-[560px] mx-auto relative z-10 flex items-center justify-between gap-2 sm:gap-5">
           <div class="min-w-0 flex-1 pr-1">
-            <h1 class="text-[26px] sm:text-[32px] font-extrabold tracking-tight leading-[1.14] text-[#0A1E44]" style="font-family:'Plus Jakarta Sans',system-ui,sans-serif;">
+            <h1 class="text-[26px] sm:text-[32px] font-extrabold tracking-tight leading-[1.14] text-[#0A1E44]">
               Join <span class="text-[#1646A8]">ScholarPress</span>
             </h1>
             <p class="text-[13.5px] sm:text-[15px] text-[#1E355E] leading-[1.45] mt-2.5">
@@ -474,7 +543,7 @@ function renderSignupPage(container) {
               <a href="#/" class="inline-flex items-center gap-3.5 group focus-visible:outline-2 focus-visible:outline-sky-300 rounded-xl">
                 ${renderScholarPressBookNibLogo('w-[62px] h-[54px]', 'Desk')}
                 <div class="leading-none">
-                  <span class="block text-[30px] xl:text-[32px] font-bold tracking-tight text-white" style="font-family:'Plus Jakarta Sans',system-ui,sans-serif;">
+                  <span class="block text-[30px] xl:text-[32px] font-bold tracking-tight text-white">
                     ScholarPress
                   </span>
                   <span class="flex items-center gap-2 text-[12px] font-medium text-blue-200/90 mt-1.5 tracking-wide">
@@ -486,7 +555,7 @@ function renderSignupPage(container) {
               </a>
 
               <div class="mt-8">
-                <h1 class="text-[32px] xl:text-[36px] font-extrabold tracking-tight text-white leading-[1.15]" style="font-family:'Plus Jakarta Sans',system-ui,sans-serif;">
+                <h1 class="text-[32px] xl:text-[36px] font-extrabold tracking-tight text-white leading-[1.15]">
                   Join Our <span class="text-[#5CA4FF]">Knowledge</span><br />Community!
                 </h1>
                 <p class="text-[14.5px] text-blue-100/90 leading-relaxed mt-3.5 max-w-[36ch]">
@@ -546,7 +615,7 @@ function renderSignupPage(container) {
                   </svg>
                 </div>
                 <div class="min-w-0">
-                  <h2 class="text-[22px] sm:text-[24px] font-extrabold tracking-tight text-[#0A1E44] leading-tight" style="font-family:'Plus Jakarta Sans',system-ui,sans-serif;">
+                  <h2 class="text-[22px] sm:text-[24px] font-extrabold tracking-tight text-[#0A1E44] leading-tight">
                     Create Account
                   </h2>
                   <p class="text-[13.5px] text-[#3B5278] mt-0.5">
@@ -557,7 +626,7 @@ function renderSignupPage(container) {
 
               <!-- Desktop Centered Form Header (matching desktop reference) -->
               <div class="hidden lg:block text-center mb-7">
-                <h2 class="text-[30px] xl:text-[32px] font-extrabold tracking-tight text-[#0A1E44] leading-tight" style="font-family:'Plus Jakarta Sans',system-ui,sans-serif;">
+                <h2 class="text-[30px] xl:text-[32px] font-extrabold tracking-tight text-[#0A1E44] leading-tight">
                   Create Your Account
                 </h2>
                 <p class="text-[14.5px] text-[#3B5278] mt-1.5">
@@ -795,6 +864,16 @@ function renderSignupPage(container) {
   const strengthBar = document.getElementById('sp-password-strength-bar');
   const strengthLabel = document.getElementById('sp-password-strength-label');
 
+  const signupDraft = loadSignupDraft();
+  if (signupDraft) {
+    if (fullNameInput && !fullNameInput.value && signupDraft.name) {
+      fullNameInput.value = signupDraft.name;
+    }
+    if (emailInput && !emailInput.value && signupDraft.email) {
+      emailInput.value = signupDraft.email;
+    }
+  }
+
   const setFieldError = (inputEl, errId, msg) => {
     const errEl = document.getElementById(errId);
     if (!errEl) return;
@@ -982,37 +1061,30 @@ function renderSignupPage(container) {
     if (submitBtn) {
       submitBtn.disabled = true;
       submitBtn.innerHTML =
-        '<span class="inline-block w-4 h-4 rounded-full border-2 border-white border-t-transparent animate-spin shrink-0" aria-hidden="true"></span><span>Creating account...</span>';
+        '<span class="inline-block w-4 h-4 rounded-full border-2 border-white border-t-transparent animate-spin shrink-0" aria-hidden="true"></span><span>Sending verification OTP...</span>';
     }
     statusBox?.classList.add('hidden');
 
     try {
-      const res = await apiFetch('/api/auth/register', {
+      const res = await apiFetch('/api/auth/signup/initiate', {
         method: 'POST',
-        body: { name: fullName, email, password },
+        body: {
+          name: fullName,
+          email,
+          password,
+          confirmPassword,
+          acceptedTerms,
+        },
       });
-      setSessionToken(res.token);
-      store.user = res.user;
-      notifyStore();
-      showToast(`Account created! Your 10-digit UID is ${res.user.publicUid}.`, 'success');
-
-      const needsProfileSetup = !res.user.username || !res.user.profile?.profileCompleted;
-      if (needsProfileSetup && !res.user.isSuperAdmin) {
-        window.location.hash = '#/complete-profile';
-        return;
-      }
-      const defaultDest =
-        res.user.role === 'admin'
-          ? '#/admin'
-          : res.user.role === 'creator'
-          ? '#/creator'
-          : '#/dashboard/settings';
-      window.location.hash = consumePostLoginRedirect(defaultDest);
+      saveSignupDraft(fullName, email);
+      savePendingOtpState(res);
+      showToast('A 4-digit verification OTP has been sent to your email.', 'success');
+      window.location.hash = '#/verify-otp';
     } catch (err) {
       if (err?.data?.accountBlocked || err?.data?.accountDeleted) {
         renderAccountRestrictionBanner(signupRestrictionBanner, err.data);
       }
-      const msg = err?.message || 'Could not create your account. Please try again.';
+      const msg = err?.message || 'Could not start verification. Please try again.';
       showStatus('error', msg);
       showToast(msg, 'error');
     } finally {
@@ -1024,7 +1096,1204 @@ function renderSignupPage(container) {
   });
 }
 
-export function renderAuthPage(container, mode = 'login') {
+function renderShieldLockIllustration(sizeCls = 'w-20 h-20', showSparks = false) {
+  return `
+    <div class="relative inline-flex items-center justify-center select-none">
+      ${
+        showSparks
+          ? `
+        <svg class="w-48 h-24 text-[#3B82F6]/35 pointer-events-none" viewBox="0 0 220 110" fill="none" aria-hidden="true">
+          <ellipse cx="110" cy="54" rx="82" ry="30" transform="rotate(-14 110 54)" stroke="#60A5FA" stroke-opacity="0.45" stroke-width="1.8"/>
+          <ellipse cx="110" cy="54" rx="82" ry="30" transform="rotate(14 110 54)" stroke="#60A5FA" stroke-opacity="0.45" stroke-width="1.8"/>
+          <circle cx="34" cy="40" r="2.5" fill="#93C5FD"/>
+          <circle cx="188" cy="68" r="2.5" fill="#93C5FD"/>
+          <path d="M10 42L21 47M8 54H20M11 66L22 61" stroke="#1D4ED8" stroke-width="2.6" stroke-linecap="round"/>
+          <path d="M210 42L199 47M212 54H200M209 66L198 61" stroke="#1D4ED8" stroke-width="2.6" stroke-linecap="round"/>
+        </svg>
+      `
+          : ''
+      }
+      <svg class="${sizeCls} ${showSparks ? 'absolute' : ''} drop-shadow-[0_10px_22px_rgba(0,66,226,0.28)]" viewBox="0 0 84 92" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+        <defs>
+          <linearGradient id="spOtpShieldGrad" x1="12" y1="8" x2="72" y2="84" gradientUnits="userSpaceOnUse">
+            <stop stop-color="#38B6FF"/>
+            <stop offset="0.45" stop-color="#0F52FC"/>
+            <stop offset="1" stop-color="#002CC7"/>
+          </linearGradient>
+        </defs>
+        <path d="M42 4L74 17V44.5C74 64.5 60.2 81.2 42 88C23.8 81.2 10 64.5 10 44.5V17L42 4Z" fill="url(#spOtpShieldGrad)"/>
+        <path d="M42 7L70 18.6V44.5C70 62.2 58 77.1 42 83.6V7Z" fill="#FFFFFF" fill-opacity="0.08"/>
+        <!-- White padlock -->
+        <path d="M33 39V33.5C33 28.5 37 24.5 42 24.5C47 24.5 51 28.5 51 33.5V39" stroke="#FFFFFF" stroke-width="4.4" stroke-linecap="round"/>
+        <rect x="27.5" y="38" width="29" height="23" rx="5.5" fill="#FFFFFF"/>
+        <circle cx="42" cy="48" r="2.8" fill="#0A43E8"/>
+        <path d="M42 49.5V54.5" stroke="#0A43E8" stroke-width="2.8" stroke-linecap="round"/>
+      </svg>
+    </div>
+  `;
+}
+
+export async function renderVerifyOtpPage(container) {
+  cleanupOtpVerificationTimer();
+
+  let pending = loadPendingOtpState();
+  if (!pending || !pending.pendingToken) {
+    container.innerHTML = `
+      <section class="relative min-h-[calc(100vh-4.5rem)] w-full overflow-hidden bg-gradient-to-br from-[#F4F8FF] via-[#EAF2FF] to-[#DBE9FF] flex items-center justify-center px-4 py-12">
+        <div class="w-full max-w-md bg-white rounded-[28px] border border-[#DCE6F7] shadow-[0_24px_60px_-15px_rgba(15,43,102,0.16)] p-7 sm:p-9 text-center">
+          <img src="${OFFICIAL_SCHOLARPRESS_LOGO}" alt="ScholarPress Logo" class="h-16 w-auto mx-auto mb-4 object-contain" />
+          <h1 class="text-2xl font-extrabold text-[#0A1647]">No Active Verification Session</h1>
+          <p class="text-sm text-[#3B5278] mt-2 leading-relaxed">
+            Start signing up with your details so we can send a 4-digit OTP to verify your email address.
+          </p>
+          <div class="mt-6 flex flex-col gap-2.5">
+            <a href="#/signup" class="w-full h-12 rounded-2xl bg-gradient-to-r from-[#0F76FF] via-[#004AE2] to-[#002EC4] text-white font-semibold text-sm inline-flex items-center justify-center shadow-[0_10px_24px_-6px_rgba(0,62,216,0.45)]">
+              Go to Sign Up
+            </a>
+            <a href="#/login" class="text-xs font-semibold text-[#004AE2] hover:underline py-2">Already verified? Sign In</a>
+          </div>
+        </div>
+      </section>
+    `;
+    return;
+  }
+
+  // Sync remaining time and status with the backend server clock
+  let serverOffsetMs = pending.serverTime
+    ? new Date(pending.serverTime).getTime() - Date.now()
+    : 0;
+  let expiresAtMs = pending.expiresAt ? new Date(pending.expiresAt).getTime() : Date.now();
+  let initialStatus = null;
+
+  try {
+    const statusRes = await apiFetch(
+      `/api/auth/otp/status?pendingToken=${encodeURIComponent(pending.pendingToken)}`
+    );
+    initialStatus = statusRes;
+    if (statusRes.maskedEmail) {
+      pending.maskedEmail = statusRes.maskedEmail;
+    }
+    if (statusRes.serverTime) {
+      serverOffsetMs = new Date(statusRes.serverTime).getTime() - Date.now();
+    }
+    if (statusRes.expiresAt) {
+      expiresAtMs = new Date(statusRes.expiresAt).getTime();
+      pending.expiresAt = statusRes.expiresAt;
+    }
+    savePendingOtpState(pending);
+  } catch {
+    // Keep stored pending metadata if transient offline/status issue; verify/resend will enforce server truth
+  }
+
+  const maskedEmailText = pending.maskedEmail || pending.email || 'your email';
+
+  container.innerHTML = `
+    <section class="relative min-h-[calc(100vh-4.5rem)] w-full overflow-hidden bg-gradient-to-br from-[#F7FAFF] via-[#EBF2FF] to-[#DCEBFF] text-[#0A1647] flex flex-col justify-between lg:justify-center py-6 sm:py-10 px-4 sm:px-6 lg:px-8">
+      <!-- Subtle soft wave & dot-matrix background accents matching Reference 1 & Reference 2 -->
+      <div class="pointer-events-none absolute -top-24 -left-24 w-[420px] h-[340px] rounded-full bg-white/70 blur-2xl"></div>
+      <div class="pointer-events-none absolute -bottom-24 -right-20 w-[440px] h-[360px] rounded-full bg-[#B9D5FF]/55 blur-2xl"></div>
+      <svg class="pointer-events-none hidden lg:block absolute right-0 bottom-0 w-[420px] h-[280px] opacity-55" viewBox="0 0 420 280" fill="none" aria-hidden="true">
+        <path d="M420 40C310 110 210 180 70 280H420V40Z" fill="#C7DEFF"/>
+        <path d="M420 120C330 175 245 225 160 280H420V120Z" fill="#9EC3FF" fill-opacity="0.6"/>
+      </svg>
+
+      <!-- Mobile dot-matrix corner accents (Reference Image 1) -->
+      <div class="pointer-events-none lg:hidden absolute top-5 right-4 grid grid-cols-5 gap-2 opacity-35" aria-hidden="true">
+        ${Array.from({ length: 20 })
+          .map(() => '<span class="w-1.5 h-1.5 rounded-full bg-[#6095F9]"></span>')
+          .join('')}
+      </div>
+      <div class="pointer-events-none lg:hidden absolute bottom-14 left-4 grid grid-cols-5 gap-2 opacity-35" aria-hidden="true">
+        ${Array.from({ length: 15 })
+          .map(() => '<span class="w-1.5 h-1.5 rounded-full bg-[#6095F9]"></span>')
+          .join('')}
+      </div>
+      <svg class="pointer-events-none lg:hidden absolute bottom-0 inset-x-0 w-full h-24" viewBox="0 0 400 96" preserveAspectRatio="none" aria-hidden="true">
+        <path d="M0 96C110 92 210 56 400 18V96H0Z" fill="#68A4FF" fill-opacity="0.35"/>
+        <path d="M130 96C230 82 310 56 400 32V96H130Z" fill="#2B72FB" fill-opacity="0.55"/>
+      </svg>
+
+      <!-- MAIN CONTAINER -->
+      <div class="relative z-10 w-full max-w-[440px] lg:max-w-[980px] mx-auto my-auto">
+
+        <!-- MOBILE TOP BRANDING + SHIELD ILLUSTRATION (< lg, Reference Image 1) -->
+        <div class="lg:hidden flex flex-col items-center text-center mb-1">
+          <a href="#/" class="inline-flex items-center justify-center gap-2.5 mb-3">
+            <img
+              src="${OFFICIAL_SCHOLARPRESS_LOGO}"
+              alt="ScholarPress Official Logo"
+              class="h-11 w-auto object-contain shrink-0"
+            />
+            <span class="text-[24px] font-extrabold tracking-tight leading-none">
+              <span class="text-[#0A1647]">Scholar</span><span class="text-[#0F52FC]">Press</span>
+            </span>
+          </a>
+
+          <div class="-mb-6 z-20">
+            ${renderShieldLockIllustration('w-[76px] h-[84px]', true)}
+          </div>
+        </div>
+
+        <!-- DESKTOP 2-COLUMN SPLIT / MOBILE SINGLE CARD -->
+        <div class="grid grid-cols-1 lg:grid-cols-12 items-center gap-8 lg:gap-10">
+
+          <!-- DESKTOP LEFT COLUMN: Official ScholarPress Illustration & Tagline (Reference Image 2) -->
+          <div class="hidden lg:flex lg:col-span-5 flex-col items-center text-center px-3">
+            <div class="relative w-[320px] h-[230px] flex items-center justify-center mb-3">
+              <!-- Soft radial glow + orbital arcs -->
+              <div class="absolute inset-6 rounded-full bg-white/75 blur-2xl"></div>
+              <svg class="absolute inset-0 w-full h-full pointer-events-none" viewBox="0 0 320 230" fill="none" aria-hidden="true">
+                <ellipse cx="160" cy="118" rx="128" ry="44" transform="rotate(-11 160 118)" stroke="#3B82F6" stroke-opacity="0.32" stroke-width="1.6"/>
+                <ellipse cx="160" cy="118" rx="126" ry="46" transform="rotate(11 160 118)" stroke="#60A5FA" stroke-opacity="0.3" stroke-width="1.5"/>
+                <circle cx="118" cy="24" r="4" fill="#93C5FD"/>
+                <circle cx="208" cy="34" r="3" fill="#BFDBFE"/>
+                <circle cx="48" cy="176" r="3.5" fill="#93C5FD"/>
+              </svg>
+
+              <!-- Floating Educational Circular Icons (matching Reference Image 2) -->
+              <span class="absolute top-3 left-4 w-13 h-13 rounded-full bg-white/75 border border-white shadow-[0_8px_20px_rgba(37,99,235,0.1)] flex items-center justify-center text-[#1D5BFF]">
+                <svg class="w-6 h-6" fill="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+                  <path d="M12 6.25C10.2 5.2 7.8 4.8 5.2 5.2C4.5 5.3 4 5.9 4 6.6V17.4C4 18.2 4.7 18.8 5.5 18.7C7.9 18.4 10.1 18.8 11.7 19.7C11.9 19.8 12.1 19.8 12.3 19.7C13.9 18.8 16.1 18.4 18.5 18.7C19.3 18.8 20 18.2 20 17.4V6.6C20 5.9 19.5 5.3 18.8 5.2C16.2 4.8 13.8 5.2 12 6.25Z"/>
+                </svg>
+              </span>
+              <span class="absolute bottom-3 left-2 w-12 h-12 rounded-full bg-white/80 border border-white shadow-[0_8px_20px_rgba(37,99,235,0.1)] flex items-center justify-center text-[#1D5BFF]">
+                <svg class="w-5 h-5 ml-0.5" fill="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+                  <path d="M8 5.14v14l11-7-11-7z"/>
+                </svg>
+              </span>
+              <span class="absolute top-2 right-4 w-13 h-13 rounded-full bg-white/75 border border-white shadow-[0_8px_20px_rgba(37,99,235,0.1)] flex items-center justify-center text-[#1D5BFF]">
+                <svg class="w-6 h-6" fill="none" stroke="currentColor" stroke-width="1.8" viewBox="0 0 24 24" aria-hidden="true">
+                  <circle cx="12" cy="12" r="9"/>
+                  <path d="M3.6 9h16.8M3.6 15h16.8M12 3a14 14 0 010 18M12 3a14 14 0 000 18"/>
+                </svg>
+              </span>
+              <span class="absolute top-[94px] -right-1 w-11 h-11 rounded-full bg-white/65 border border-white/80 shadow-sm flex items-center justify-center text-[#1D5BFF]">
+                <svg class="w-6 h-6" fill="none" stroke="currentColor" stroke-width="1.7" viewBox="0 0 24 24" aria-hidden="true">
+                  <ellipse cx="12" cy="12" rx="9" ry="3.8" transform="rotate(35 12 12)"/>
+                  <ellipse cx="12" cy="12" rx="9" ry="3.8" transform="rotate(-35 12 12)"/>
+                  <ellipse cx="12" cy="12" rx="3.8" ry="9"/>
+                  <circle cx="12" cy="12" r="1.6" fill="currentColor"/>
+                </svg>
+              </span>
+              <span class="absolute bottom-2 right-5 w-12 h-12 rounded-full bg-white/80 border border-white shadow-[0_8px_20px_rgba(37,99,235,0.1)] flex items-center justify-center text-[#1D5BFF]">
+                <svg class="w-5 h-5" fill="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+                  <rect x="4" y="13" width="3.5" height="7" rx="1"/>
+                  <rect x="10.25" y="9" width="3.5" height="11" rx="1"/>
+                  <rect x="16.5" y="5" width="3.5" height="15" rx="1"/>
+                </svg>
+              </span>
+
+              <!-- Official ScholarPress Logo Image (Reference Image 3) -->
+              <img
+                src="${OFFICIAL_SCHOLARPRESS_LOGO}"
+                alt="ScholarPress Official Logo"
+                class="relative z-10 w-[230px] h-auto object-contain drop-shadow-[0_12px_20px_rgba(10,30,68,0.16)]"
+              />
+            </div>
+
+            <h2 class="text-[36px] font-extrabold tracking-tight leading-none">
+              <span class="text-[#0A1647]">Scholar</span><span class="text-[#0F52FC]">Press</span>
+            </h2>
+            <p class="text-[18px] font-semibold text-[#0F52FC] mt-2">
+              Your Knowledge, Our Mission
+            </p>
+            <div class="w-56 h-px bg-[#6095F9]/60 my-5"></div>
+            <h3 class="text-[20px] font-bold text-[#0A1647]">
+              Verify Your Account
+            </h3>
+            <p class="text-[14.5px] text-[#1E3A8A] leading-relaxed mt-1.5 max-w-[30ch]">
+              Enter the 4-digit OTP sent to your email or user ID.
+            </p>
+          </div>
+
+          <!-- RIGHT COLUMN (Desktop) / MAIN CARD (Mobile) -->
+          <div class="lg:col-span-7">
+            <div class="bg-white rounded-[28px] border border-[#DCE6F7]/90 shadow-[0_24px_60px_-15px_rgba(15,43,102,0.18)] px-5 pt-9 pb-6 sm:p-8 lg:px-10 lg:py-9">
+
+              <!-- Desktop Card Header (Shield Icon Left + Title/Email Right, Reference Image 2) -->
+              <div class="hidden lg:flex items-center gap-5 mb-7">
+                <div class="shrink-0">
+                  ${renderShieldLockIllustration('w-[76px] h-[84px]', false)}
+                </div>
+                <div class="min-w-0">
+                  <h1 class="text-[30px] font-extrabold tracking-tight text-[#0A1647] leading-tight">
+                    OTP Verification
+                  </h1>
+                  <p class="text-[15px] text-[#111827] mt-1">
+                    We have sent a 4-digit OTP to
+                  </p>
+                  <div class="mt-2 inline-flex items-center gap-2 px-3.5 py-1.5 rounded-full bg-[#E3EEFF] text-[#0039D7] font-semibold text-[14px] max-w-full">
+                    <svg class="w-4 h-4 shrink-0" fill="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+                      <path d="M1.5 8.67v8.58a3 3 0 003 3h15a3 3 0 003-3V8.67l-8.928 5.493a3 3 0 01-3.144 0L1.5 8.67z"/>
+                      <path d="M22.5 6.908V6.75a3 3 0 00-3-3h-15a3 3 0 00-3 3v.158l9.714 5.978a1.5 1.5 0 001.572 0L22.5 6.908z"/>
+                    </svg>
+                    <span id="otp-masked-email-desk" class="truncate">${esc(maskedEmailText)}</span>
+                  </div>
+                </div>
+              </div>
+
+              <!-- Mobile Card Header (Centered, Reference Image 1) -->
+              <div class="lg:hidden text-center mb-6">
+                <h1 class="text-[26px] font-extrabold tracking-tight text-[#0A1647] leading-tight">
+                  OTP Verification
+                </h1>
+                <p class="text-[14px] text-[#1E293B] leading-relaxed mt-2 max-w-[30ch] mx-auto">
+                  We have sent a 4-digit OTP to your email or registered ID
+                </p>
+                <div class="mt-2.5 inline-flex items-center gap-1.5 px-3 py-1 rounded-full bg-[#E3EEFF] text-[#0039D7] font-semibold text-[12.5px] max-w-full">
+                  <svg class="w-3.5 h-3.5 shrink-0" fill="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+                    <path d="M1.5 8.67v8.58a3 3 0 003 3h15a3 3 0 003-3V8.67l-8.928 5.493a3 3 0 01-3.144 0L1.5 8.67z"/>
+                    <path d="M22.5 6.908V6.75a3 3 0 00-3-3h-15a3 3 0 00-3 3v.158l9.714 5.978a1.5 1.5 0 001.572 0L22.5 6.908z"/>
+                  </svg>
+                  <span id="otp-masked-email-mob" class="truncate">${esc(maskedEmailText)}</span>
+                </div>
+              </div>
+
+              <!-- Status / Error / Success Feedback Banner -->
+              <div id="otp-feedback-banner" class="hidden mb-4 rounded-xl px-4 py-3 text-[13px] leading-relaxed border text-center" role="alert" aria-live="polite"></div>
+
+              <form id="sp-otp-verify-form" novalidate>
+                <!-- 4 Single-Digit OTP Input Boxes -->
+                <div class="flex items-center justify-center gap-3 sm:gap-4" role="group" aria-label="4-digit verification OTP">
+                  ${[0, 1, 2, 3]
+                    .map(
+                      (idx) => `
+                    <input
+                      id="otp-digit-${idx}"
+                      data-otp-index="${idx}"
+                      type="text"
+                      inputmode="numeric"
+                      pattern="[0-9]*"
+                      maxlength="1"
+                      ${idx === 0 ? 'autocomplete="one-time-code"' : 'autocomplete="off"'}
+                      placeholder="—"
+                      aria-label="OTP digit ${idx + 1}"
+                      class="otp-digit-input w-[62px] h-[56px] sm:w-[76px] sm:h-[64px] rounded-[14px] border-2 border-[#DCE5F2] bg-white text-center text-[24px] sm:text-[26px] font-bold text-[#0A1647] placeholder:text-[#94A3B8] placeholder:font-medium focus:border-[#0F52FC] focus:ring-4 focus:ring-[#0F52FC]/12 outline-none transition-all caret-[#0F52FC]"
+                    />
+                  `
+                    )
+                    .join('')}
+                </div>
+
+                <!-- Countdown Timer Row -->
+                <div class="mt-5 flex items-center justify-center gap-2 text-[15px]">
+                  <svg class="w-6 h-6 text-[#0F52FC] shrink-0" fill="none" stroke="currentColor" stroke-width="2.1" viewBox="0 0 24 24" aria-hidden="true">
+                    <circle cx="12" cy="12" r="9"/>
+                    <path stroke-linecap="round" stroke-linejoin="round" d="M12 7v5l3 2"/>
+                  </svg>
+                  <span id="otp-timer-value" class="text-[22px] font-extrabold tracking-tight text-[#0F52FC] tabular-nums">1:59</span>
+                  <span class="text-[14.5px] font-medium text-[#1E293B]">Time Left</span>
+                </div>
+
+                <!-- Expiry Notice Pill -->
+                <div id="otp-expiry-pill" class="mt-3.5 rounded-xl bg-[#E5EFFD] px-4 py-2.5 flex items-center justify-center gap-2.5 text-[13.5px] font-medium text-[#0F172A]">
+                  <span class="w-5 h-5 rounded-full bg-[#0F52FC] text-white text-[12px] font-bold inline-flex items-center justify-center shrink-0" aria-hidden="true">i</span>
+                  <span id="otp-expiry-text">OTP will expire in 2 minutes.</span>
+                </div>
+
+                <!-- Primary Blue Gradient Confirm OTP Button -->
+                <button
+                  type="submit"
+                  id="otp-confirm-btn"
+                  disabled
+                  class="mt-5 w-full h-[52px] px-5 rounded-2xl lg:rounded-xl bg-gradient-to-r from-[#0F76FF] via-[#004AE2] to-[#002EC4] hover:from-[#0E6AE8] hover:to-[#0026A8] active:scale-[0.99] disabled:opacity-50 disabled:cursor-not-allowed text-white text-[16px] font-semibold flex items-center justify-center gap-2.5 shadow-[0_12px_26px_-8px_rgba(0,62,216,0.52)] transition-all duration-150"
+                >
+                  <svg class="w-5 h-5 shrink-0" fill="none" stroke="currentColor" stroke-width="2.8" viewBox="0 0 24 24" aria-hidden="true">
+                    <path stroke-linecap="round" stroke-linejoin="round" d="M4.5 12.75l6 6 9-13.5"/>
+                  </svg>
+                  <span>Confirm OTP</span>
+                </button>
+              </form>
+
+              <!-- Mobile OR Divider -->
+              <div class="lg:hidden relative my-4">
+                <div class="absolute inset-0 flex items-center" aria-hidden="true">
+                  <div class="w-full border-t border-[#E2E8F0]"></div>
+                </div>
+                <div class="relative flex justify-center">
+                  <span class="px-3 bg-white text-[12.5px] font-medium text-[#64748B]">OR</span>
+                </div>
+              </div>
+
+              <!-- Resend OTP & Back Action Row (Mobile: stacked outlined pill + link; Desktop: inline with divider) -->
+              <div class="mt-3 lg:mt-6 flex flex-col lg:flex-row items-center justify-center gap-3 lg:gap-5">
+                <button
+                  type="button"
+                  id="otp-resend-btn"
+                  disabled
+                  class="w-full lg:w-auto h-[48px] lg:h-auto px-4 lg:px-2 rounded-2xl lg:rounded-lg border border-[#3B82F6] lg:border-0 bg-white lg:bg-transparent text-[#004AE2] hover:bg-[#F4F8FF] lg:hover:bg-transparent lg:hover:underline disabled:border-[#CBD5E1] disabled:text-[#94A3B8] disabled:cursor-not-allowed text-[15px] font-semibold inline-flex items-center justify-center gap-2 transition-colors"
+                >
+                  <svg class="w-4 h-4 shrink-0" fill="none" stroke="currentColor" stroke-width="2.2" viewBox="0 0 24 24" aria-hidden="true">
+                    <path stroke-linecap="round" stroke-linejoin="round" d="M16.023 9.348h4.992v-.001M2.985 19.644v-4.992m0 0h4.992m-4.993 0l3.181 3.183a8.25 8.25 0 0013.803-3.7M4.031 9.865a8.25 8.25 0 0113.803-3.7l3.181 3.182m0-4.991v4.99"/>
+                  </svg>
+                  <span id="otp-resend-label">Resend OTP</span>
+                </button>
+
+                <span class="hidden lg:inline-block w-px h-5 bg-[#CBD5E1]" aria-hidden="true"></span>
+
+                <button
+                  type="button"
+                  id="otp-back-btn"
+                  class="py-1.5 px-3 text-[15px] font-semibold text-[#004AE2] lg:text-[#0A1647] hover:text-[#0039D7] inline-flex items-center justify-center gap-2 transition-colors"
+                >
+                  <svg class="w-4 h-4 shrink-0" fill="none" stroke="currentColor" stroke-width="2.3" viewBox="0 0 24 24" aria-hidden="true">
+                    <path stroke-linecap="round" stroke-linejoin="round" d="M10.5 19.5L3 12m0 0l7.5-7.5M3 12h18"/>
+                  </svg>
+                  <span class="lg:hidden">Back to Sign Up</span>
+                  <span class="hidden lg:inline">Back</span>
+                </button>
+              </div>
+            </div>
+          </div>
+
+        </div>
+      </div>
+    </section>
+  `;
+
+  const digitInputs = Array.from(container.querySelectorAll('.otp-digit-input'));
+  const verifyForm = document.getElementById('sp-otp-verify-form');
+  const confirmBtn = document.getElementById('otp-confirm-btn');
+  const resendBtn = document.getElementById('otp-resend-btn');
+  const resendLabel = document.getElementById('otp-resend-label');
+  const backBtn = document.getElementById('otp-back-btn');
+  const timerEl = document.getElementById('otp-timer-value');
+  const expiryTextEl = document.getElementById('otp-expiry-text');
+  const feedbackEl = document.getElementById('otp-feedback-banner');
+
+  const confirmBtnDefaultHtml = confirmBtn?.innerHTML || '';
+  let isVerifying = false;
+  let isResending = false;
+  let isLocked = Boolean(initialStatus && initialStatus.attemptsRemaining <= 0);
+
+  const showOtpFeedback = (tone, msg) => {
+    if (!feedbackEl) return;
+    if (!msg) {
+      feedbackEl.classList.add('hidden');
+      feedbackEl.textContent = '';
+      return;
+    }
+    const toneClasses =
+      tone === 'success'
+        ? 'bg-[#ECFDF5] border-[#A7F3D0] text-[#065F46]'
+        : tone === 'info'
+        ? 'bg-[#EFF6FF] border-[#BFDBFE] text-[#1E3A8A]'
+        : 'bg-[#FEF2F2] border-[#FECACA] text-[#991B1B]';
+    feedbackEl.className = `mb-4 rounded-xl px-4 py-3 text-[13px] leading-relaxed border text-center ${toneClasses}`;
+    feedbackEl.textContent = msg;
+  };
+
+  const getEnteredOtp = () => digitInputs.map((el) => el.value.trim()).join('');
+
+  const syncConfirmButtonState = () => {
+    const code = getEnteredOtp();
+    const expired = getRemainingSeconds() <= 0;
+    if (confirmBtn) {
+      confirmBtn.disabled = isVerifying || expired || isLocked || !/^\d{4}$/.test(code);
+    }
+  };
+
+  function getRemainingSeconds() {
+    const syncedNow = Date.now() + serverOffsetMs;
+    const diffMs = expiresAtMs - syncedNow;
+    if (diffMs <= 0) return 0;
+    return Math.ceil(diffMs / 1000);
+  }
+
+  function formatMmSs(totalSeconds) {
+    const clamped = Math.max(0, totalSeconds);
+    // Start display at 1:59 immediately after 120s OTP is sent (matching Reference 1 & 2)
+    const displaySec = clamped >= 120 ? 119 : clamped;
+    const mins = Math.floor(displaySec / 60);
+    const secs = displaySec % 60;
+    return `${mins}:${String(secs).padStart(2, '0')}`;
+  }
+
+  function updateCountdownUi() {
+    const remaining = getRemainingSeconds();
+    if (timerEl) {
+      timerEl.textContent = formatMmSs(remaining);
+    }
+    if (remaining <= 0) {
+      if (expiryTextEl) {
+        expiryTextEl.textContent = 'OTP expired. Please click Resend OTP to get a new code.';
+      }
+      if (resendBtn && !isResending) {
+        resendBtn.disabled = false;
+      }
+      if (resendLabel) {
+        resendLabel.textContent = 'Resend OTP';
+      }
+      syncConfirmButtonState();
+    } else {
+      if (expiryTextEl) {
+        expiryTextEl.textContent = 'OTP will expire in 2 minutes.';
+      }
+      if (resendBtn) {
+        resendBtn.disabled = true;
+      }
+      if (resendLabel) {
+        resendLabel.textContent = 'Resend OTP';
+      }
+      syncConfirmButtonState();
+    }
+  }
+
+  updateCountdownUi();
+  activeOtpCountdownTimer = window.setInterval(updateCountdownUi, 500);
+
+  if (initialStatus?.status === 'verified') {
+    showOtpFeedback('info', 'This signup has already been verified. Please sign in.');
+  } else if (isLocked) {
+    showOtpFeedback(
+      'error',
+      'Maximum incorrect attempts reached (5/5). Please wait for the timer to expire and request a new OTP.'
+    );
+  } else if (getRemainingSeconds() <= 0) {
+    showOtpFeedback('info', 'Your previous OTP has expired. Click Resend OTP to receive a new code.');
+  }
+
+  // Wire 4 single-digit numeric boxes (auto-advance, backspace back, paste 4 digits)
+  digitInputs.forEach((input, index) => {
+    input.addEventListener('input', (e) => {
+      const cleaned = String(e.target.value || '').replace(/\D/g, '');
+      if (cleaned.length > 1) {
+        // Handle mobile autofill / quick paste into single box
+        const chars = cleaned.slice(0, 4).split('');
+        chars.forEach((ch, offset) => {
+          if (digitInputs[offset]) digitInputs[offset].value = ch;
+        });
+        const nextFocus = digitInputs[Math.min(chars.length, 3)];
+        nextFocus?.focus();
+      } else {
+        input.value = cleaned;
+        if (cleaned && index < digitInputs.length - 1) {
+          digitInputs[index + 1].focus();
+        }
+      }
+      syncConfirmButtonState();
+    });
+
+    input.addEventListener('keydown', (e) => {
+      if (e.key === 'Backspace') {
+        if (!input.value && index > 0) {
+          e.preventDefault();
+          digitInputs[index - 1].value = '';
+          digitInputs[index - 1].focus();
+          syncConfirmButtonState();
+        }
+      } else if (e.key === 'ArrowLeft' && index > 0) {
+        e.preventDefault();
+        digitInputs[index - 1].focus();
+      } else if (e.key === 'ArrowRight' && index < digitInputs.length - 1) {
+        e.preventDefault();
+        digitInputs[index + 1].focus();
+      }
+    });
+
+    input.addEventListener('paste', (e) => {
+      e.preventDefault();
+      const pasted = (e.clipboardData?.getData('text') || '').replace(/\D/g, '').slice(0, 4);
+      if (!pasted) return;
+      pasted.split('').forEach((ch, idx) => {
+        if (digitInputs[idx]) digitInputs[idx].value = ch;
+      });
+      const focusIdx = Math.min(pasted.length - 1, 3);
+      digitInputs[focusIdx]?.focus();
+      syncConfirmButtonState();
+    });
+
+    input.addEventListener('focus', () => {
+      input.select();
+    });
+  });
+
+  // Auto-focus first input box on load
+  requestAnimationFrame(() => {
+    digitInputs[0]?.focus();
+  });
+
+  verifyForm?.addEventListener('submit', async (e) => {
+    e.preventDefault();
+    if (isVerifying) return;
+
+    const otp = getEnteredOtp();
+    if (!/^\d{4}$/.test(otp)) {
+      showOtpFeedback('error', 'Please enter all 4 digits of your verification OTP.');
+      return;
+    }
+    if (getRemainingSeconds() <= 0) {
+      showOtpFeedback('error', 'OTP has expired. Please click Resend OTP for a new code.');
+      syncConfirmButtonState();
+      return;
+    }
+
+    isVerifying = true;
+    syncConfirmButtonState();
+    if (confirmBtn) {
+      confirmBtn.innerHTML =
+        '<span class="inline-block w-4 h-4 rounded-full border-2 border-white border-t-transparent animate-spin shrink-0" aria-hidden="true"></span><span>Verifying OTP...</span>';
+    }
+    showOtpFeedback(null, '');
+
+    try {
+      const res = await apiFetch('/api/auth/otp/verify', {
+        method: 'POST',
+        body: { pendingToken: pending.pendingToken, otp },
+      });
+
+      cleanupOtpVerificationTimer();
+      clearPendingOtpState();
+      clearSignupDraft();
+
+      setSessionToken(res.token);
+      store.user = res.user;
+      notifyStore();
+
+      const successMsg = res.message || 'Email verified successfully. Your account has been created.';
+      showOtpFeedback('success', successMsg);
+      showToast(successMsg, 'success');
+
+      const needsProfileSetup = !res.user?.username || !res.user?.profile?.profileCompleted;
+      const defaultDest =
+        res.user?.role === 'admin'
+          ? '#/admin'
+          : res.user?.role === 'creator'
+          ? '#/creator'
+          : '#/dashboard/settings';
+      const targetHash =
+        needsProfileSetup && !res.user?.isSuperAdmin
+          ? '#/complete-profile'
+          : consumePostLoginRedirect(defaultDest);
+
+      window.setTimeout(() => {
+        window.location.hash = targetHash;
+      }, 650);
+    } catch (err) {
+      if (err?.data?.locked) {
+        isLocked = true;
+      }
+      if (err?.data?.expired) {
+        expiresAtMs = Date.now() - 1000;
+        updateCountdownUi();
+      }
+      const msg = err?.message || 'Verification failed. Please check your OTP and try again.';
+      showOtpFeedback('error', msg);
+      showToast(msg, 'error');
+    } finally {
+      isVerifying = false;
+      if (confirmBtn) {
+        confirmBtn.innerHTML = confirmBtnDefaultHtml;
+      }
+      syncConfirmButtonState();
+    }
+  });
+
+  resendBtn?.addEventListener('click', async () => {
+    if (isResending || getRemainingSeconds() > 0) return;
+
+    isResending = true;
+    resendBtn.disabled = true;
+    if (resendLabel) resendLabel.textContent = 'Sending...';
+    showOtpFeedback(null, '');
+
+    try {
+      const res = await apiFetch('/api/auth/otp/resend', {
+        method: 'POST',
+        body: { pendingToken: pending.pendingToken },
+      });
+
+      isLocked = false;
+      if (res.serverTime) {
+        serverOffsetMs = new Date(res.serverTime).getTime() - Date.now();
+      }
+      if (res.expiresAt) {
+        expiresAtMs = new Date(res.expiresAt).getTime();
+      }
+      pending = {
+        ...pending,
+        maskedEmail: res.maskedEmail || pending.maskedEmail,
+        expiresAt: res.expiresAt || pending.expiresAt,
+        serverTime: res.serverTime || pending.serverTime,
+      };
+      savePendingOtpState(pending);
+
+      digitInputs.forEach((input) => {
+        input.value = '';
+      });
+      digitInputs[0]?.focus();
+      updateCountdownUi();
+
+      const msg = res.message || 'A new 4-digit OTP has been sent to your email.';
+      showOtpFeedback('info', msg);
+      showToast(msg, 'success');
+    } catch (err) {
+      const msg = err?.message || 'Could not resend OTP right now.';
+      showOtpFeedback('error', msg);
+      showToast(msg, 'error');
+      if (getRemainingSeconds() <= 0) {
+        resendBtn.disabled = false;
+      }
+    } finally {
+      isResending = false;
+      if (resendLabel) resendLabel.textContent = 'Resend OTP';
+      updateCountdownUi();
+    }
+  });
+
+  backBtn?.addEventListener('click', () => {
+    cleanupOtpVerificationTimer();
+    window.location.hash = '#/signup';
+  });
+}
+
+function renderForgotPasswordPage(container) {
+  container.innerHTML = `
+    <section class="relative min-h-[calc(100vh-4.5rem)] w-full overflow-hidden bg-gradient-to-br from-[#F7FAFF] via-[#EBF2FF] to-[#DCEBFF] text-[#0A1647] flex items-center justify-center py-8 sm:py-12 px-4 sm:px-6">
+      <div class="pointer-events-none absolute -top-24 -left-24 w-[380px] h-[320px] rounded-full bg-white/70 blur-2xl"></div>
+      <div class="pointer-events-none absolute -bottom-24 -right-20 w-[400px] h-[340px] rounded-full bg-[#B9D5FF]/55 blur-2xl"></div>
+
+      <div class="relative z-10 w-full max-w-[460px] mx-auto">
+        <div class="flex flex-col items-center text-center mb-5">
+          <a href="#/" class="inline-flex items-center justify-center gap-2.5 mb-3">
+            <img
+              src="${OFFICIAL_SCHOLARPRESS_LOGO}"
+              alt="ScholarPress Official Logo"
+              class="h-11 w-auto object-contain shrink-0"
+            />
+            <span class="text-[24px] font-extrabold tracking-tight leading-none">
+              <span class="text-[#0A1647]">Scholar</span><span class="text-[#0F52FC]">Press</span>
+            </span>
+          </a>
+        </div>
+
+        <div class="bg-white rounded-[28px] border border-[#DCE6F7]/90 shadow-[0_24px_60px_-15px_rgba(15,43,102,0.18)] px-5 py-7 sm:p-9">
+          <div class="flex flex-col items-center text-center mb-6">
+            <div class="w-16 h-16 rounded-2xl bg-[#EBF2FF] border border-[#C7DCFF] flex items-center justify-center text-[#0F52FC] mb-4 shadow-sm">
+              <svg class="w-8 h-8" fill="none" stroke="currentColor" stroke-width="1.9" viewBox="0 0 24 24" aria-hidden="true">
+                <path stroke-linecap="round" stroke-linejoin="round" d="M21.75 6.75v10.5a2.25 2.25 0 01-2.25 2.25h-15a2.25 2.25 0 01-2.25-2.25V6.75m19.5 0A2.25 2.25 0 0019.5 4.5h-15a2.25 2.25 0 00-2.25 2.25m19.5 0v.243a2.25 2.25 0 01-1.07 1.916l-7.5 4.615a2.25 2.25 0 01-2.36 0L3.32 8.91a2.25 2.25 0 01-1.07-1.916V6.75"/>
+              </svg>
+            </div>
+            <h1 class="text-[26px] sm:text-[28px] font-extrabold tracking-tight text-[#0A1647] leading-tight">
+              Forgot Password
+            </h1>
+            <p class="text-[14px] text-[#3B5278] leading-relaxed mt-2 max-w-[36ch]">
+              Enter your registered email address and we will send you a secure link to reset your password.
+            </p>
+          </div>
+
+          <div id="forgot-status-box" class="hidden mb-4 rounded-xl px-4 py-3 text-[13px] leading-relaxed border" role="status" aria-live="polite"></div>
+
+          <form id="forgot-form" class="space-y-4" novalidate>
+            <div>
+              <label for="forgot-email-input" class="block text-xs font-bold uppercase tracking-wider text-[#1E3A8A] mb-1.5">
+                Registered Email Address
+              </label>
+              <div class="relative">
+                <span class="pointer-events-none absolute inset-y-0 left-3.5 flex items-center text-[#3B5278]">
+                  <svg class="w-[18px] h-[18px]" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24" aria-hidden="true">
+                    <path stroke-linecap="round" stroke-linejoin="round" d="M16.5 12a4.5 4.5 0 11-9 0 4.5 4.5 0 019 0zm0 0c0 1.657 1.007 3 2.25 3S21 13.657 21 12a9 9 0 10-2.636 6.364M16.5 12V8.25"/>
+                  </svg>
+                </span>
+                <input
+                  id="forgot-email-input"
+                  name="email"
+                  type="email"
+                  autocomplete="email"
+                  required
+                  placeholder="you@example.com"
+                  class="w-full h-12 pl-11 pr-4 rounded-xl border border-[#C6D4E8] bg-white text-[#0A1E44] placeholder:text-[#5B7091] text-[15px] transition-colors focus:border-[#1D4ED8] focus:ring-4 focus:ring-[#1D4ED8]/12 outline-none"
+                />
+              </div>
+            </div>
+
+            <button
+              type="submit"
+              id="forgot-submit-btn"
+              class="w-full h-12 px-5 rounded-2xl bg-gradient-to-r from-[#0F76FF] via-[#004AE2] to-[#002EC4] hover:from-[#0E69EB] hover:to-[#0026A8] active:scale-[0.99] disabled:opacity-65 disabled:cursor-not-allowed text-white text-[15px] font-semibold flex items-center justify-center gap-2.5 shadow-[0_10px_24px_-6px_rgba(0,62,216,0.45)] transition-all duration-150"
+            >
+              <svg class="w-4.5 h-4.5 shrink-0" fill="none" stroke="currentColor" stroke-width="2.1" viewBox="0 0 24 24" aria-hidden="true">
+                <path stroke-linecap="round" stroke-linejoin="round" d="M6 12L3.269 3.126A59.768 59.768 0 0121.485 12 59.77 59.77 0 013.27 20.876L5.999 12zm0 0h7.5"/>
+              </svg>
+              <span>Send Reset Link</span>
+            </button>
+          </form>
+
+          <div class="mt-6 pt-5 border-t border-[#E6EEF9] flex items-center justify-between text-xs font-semibold">
+            <a href="#/login" class="inline-flex items-center gap-1.5 text-[#004AE2] hover:text-[#002EC4] hover:underline">
+              <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" stroke-width="2.4" viewBox="0 0 24 24" aria-hidden="true">
+                <path stroke-linecap="round" stroke-linejoin="round" d="M10.5 19.5L3 12m0 0l7.5-7.5M3 12h18"/>
+              </svg>
+              <span>Back to Sign In</span>
+            </a>
+            <a href="#/signup" class="text-[#3B5278] hover:text-[#0A1647] hover:underline">Create Account</a>
+          </div>
+        </div>
+      </div>
+    </section>
+  `;
+
+  const form = document.getElementById('forgot-form');
+  const emailInput = document.getElementById('forgot-email-input');
+  const submitBtn = document.getElementById('forgot-submit-btn');
+  const statusBox = document.getElementById('forgot-status-box');
+  const defaultBtnHtml = submitBtn?.innerHTML || '';
+
+  const showForgotStatus = (tone, message) => {
+    if (!statusBox) return;
+    const toneClasses =
+      tone === 'success'
+        ? 'bg-[#EFF6FF] border-[#BFDBFE] text-[#1E3A8A]'
+        : 'bg-[#FEF2F2] border-[#FECACA] text-[#991B1B]';
+    statusBox.className = `mb-4 rounded-xl px-4 py-3 text-[13px] leading-relaxed border ${toneClasses}`;
+    statusBox.textContent = message;
+  };
+
+  requestAnimationFrame(() => emailInput?.focus());
+
+  form?.addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const email = emailInput?.value.trim() || '';
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+      showForgotStatus('error', 'Please enter a valid email address.');
+      emailInput?.focus();
+      return;
+    }
+
+    if (submitBtn) {
+      submitBtn.disabled = true;
+      submitBtn.innerHTML =
+        '<span class="inline-block w-4 h-4 rounded-full border-2 border-white border-t-transparent animate-spin shrink-0" aria-hidden="true"></span><span>Sending Reset Link...</span>';
+    }
+    statusBox?.classList.add('hidden');
+
+    try {
+      const res = await apiFetch('/api/auth/forgot-password', {
+        method: 'POST',
+        body: { email },
+      });
+      const msg =
+        res.message ||
+        'If an account matches this email address, we have sent a password reset link. Please check your inbox and spam folder (valid for 15 minutes).';
+      showForgotStatus('success', msg);
+      showToast('Password reset email instructions processed.', 'success');
+    } catch (err) {
+      const msg = err?.message || 'Unable to process password reset request right now.';
+      showForgotStatus('error', msg);
+      showToast(msg, 'error');
+    } finally {
+      if (submitBtn) {
+        submitBtn.disabled = false;
+        submitBtn.innerHTML = defaultBtnHtml;
+      }
+    }
+  });
+}
+
+export async function renderResetPasswordPage(container, resetToken = '', onResetSuccess = null) {
+  const token = String(resetToken || '').trim();
+  const eyeOpenSvg =
+    '<svg class="w-[18px] h-[18px]" fill="none" stroke="currentColor" stroke-width="1.8" viewBox="0 0 24 24" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" d="M2.036 12.322a1.012 1.012 0 010-.639C3.423 7.51 7.36 4.5 12 4.5c4.638 0 8.573 3.007 9.963 7.178.07.207.07.431 0 .639C20.577 16.49 16.64 19.5 12 19.5c-4.638 0-8.573-3.007-9.963-7.178z"/><path stroke-linecap="round" stroke-linejoin="round" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"/></svg>';
+  const eyeClosedSvg =
+    '<svg class="w-[18px] h-[18px]" fill="none" stroke="currentColor" stroke-width="1.8" viewBox="0 0 24 24" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" d="M3.98 8.223A10.477 10.477 0 001.934 12C3.226 16.338 7.244 19.5 12 19.5c.993 0 1.953-.138 2.863-.395M6.228 6.228A10.45 10.45 0 0112 4.5c4.756 0 8.773 3.162 10.065 7.498a10.523 10.523 0 01-4.293 5.774M6.228 6.228L3 3m3.228 3.228l3.65 3.65m7.894 7.894L21 21m-3.228-3.228l-3.65-3.65m0 0a3 3 0 10-4.243-4.243m4.242 4.242L9.88 9.88"/></svg>';
+
+  const renderShellCard = (innerHtml) => {
+    container.innerHTML = `
+      <section class="relative min-h-[calc(100vh-4.5rem)] w-full overflow-hidden bg-gradient-to-br from-[#F7FAFF] via-[#EBF2FF] to-[#DCEBFF] text-[#0A1647] flex items-center justify-center py-8 sm:py-12 px-4 sm:px-6">
+        <div class="pointer-events-none absolute -top-24 -left-24 w-[380px] h-[320px] rounded-full bg-white/70 blur-2xl"></div>
+        <div class="pointer-events-none absolute -bottom-24 -right-20 w-[400px] h-[340px] rounded-full bg-[#B9D5FF]/55 blur-2xl"></div>
+        <div class="relative z-10 w-full max-w-[470px] mx-auto">
+          <div class="flex flex-col items-center text-center mb-5">
+            <a href="#/" class="inline-flex items-center justify-center gap-2.5">
+              <img
+                src="${OFFICIAL_SCHOLARPRESS_LOGO}"
+                alt="ScholarPress Official Logo"
+                class="h-11 w-auto object-contain shrink-0"
+              />
+              <span class="text-[24px] font-extrabold tracking-tight leading-none">
+                <span class="text-[#0A1647]">Scholar</span><span class="text-[#0F52FC]">Press</span>
+              </span>
+            </a>
+          </div>
+          <div class="bg-white rounded-[28px] border border-[#DCE6F7]/90 shadow-[0_24px_60px_-15px_rgba(15,43,102,0.18)] px-5 py-7 sm:p-9">
+            ${innerHtml}
+          </div>
+        </div>
+      </section>
+    `;
+  };
+
+  const renderInvalidState = (title, message) => {
+    renderShellCard(`
+      <div class="text-center">
+        <div class="w-16 h-16 rounded-2xl bg-[#FEF2F2] border border-[#FECACA] text-[#DC2626] flex items-center justify-center mx-auto mb-4">
+          <svg class="w-8 h-8" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24" aria-hidden="true">
+            <path stroke-linecap="round" stroke-linejoin="round" d="M12 9v3.75m9-.75a9 9 0 11-18 0 9 9 0 0118 0zm-9 3.75h.008v.008H12v-.008z"/>
+          </svg>
+        </div>
+        <h1 class="text-[24px] font-extrabold text-[#0A1647] leading-tight">
+          ${esc(title)}
+        </h1>
+        <p class="text-[14px] text-[#3B5278] leading-relaxed mt-2.5">
+          ${esc(message)}
+        </p>
+        <div class="mt-6 flex flex-col gap-2.5">
+          <a href="#/forgot-password" class="w-full h-12 rounded-2xl bg-gradient-to-r from-[#0F76FF] via-[#004AE2] to-[#002EC4] text-white font-semibold text-sm inline-flex items-center justify-center shadow-[0_10px_24px_-6px_rgba(0,62,216,0.45)]">
+            Request a New Reset Link
+          </a>
+          <a href="#/login" class="w-full h-11 rounded-2xl border border-[#C6D4E8] text-[#0A1647] hover:bg-[#F5F9FF] font-semibold text-sm inline-flex items-center justify-center">
+            Back to Login
+          </a>
+        </div>
+      </div>
+    `);
+  };
+
+  if (!token) {
+    renderInvalidState(
+      'Invalid Password Reset Link',
+      'This password reset link is missing or incomplete. Please request a fresh password reset email.'
+    );
+    return;
+  }
+
+  renderShellCard(`
+    <div class="py-6 text-center">
+      <div class="w-12 h-12 rounded-full border-4 border-[#DCE6F7] border-t-[#0F52FC] animate-spin mx-auto mb-4" aria-hidden="true"></div>
+      <h1 class="text-xl font-bold text-[#0A1647]">
+        Verifying Reset Link...
+      </h1>
+      <p class="text-xs text-[#3B5278] mt-1.5">
+        Checking security token validity with ScholarPress.
+      </p>
+    </div>
+  `);
+
+  let validation;
+  try {
+    validation = await apiFetch('/api/auth/reset-password/validate', {
+      method: 'POST',
+      body: { token },
+    });
+  } catch (err) {
+    const reason = err?.data?.reason;
+    const title =
+      reason === 'expired'
+        ? 'Reset Link Expired'
+        : reason === 'used'
+        ? 'Reset Link Already Used'
+        : 'Invalid Reset Link';
+    renderInvalidState(
+      title,
+      err?.message || 'This password reset link is invalid or has expired. Please request a new reset link.'
+    );
+    return;
+  }
+
+  if (!validation?.valid) {
+    renderInvalidState(
+      'Invalid Reset Link',
+      validation?.error || 'This password reset link is invalid or has expired.'
+    );
+    return;
+  }
+
+  renderShellCard(`
+    <div class="flex flex-col items-center text-center mb-6">
+      <div class="mb-3">
+        ${renderShieldLockIllustration('w-14 h-16', false)}
+      </div>
+      <h1 class="text-[26px] font-extrabold tracking-tight text-[#0A1647] leading-tight">
+        Create New Password
+      </h1>
+      <p class="text-[13.5px] text-[#3B5278] mt-1.5">
+        Choose a strong new password for your ScholarPress account
+      </p>
+      ${
+        validation.maskedEmail
+          ? `<div class="mt-2.5 inline-flex items-center gap-1.5 px-3 py-1 rounded-full bg-[#E3EEFF] text-[#0039D7] font-semibold text-xs">
+              <span>Account:</span>
+              <span>${esc(validation.maskedEmail)}</span>
+            </div>`
+          : ''
+      }
+    </div>
+
+    <div id="reset-status-box" class="hidden mb-4 rounded-xl px-4 py-3 text-[13px] leading-relaxed border" role="status" aria-live="polite"></div>
+
+    <form id="reset-password-form" class="space-y-4" novalidate>
+      <div>
+        <label for="reset-new-password" class="block text-xs font-bold uppercase tracking-wider text-[#1E3A8A] mb-1.5">
+          New Password
+        </label>
+        <div class="relative">
+          <span class="pointer-events-none absolute inset-y-0 left-3.5 flex items-center text-[#3B5278]">
+            <svg class="w-[18px] h-[18px]" fill="none" stroke="currentColor" stroke-width="1.9" viewBox="0 0 24 24" aria-hidden="true">
+              <path stroke-linecap="round" stroke-linejoin="round" d="M16.5 10.5V6.75a4.5 4.5 0 10-9 0v3.75m-.75 11.25h10.5a2.25 2.25 0 002.25-2.25v-6.75a2.25 2.25 0 00-2.25-2.25H6.75a2.25 2.25 0 00-2.25 2.25v6.75a2.25 2.25 0 002.25 2.25z"/>
+            </svg>
+          </span>
+          <input
+            id="reset-new-password"
+            name="password"
+            type="password"
+            autocomplete="new-password"
+            minlength="8"
+            maxlength="128"
+            required
+            placeholder="Minimum 8 characters"
+            class="w-full h-12 pl-11 pr-12 rounded-xl border border-[#C6D4E8] bg-white text-[#0A1E44] placeholder:text-[#5B7091] text-[15px] transition-colors focus:border-[#1D4ED8] focus:ring-4 focus:ring-[#1D4ED8]/12 outline-none"
+          />
+          <button
+            type="button"
+            id="reset-toggle-password"
+            aria-label="Show new password"
+            class="absolute inset-y-0 right-1 w-11 flex items-center justify-center rounded-lg text-[#5B7091] hover:text-[#0A1E44] transition-colors"
+          >
+            ${eyeClosedSvg}
+          </button>
+        </div>
+        <div id="reset-strength-wrap" class="mt-2">
+          <div class="flex items-center justify-between gap-2 mb-1">
+            <span class="text-[11px] font-semibold text-[#4B607F]">Password strength</span>
+            <span id="reset-strength-label" class="text-[11px] font-bold text-[#3B5278]">Enter at least 8 characters</span>
+          </div>
+          <div class="w-full h-1.5 rounded-full bg-[#E6EEF9] overflow-hidden">
+            <div id="reset-strength-bar" class="h-full w-0 rounded-full transition-all duration-200"></div>
+          </div>
+        </div>
+        <p id="reset-err-password" class="hidden mt-1 text-[12px] font-medium text-[#B91C1C]"></p>
+      </div>
+
+      <div>
+        <label for="reset-confirm-password" class="block text-xs font-bold uppercase tracking-wider text-[#1E3A8A] mb-1.5">
+          Confirm New Password
+        </label>
+        <div class="relative">
+          <span class="pointer-events-none absolute inset-y-0 left-3.5 flex items-center text-[#3B5278]">
+            <svg class="w-[18px] h-[18px]" fill="none" stroke="currentColor" stroke-width="1.9" viewBox="0 0 24 24" aria-hidden="true">
+              <path stroke-linecap="round" stroke-linejoin="round" d="M16.5 10.5V6.75a4.5 4.5 0 10-9 0v3.75m-.75 11.25h10.5a2.25 2.25 0 002.25-2.25v-6.75a2.25 2.25 0 00-2.25-2.25H6.75a2.25 2.25 0 00-2.25 2.25v6.75a2.25 2.25 0 002.25 2.25z"/>
+            </svg>
+          </span>
+          <input
+            id="reset-confirm-password"
+            name="confirmPassword"
+            type="password"
+            autocomplete="new-password"
+            minlength="8"
+            maxlength="128"
+            required
+            placeholder="Re-enter your new password"
+            class="w-full h-12 pl-11 pr-12 rounded-xl border border-[#C6D4E8] bg-white text-[#0A1E44] placeholder:text-[#5B7091] text-[15px] transition-colors focus:border-[#1D4ED8] focus:ring-4 focus:ring-[#1D4ED8]/12 outline-none"
+          />
+          <button
+            type="button"
+            id="reset-toggle-confirm"
+            aria-label="Show confirm new password"
+            class="absolute inset-y-0 right-1 w-11 flex items-center justify-center rounded-lg text-[#5B7091] hover:text-[#0A1E44] transition-colors"
+          >
+            ${eyeClosedSvg}
+          </button>
+        </div>
+        <p id="reset-err-confirm" class="hidden mt-1 text-[12px] font-medium text-[#B91C1C]"></p>
+      </div>
+
+      <button
+        type="submit"
+        id="reset-submit-btn"
+        class="w-full h-12 px-5 rounded-2xl bg-gradient-to-r from-[#0F76FF] via-[#004AE2] to-[#002EC4] hover:from-[#0E69EB] hover:to-[#0026A8] active:scale-[0.99] disabled:opacity-65 disabled:cursor-not-allowed text-white text-[15px] font-semibold flex items-center justify-center gap-2 shadow-[0_10px_24px_-6px_rgba(0,62,216,0.45)] transition-all duration-150"
+      >
+        <svg class="w-4.5 h-4.5 shrink-0" fill="none" stroke="currentColor" stroke-width="2.2" viewBox="0 0 24 24" aria-hidden="true">
+          <path stroke-linecap="round" stroke-linejoin="round" d="M9 12.75L11.25 15 15 9.75m-3-7.036A11.959 11.959 0 013.598 6 11.99 11.99 0 003 9.749c0 5.592 3.824 10.29 9 11.623 5.176-1.332 9-6.03 9-11.622 0-1.31-.21-2.571-.598-3.751h-.152c-3.196 0-6.1-1.248-8.25-3.285z"/>
+        </svg>
+        <span>Reset Password</span>
+      </button>
+    </form>
+  `);
+
+  const form = document.getElementById('reset-password-form');
+  const passInput = document.getElementById('reset-new-password');
+  const confirmInput = document.getElementById('reset-confirm-password');
+  const submitBtn = document.getElementById('reset-submit-btn');
+  const statusBox = document.getElementById('reset-status-box');
+  const strengthBar = document.getElementById('reset-strength-bar');
+  const strengthLabel = document.getElementById('reset-strength-label');
+  const defaultBtnHtml = submitBtn?.innerHTML || '';
+
+  const wireToggle = (btnId, inputEl, labelText) => {
+    const btn = document.getElementById(btnId);
+    if (!btn || !inputEl) return;
+    btn.addEventListener('click', () => {
+      const revealing = inputEl.type === 'password';
+      inputEl.type = revealing ? 'text' : 'password';
+      btn.setAttribute('aria-label', `${revealing ? 'Hide' : 'Show'} ${labelText}`);
+      btn.innerHTML = revealing ? eyeOpenSvg : eyeClosedSvg;
+    });
+  };
+  wireToggle('reset-toggle-password', passInput, 'new password');
+  wireToggle('reset-toggle-confirm', confirmInput, 'confirm new password');
+
+  const setErr = (inputEl, errId, msg) => {
+    const errEl = document.getElementById(errId);
+    if (!errEl) return;
+    if (msg) {
+      errEl.textContent = msg;
+      errEl.classList.remove('hidden');
+      inputEl?.classList.add('border-[#DC2626]');
+    } else {
+      errEl.textContent = '';
+      errEl.classList.add('hidden');
+      inputEl?.classList.remove('border-[#DC2626]');
+    }
+  };
+
+  passInput?.addEventListener('input', () => {
+    const val = passInput.value;
+    setErr(passInput, 'reset-err-password', '');
+    if (!val) {
+      if (strengthBar) {
+        strengthBar.className = 'h-full w-0 rounded-full transition-all duration-200';
+        strengthBar.style.width = '0%';
+      }
+      if (strengthLabel) {
+        strengthLabel.textContent = 'Enter at least 8 characters';
+        strengthLabel.className = 'text-[11px] font-bold text-[#3B5278]';
+      }
+      return;
+    }
+    let score = 0;
+    if (val.length >= 8) score++;
+    if (val.length >= 12) score++;
+    if (/[A-Z]/.test(val) && /[a-z]/.test(val)) score++;
+    if (/\d/.test(val)) score++;
+    if (/[^A-Za-z0-9]/.test(val)) score++;
+    const idx = val.length < 8 ? 0 : Math.min(3, Math.max(0, score - 1));
+    const levels = [
+      { w: '25%', bg: 'bg-[#DC2626]', text: 'text-[#DC2626]', label: 'Weak' },
+      { w: '50%', bg: 'bg-[#D97706]', text: 'text-[#D97706]', label: 'Fair' },
+      { w: '75%', bg: 'bg-[#2563EB]', text: 'text-[#2563EB]', label: 'Good' },
+      { w: '100%', bg: 'bg-[#059669]', text: 'text-[#059669]', label: 'Strong' },
+    ];
+    const lvl = levels[idx];
+    if (strengthBar) {
+      strengthBar.className = `h-full rounded-full transition-all duration-200 ${lvl.bg}`;
+      strengthBar.style.width = lvl.w;
+    }
+    if (strengthLabel) {
+      strengthLabel.textContent = lvl.label;
+      strengthLabel.className = `text-[11px] font-bold ${lvl.text}`;
+    }
+    if (confirmInput?.value) {
+      setErr(
+        confirmInput,
+        'reset-err-confirm',
+        confirmInput.value === val ? '' : 'Passwords do not match.'
+      );
+    }
+  });
+
+  confirmInput?.addEventListener('input', () => {
+    if (!confirmInput.value) {
+      setErr(confirmInput, 'reset-err-confirm', '');
+      return;
+    }
+    setErr(
+      confirmInput,
+      'reset-err-confirm',
+      confirmInput.value === passInput?.value ? '' : 'Passwords do not match.'
+    );
+  });
+
+  requestAnimationFrame(() => passInput?.focus());
+
+  form?.addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const password = passInput?.value || '';
+    const confirmPassword = confirmInput?.value || '';
+    let valid = true;
+
+    if (password.length < 8 || password.length > 128) {
+      setErr(passInput, 'reset-err-password', 'Password must be between 8 and 128 characters.');
+      valid = false;
+    } else {
+      setErr(passInput, 'reset-err-password', '');
+    }
+
+    if (!confirmPassword || confirmPassword !== password) {
+      setErr(confirmInput, 'reset-err-confirm', 'Passwords do not match.');
+      valid = false;
+    } else {
+      setErr(confirmInput, 'reset-err-confirm', '');
+    }
+
+    if (!valid) return;
+
+    if (submitBtn) {
+      submitBtn.disabled = true;
+      submitBtn.innerHTML =
+        '<span class="inline-block w-4 h-4 rounded-full border-2 border-white border-t-transparent animate-spin shrink-0" aria-hidden="true"></span><span>Resetting Password...</span>';
+    }
+    statusBox?.classList.add('hidden');
+
+    try {
+      await apiFetch('/api/auth/reset-password', {
+        method: 'POST',
+        body: { token, password, confirmPassword },
+      });
+
+      onResetSuccess?.();
+      if (store.sessionToken) {
+        setSessionToken(null);
+        store.user = null;
+        notifyStore();
+      }
+
+      showToast('Your password has been successfully reset!', 'success');
+
+      renderShellCard(`
+        <div class="text-center py-2">
+          <div class="w-16 h-16 rounded-full bg-[#ECFDF5] border border-[#A7F3D0] text-[#059669] flex items-center justify-center mx-auto mb-4 shadow-sm">
+            <svg class="w-8 h-8" fill="none" stroke="currentColor" stroke-width="2.4" viewBox="0 0 24 24" aria-hidden="true">
+              <path stroke-linecap="round" stroke-linejoin="round" d="M4.5 12.75l6 6 9-13.5"/>
+            </svg>
+          </div>
+          <h1 class="text-[24px] sm:text-[26px] font-extrabold text-[#0A1647] leading-tight">
+            Your password has been successfully reset!
+          </h1>
+          <p class="text-[14px] text-[#3B5278] leading-relaxed mt-2.5">
+            Your ScholarPress account is now secured with your new password.
+          </p>
+          <div class="mt-7">
+            <a href="#/login" class="w-full h-12 rounded-2xl bg-gradient-to-r from-[#0F76FF] via-[#004AE2] to-[#002EC4] hover:from-[#0E69EB] hover:to-[#0026A8] text-white font-semibold text-[15px] inline-flex items-center justify-center shadow-[0_10px_24px_-6px_rgba(0,62,216,0.45)] transition-all">
+              Go to Login
+            </a>
+          </div>
+        </div>
+      `);
+    } catch (err) {
+      const reason = err?.data?.reason;
+      if (reason === 'expired' || reason === 'used') {
+        renderInvalidState(
+          reason === 'expired' ? 'Reset Link Expired' : 'Reset Link Already Used',
+          err?.message || 'This password reset link is no longer valid. Please request a new reset link.'
+        );
+        return;
+      }
+      if (statusBox) {
+        statusBox.className =
+          'mb-4 rounded-xl px-4 py-3 text-[13px] leading-relaxed border bg-[#FEF2F2] border-[#FECACA] text-[#991B1B]';
+        statusBox.textContent = err?.message || 'Unable to reset password right now.';
+      }
+      showToast(err?.message || 'Unable to reset password.', 'error');
+    } finally {
+      if (submitBtn) {
+        submitBtn.disabled = false;
+        submitBtn.innerHTML = defaultBtnHtml;
+      }
+    }
+  });
+}
+
+export function renderAuthPage(container, mode = 'login', options = {}) {
   const isSignup = mode === 'signup';
   const isForgot = mode === 'forgot';
   const isReset = mode === 'reset';
@@ -1036,38 +2305,7 @@ export function renderAuthPage(container, mode = 'login') {
   }
 
   if (isForgot) {
-    container.innerHTML = `
-      <div class="max-w-md mx-auto px-4 py-8 sm:py-16">
-        <div class="bg-white dark:bg-[#111A2E] border border-slate-200 dark:border-slate-800 rounded-xl p-5 sm:p-8">
-          <h1 class="font-display text-2xl font-semibold text-slate-900 dark:text-white mb-2">Forgot Password</h1>
-          <p class="text-sm text-slate-600 dark:text-slate-400 mb-6">Enter your registered email address to request a secure password reset.</p>
-          <form id="forgot-form" class="space-y-4">
-            <div>
-              <label class="block text-xs font-semibold text-slate-600 dark:text-slate-300 mb-1">Email Address</label>
-              <input name="email" type="email" required class="w-full px-3.5 py-2.5 text-sm rounded-lg border border-slate-300 dark:border-slate-700 bg-slate-50 dark:bg-[#0B1120]" />
-            </div>
-            <button type="submit" class="w-full py-2.5 px-4 text-sm font-semibold rounded-lg bg-[#0F2547] hover:bg-[#1B3B6F] dark:bg-sky-500 text-white dark:text-slate-950">Request Password Reset</button>
-          </form>
-          <div id="forgot-result" class="mt-4"></div>
-          <p class="text-xs text-slate-500 mt-6 text-center"><a href="#/login" class="font-semibold text-[#0F2547] dark:text-sky-400 hover:underline">Back to Sign In</a></p>
-        </div>
-      </div>
-    `;
-    document.getElementById('forgot-form')?.addEventListener('submit', async (e) => {
-      e.preventDefault();
-      const email = new FormData(e.target).get('email');
-      try {
-        const res = await apiFetch('/api/auth/forgot-password', { method: 'POST', body: { email } });
-        const box = document.getElementById('forgot-result');
-        box.innerHTML = `
-          <div class="p-4 rounded-lg bg-slate-50 dark:bg-[#0B1120] border border-slate-200 dark:border-slate-800 text-xs space-y-2">
-            <p class="text-slate-700 dark:text-slate-300">${esc(res.message)}</p>
-          </div>
-        `;
-      } catch (err) {
-        showToast(err.message, 'error');
-      }
-    });
+    renderForgotPasswordPage(container);
     return;
   }
 
@@ -1075,40 +2313,8 @@ export function renderAuthPage(container, mode = 'login') {
     const qs = window.location.hash.includes('?')
       ? new URLSearchParams(window.location.hash.split('?')[1])
       : new URLSearchParams();
-    const prefillToken = qs.get('token') || '';
-    container.innerHTML = `
-      <div class="max-w-md mx-auto px-4 py-8 sm:py-16">
-        <div class="bg-white dark:bg-[#111A2E] border border-slate-200 dark:border-slate-800 rounded-xl p-5 sm:p-8">
-          <h1 class="font-display text-2xl font-semibold text-slate-900 dark:text-white mb-2">Reset Password</h1>
-          <p class="text-sm text-slate-600 dark:text-slate-400 mb-6">Provide your reset token and choose a new password (minimum 8 characters).</p>
-          <form id="reset-form" class="space-y-4">
-            <div>
-              <label class="block text-xs font-semibold text-slate-600 dark:text-slate-300 mb-1">Reset Token</label>
-              <input name="token" value="${esc(prefillToken)}" required class="w-full px-3.5 py-2.5 text-sm font-mono rounded-lg border border-slate-300 dark:border-slate-700 bg-slate-50 dark:bg-[#0B1120]" />
-            </div>
-            <div>
-              <label class="block text-xs font-semibold text-slate-600 dark:text-slate-300 mb-1">New Password</label>
-              <input name="password" type="password" minlength="8" required class="w-full px-3.5 py-2.5 text-sm rounded-lg border border-slate-300 dark:border-slate-700 bg-slate-50 dark:bg-[#0B1120]" />
-            </div>
-            <button type="submit" class="w-full py-2.5 px-4 text-sm font-semibold rounded-lg bg-[#0F2547] hover:bg-[#1B3B6F] dark:bg-sky-500 text-white dark:text-slate-950">Update Password</button>
-          </form>
-        </div>
-      </div>
-    `;
-    document.getElementById('reset-form')?.addEventListener('submit', async (e) => {
-      e.preventDefault();
-      const fd = new FormData(e.target);
-      try {
-        const res = await apiFetch('/api/auth/reset-password', {
-          method: 'POST',
-          body: { token: fd.get('token'), password: fd.get('password') },
-        });
-        showToast(res.message, 'success');
-        window.location.hash = '#/login';
-      } catch (err) {
-        showToast(err.message, 'error');
-      }
-    });
+    const prefillToken = options?.resetToken || qs.get('token') || '';
+    renderResetPasswordPage(container, prefillToken);
     return;
   }
 
@@ -2028,6 +3234,33 @@ export async function renderUserDashboardPage(container, activeTab = 'overview')
             </div>
             <button type="submit" class="px-5 py-2.5 text-sm font-semibold rounded-lg border border-slate-300 dark:border-slate-700 hover:bg-slate-100 dark:hover:bg-slate-800 text-slate-900 dark:text-white">Update Password</button>
           </form>
+
+          <section id="sp-privacy-section" class="bg-white dark:bg-[#111A2E] border border-slate-200 dark:border-slate-800 rounded-xl p-5 sm:p-6 space-y-4">
+            <div class="flex flex-wrap items-start justify-between gap-3">
+              <div>
+                <h3 class="font-display text-lg font-semibold text-slate-900 dark:text-white">Search History &amp; Recommendations Privacy</h3>
+                <p class="text-xs text-slate-500 dark:text-slate-400 mt-0.5">Control whether your search activity is saved to personalize study suggestions and recommendations.</p>
+              </div>
+              <button type="button" id="sp-clear-search-history-btn" class="px-3 py-1.5 text-xs font-semibold rounded-lg border border-red-200 dark:border-red-900/60 text-red-700 dark:text-red-400 hover:bg-red-50 dark:hover:bg-red-950/30 transition-colors">
+                Clear Search History
+              </button>
+            </div>
+
+            <label class="flex items-start gap-3 p-3.5 rounded-lg border border-slate-200 dark:border-slate-800 bg-slate-50/70 dark:bg-[#0B1120] cursor-pointer">
+              <input type="checkbox" id="sp-personalization-toggle" ${prof.personalizationEnabled !== false ? 'checked' : ''} class="mt-0.5 rounded border-slate-300 dark:border-slate-600 text-[#0F2547] focus:ring-[#0F2547]" />
+              <span class="text-xs">
+                <span class="block font-semibold text-slate-900 dark:text-white">Personalized Smart Search &amp; Recommendations</span>
+                <span class="block text-slate-500 dark:text-slate-400 mt-0.5">Remember my recent searches and watch history to rank relevant chapters and lectures higher.</span>
+              </span>
+            </label>
+
+            <div>
+              <div class="text-xs font-semibold text-slate-700 dark:text-slate-300 mb-2">Recent Searches</div>
+              <div id="sp-search-history-list" class="divide-y divide-slate-100 dark:divide-slate-800 border border-slate-200 dark:border-slate-800 rounded-lg bg-slate-50/40 dark:bg-[#0B1120]">
+                <div class="p-3 text-xs text-slate-500">Loading recent searches...</div>
+              </div>
+            </div>
+          </section>
         </div>
       `;
     }
@@ -2232,6 +3465,85 @@ export async function renderUserDashboardPage(container, activeTab = 'overview')
         showToast(err.message, 'error');
       }
     });
+
+    if (activeTab === 'settings') {
+      const historyListEl = document.getElementById('sp-search-history-list');
+      const persToggleEl = document.getElementById('sp-personalization-toggle');
+      const clearHistBtn = document.getElementById('sp-clear-search-history-btn');
+
+      const loadSearchHistoryPanel = async () => {
+        if (!historyListEl) return;
+        try {
+          const histRes = await apiFetch('/api/search/history');
+          if (persToggleEl && typeof histRes.personalizationEnabled === 'boolean') {
+            persToggleEl.checked = histRes.personalizationEnabled;
+          }
+          const rows = histRes.history || [];
+          if (!rows.length) {
+            historyListEl.innerHTML = `<div class="p-3.5 text-xs text-slate-500 dark:text-slate-400">No saved searches yet.</div>`;
+            return;
+          }
+          historyListEl.innerHTML = rows
+            .map(
+              (row) => `
+            <div class="flex items-center justify-between gap-3 px-3.5 py-2.5 text-xs">
+              <a href="#/explore?q=${encodeURIComponent(row.query)}" class="min-w-0 flex-1 truncate font-medium text-slate-800 dark:text-slate-200 hover:text-[#0F2547] dark:hover:text-sky-400">
+                ${esc(row.query)}
+              </a>
+              <span class="text-[11px] text-slate-400 whitespace-nowrap shrink-0 tabular-nums">${Number(row.resultsCount || 0)} results</span>
+              <button type="button" data-del-search-id="${row.id}" aria-label="Delete search query" class="sp-del-search-entry text-slate-400 hover:text-red-600 dark:hover:text-red-400 font-semibold px-1.5 py-0.5 shrink-0">Remove</button>
+            </div>`
+            )
+            .join('');
+
+          historyListEl.querySelectorAll('.sp-del-search-entry').forEach((btn) => {
+            btn.addEventListener('click', async () => {
+              try {
+                await apiFetch(`/api/search/history?id=${encodeURIComponent(btn.dataset.delSearchId)}`, {
+                  method: 'DELETE',
+                });
+                loadSearchHistoryPanel();
+              } catch (err) {
+                showToast(err.message, 'error');
+              }
+            });
+          });
+        } catch {
+          if (historyListEl) {
+            historyListEl.innerHTML = `<div class="p-3.5 text-xs text-slate-500">Unable to load search history right now.</div>`;
+          }
+        }
+      };
+
+      persToggleEl?.addEventListener('change', async () => {
+        const enabled = Boolean(persToggleEl.checked);
+        try {
+          const res = await apiFetch('/api/search/preferences', {
+            method: 'PATCH',
+            body: { personalizationEnabled: enabled },
+          });
+          if (store.user) {
+            store.user.profile = { ...(store.user.profile || {}), personalizationEnabled: enabled };
+          }
+          showToast(res.message, 'success');
+        } catch (err) {
+          persToggleEl.checked = !enabled;
+          showToast(err.message, 'error');
+        }
+      });
+
+      clearHistBtn?.addEventListener('click', async () => {
+        try {
+          const res = await apiFetch('/api/search/history', { method: 'DELETE' });
+          showToast(res.message || 'Search history cleared.', 'success');
+          loadSearchHistoryPanel();
+        } catch (err) {
+          showToast(err.message, 'error');
+        }
+      });
+
+      loadSearchHistoryPanel();
+    }
   } catch (err) {
     container.innerHTML = `<div class="max-w-3xl mx-auto p-12 text-red-600">${esc(err.message)}</div>`;
   }
