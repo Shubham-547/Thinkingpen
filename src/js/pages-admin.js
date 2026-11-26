@@ -1333,7 +1333,8 @@ export async function renderAdminDashboardPage(container, activeTab = 'overview'
                         }
                         <td class="px-4 py-3 text-right whitespace-nowrap space-x-2.5 font-semibold">
                           ${c.status !== 'approved' ? `<button type="button" data-cid="${c.id}" data-status="approved" class="adm-content-mod text-emerald-700 dark:text-emerald-400 hover:underline">Approve</button>` : ''}
-                          ${c.status === 'pending' ? `<button type="button" data-cid="${c.id}" data-status="rejected" class="adm-content-reject text-amber-700 dark:text-amber-400 hover:underline">Reject</button>` : ''}
+                          ${c.status === 'pending' || c.status === 'rejected' ? `<button type="button" data-cid="${c.id}" data-status="changes_requested" class="adm-content-reject text-sky-700 dark:text-sky-400 hover:underline">Request Changes</button>` : ''}
+                          ${c.status === 'pending' || c.status === 'changes_requested' ? `<button type="button" data-cid="${c.id}" data-status="rejected" class="adm-content-reject text-amber-700 dark:text-amber-400 hover:underline">Reject</button>` : ''}
                           ${
                             !onlyPending
                               ? `<button type="button" data-cid="${c.id}" data-featured="${c.isFeatured ? 'false' : 'true'}" class="adm-content-feat text-[#1B3B6F] dark:text-sky-400 hover:underline">${c.isFeatured ? 'Unfeature' : 'Feature'}</button>`
@@ -2269,16 +2270,32 @@ function wireAdminHandlers(container, activeTab, subParam = null) {
   container.querySelectorAll('.adm-content-reject').forEach((btn) => {
     btn.addEventListener('click', () => {
       const targetStatus = btn.dataset.status;
+      const modalTitle =
+        targetStatus === 'changes_requested'
+          ? 'Request Changes'
+          : targetStatus === 'rejected'
+          ? 'Reject Submission'
+          : 'Remove Publication';
+      const confirmLabel =
+        targetStatus === 'changes_requested'
+          ? 'Send Feedback & Request Changes'
+          : targetStatus === 'rejected'
+          ? 'Confirm Reject'
+          : 'Confirm Remove';
+      const confirmCls =
+        targetStatus === 'changes_requested'
+          ? 'bg-amber-600 hover:bg-amber-700 text-white'
+          : 'bg-red-700 hover:bg-red-800 text-white';
       openModal({
-        title: targetStatus === 'rejected' ? 'Reject Submission' : 'Remove Publication',
+        title: modalTitle,
         bodyHtml: `
           <form id="adm-reject-modal-form" class="space-y-4">
             <div>
-              <label class="block text-xs font-semibold mb-1">Moderator Reason (sent to creator)</label>
+              <label class="block text-xs font-semibold mb-1">${targetStatus === 'changes_requested' ? 'Feedback &amp; Correction Instructions (sent to creator)' : 'Moderator Reason (sent to creator)'}</label>
               <textarea name="reason" rows="3" required placeholder="Explain what needs correction or why this content violates policy..." class="w-full px-3 py-2 text-sm rounded-lg border border-slate-300 dark:border-slate-700 bg-slate-50 dark:bg-[#0B1120]"></textarea>
             </div>
             <div class="flex justify-end">
-              <button type="submit" class="px-4 py-2 text-xs font-semibold rounded-lg bg-red-700 text-white">Confirm ${esc(targetStatus)}</button>
+              <button type="submit" class="px-4 py-2 text-xs font-semibold rounded-lg ${confirmCls}">${esc(confirmLabel)}</button>
             </div>
           </form>
         `,

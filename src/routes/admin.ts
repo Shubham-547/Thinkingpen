@@ -9,6 +9,7 @@ import {
   categories,
   commissionRecords,
   contents,
+  creatorContentHistory,
   creatorProfiles,
   creatorWallets,
   deletedAccountLogs,
@@ -1176,14 +1177,26 @@ router.patch('/contents/:id', async (req: AuthRequest, res) => {
     const updates: Record<string, unknown> = { updatedAt: new Date() };
     const statusAction = req.body?.status;
 
-    if (statusAction && ['approved', 'rejected', 'removed', 'pending', 'draft'].includes(statusAction)) {
+    if (
+      statusAction &&
+      ['approved', 'rejected', 'changes_requested', 'removed', 'pending', 'draft'].includes(statusAction)
+    ) {
       updates.status = statusAction;
       if (statusAction === 'approved') {
         updates.publishedAt = existing.publishedAt || new Date();
         updates.rejectionReason = null;
-      }
-      if (statusAction === 'rejected' || statusAction === 'removed') {
-        updates.rejectionReason = String(req.body?.rejectionReason || 'Removed by moderator').trim();
+      } else if (statusAction === 'changes_requested') {
+        const feedback = String(req.body?.feedback || req.body?.rejectionReason || '').trim();
+        if (!feedback || feedback.length < 5) {
+          return res.status(400).json({ error: 'Please provide clear feedback/correction instructions (at least 5 characters).' });
+        }
+        updates.rejectionReason = feedback;
+      } else if (statusAction === 'rejected' || statusAction === 'removed') {
+        updates.rejectionReason = String(
+          req.body?.feedback || req.body?.rejectionReason || 'Removed by moderator'
+        ).trim();
+      } else if (statusAction === 'pending') {
+        updates.rejectionReason = existing.rejectionReason || null;
       }
     }
 
@@ -1209,7 +1222,7 @@ router.patch('/contents/:id', async (req: AuthRequest, res) => {
       .where(eq(contents.id, id))
       .returning();
 
-    // Notify creator on approval / rejection / removal
+    // Notify creator on approval / changes_requested / rejection / removal
     if (statusAction === 'approved' && existing.status !== 'approved') {
       await db.insert(notifications).values({
         userId: existing.creatorId,
@@ -1235,14 +1248,60 @@ router.patch('/contents/:id', async (req: AuthRequest, res) => {
           }))
         );
       }
+    } else if (statusAction === 'changes_requested') {
+      await db.insert(notifications).values({
+        userId: existing.creatorId,
+        type: 'content_changes_requested',
+        title: 'Changes requested for your submission',
+        message: `Moderator feedback on "${existing.title}": ${updates.rejectionReason}`,
+        link: `#/creator/pending/${existing.id}`,
+      });
     } else if (statusAction === 'rejected' || statusAction === 'removed') {
       await db.insert(notifications).values({
         userId: existing.creatorId,
         type: 'content_rejected',
         title: statusAction === 'rejected' ? 'Publication submission declined' : 'Publication removed',
         message: `"${existing.title}" was ${statusAction}. Reason: ${updates.rejectionReason}`,
-        link: '#/creator',
+        link: `#/creator/pending/${existing.id}`,
       });
+    }
+
+    if (
+      statusAction &&
+      ['approved', 'rejected', 'changes_requested', 'removed', 'pending', 'draft'].includes(statusAction)
+    ) {
+      const historyActionMap: Record<string, string> = {
+        approved: 'approved',
+        rejected: 'rejected',
+        changes_requested: 'changes_requested',
+        removed: 'removed',
+        pending: 'under_review',
+        draft: 'moved_to_draft',
+      };
+      try {
+        await db.insert(creatorContentHistory).values({
+          creatorId: existing.creatorId,
+          contentId: existing.id,
+          action: historyActionMap[statusAction] || statusAction,
+          contentTitle: existing.title,
+          contentType: existing.contentType,
+          authorName: existing.authorName,
+          details: {
+            slug: existing.slug,
+            previousStatus: existing.status,
+            newStatus: updated.status,
+            feedback: updated.rejectionReason || null,
+            correctionInstructions:
+              typeof req.body?.correctionInstructions === 'string'
+                ? req.body.correctionInstructions.trim() || null
+                : null,
+            reviewerId: req.user!.id,
+            reviewedAt: new Date().toISOString(),
+          },
+        });
+      } catch (histErr) {
+        console.warn('Admin moderation history insert warning:', (histErr as Error).message);
+      }
     }
 
     await logAudit(

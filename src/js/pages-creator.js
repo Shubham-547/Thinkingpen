@@ -19,6 +19,37 @@ import {
   store,
   uploadFileResilient,
 } from './api.js';
+import {
+  buildPublishedListUrl,
+  cleanupPublishedFloatingMenu,
+  renderPublishedAnalyticsHtml,
+  renderPublishedContentSectionHtml,
+  renderPublishedDetailViewHtml,
+  renderPublishedPreviewHtml,
+  wirePublishedListEvents,
+  wirePublishedSubViewEvents,
+} from './pages-creator-published.js';
+import {
+  buildDraftsListUrl,
+  cleanupDraftFloatingMenu,
+  renderDraftContentSectionHtml,
+  renderDraftPreviewHtml,
+  wireDraftPreviewEvents,
+  wireDraftsListEvents,
+} from './pages-creator-drafts.js';
+import {
+  buildPendingListUrl,
+  cleanupPendingFloatingMenu,
+  renderPendingSectionHtml,
+  renderSubmissionDetailsHtml,
+  wirePendingListEvents,
+  wireSubmissionDetailsEvents,
+} from './pages-creator-pending.js';
+import {
+  buildHistoryUrl,
+  renderCreatorHistoryHtml,
+  wireCreatorHistoryHandlers,
+} from './pages-creator-history.js';
 
 function renderOverviewSkeletonHtml() {
   return `
@@ -346,7 +377,7 @@ function renderCreatorOverviewSectionHtml(ov, state = {}) {
               <div class="font-mono text-xl font-bold text-amber-700 dark:text-amber-400 tabular-nums">${Number(cp.pendingCount || 0)}</div>
               <div class="text-xs text-slate-500 dark:text-slate-400 mt-0.5">Pending</div>
             </a>
-            <a href="#/creator/pending" class="col-span-2 sm:col-span-1 p-3 rounded-xl bg-slate-50 dark:bg-[#0B1120] border border-slate-100 dark:border-slate-800/80 hover:border-slate-300 dark:hover:border-slate-700 transition-colors">
+            <a href="#/creator/history" class="col-span-2 sm:col-span-1 p-3 rounded-xl bg-slate-50 dark:bg-[#0B1120] border border-slate-100 dark:border-slate-800/80 hover:border-slate-300 dark:hover:border-slate-700 transition-colors">
               <div class="font-mono text-xl font-bold text-red-600 dark:text-red-400 tabular-nums">${Number(cp.rejectedCount || 0)}</div>
               <div class="text-xs text-slate-500 dark:text-slate-400 mt-0.5">Rejected</div>
             </a>
@@ -516,7 +547,10 @@ function renderCreatorOverviewSectionHtml(ov, state = {}) {
   `;
 }
 
-export async function renderCreatorDashboardPage(container, activeTab = 'overview', editId = null) {
+export async function renderCreatorDashboardPage(container, activeTab = 'overview', routeParam = null) {
+  cleanupPublishedFloatingMenu();
+  cleanupDraftFloatingMenu();
+  cleanupPendingFloatingMenu();
   if (!store.user) {
     window.location.hash = '#/login';
     return;
@@ -525,6 +559,37 @@ export async function renderCreatorDashboardPage(container, activeTab = 'overvie
     window.location.hash = '#/become-creator';
     return;
   }
+
+  const editId =
+    activeTab === 'upload'
+      ? routeParam && typeof routeParam === 'object'
+        ? routeParam.subId || null
+        : routeParam
+      : null;
+  const publishedSubId =
+    activeTab === 'published' && routeParam && typeof routeParam === 'object'
+      ? routeParam.subId || null
+      : null;
+  const publishedSubView =
+    activeTab === 'published' && routeParam && typeof routeParam === 'object'
+      ? routeParam.subView || null
+      : null;
+  const draftSubId =
+    activeTab === 'drafts' && routeParam && typeof routeParam === 'object'
+      ? routeParam.subId || null
+      : null;
+  const draftSubView =
+    activeTab === 'drafts' && routeParam && typeof routeParam === 'object'
+      ? routeParam.subView || null
+      : null;
+  const pendingSubId =
+    activeTab === 'pending' && routeParam && typeof routeParam === 'object'
+      ? routeParam.subId || null
+      : null;
+  const pendingSubView =
+    activeTab === 'pending' && routeParam && typeof routeParam === 'object'
+      ? routeParam.subView || null
+      : null;
 
   container.innerHTML =
     activeTab === 'overview'
@@ -554,6 +619,12 @@ export async function renderCreatorDashboardPage(container, activeTab = 'overvie
     let overviewData = null;
     let editPayload = null;
     let historyPayload = null;
+    let publishedPayload = null;
+    let publishedDetailPayload = null;
+    let draftsPayload = null;
+    let draftDetailPayload = null;
+    let pendingPayload = null;
+    let pendingDetailPayload = null;
 
     if (activeTab === 'overview') {
       overviewData = await apiFetch(buildOverviewUrl(), { noCache: true });
@@ -562,13 +633,42 @@ export async function renderCreatorDashboardPage(container, activeTab = 'overvie
       overviewState.endDate = overviewData.filter?.endDate || '';
       overviewState.sortBy = overviewData.filter?.sortBy || 'views';
     } else {
-      [data, editPayload, historyPayload] = await Promise.all([
+      const needMeta =
+        (activeTab === 'upload' || activeTab === 'published' || activeTab === 'drafts' || activeTab === 'pending') &&
+        (!store.categories?.length || !store.subjects?.length);
+      [
+        data,
+        editPayload,
+        historyPayload,
+        publishedPayload,
+        publishedDetailPayload,
+        draftsPayload,
+        draftDetailPayload,
+        pendingPayload,
+        pendingDetailPayload,
+      ] = await Promise.all([
         apiFetch('/api/creator/dashboard'),
-        activeTab === 'upload' && editId ? apiFetch(`/api/creator/contents/${editId}`) : Promise.resolve(null),
-        activeTab === 'history' ? apiFetch('/api/creator/history') : Promise.resolve(null),
-        activeTab === 'upload' && (!store.categories?.length || !store.subjects?.length)
-          ? loadGlobalCatalogMeta()
+        activeTab === 'upload' && editId ? apiFetch(`/api/creator/contents/${editId}`, { noCache: true }) : Promise.resolve(null),
+        activeTab === 'history' ? apiFetch(buildHistoryUrl(), { noCache: true }) : Promise.resolve(null),
+        activeTab === 'published' && !publishedSubId
+          ? apiFetch(buildPublishedListUrl(), { noCache: true })
           : Promise.resolve(null),
+        activeTab === 'published' && publishedSubId
+          ? apiFetch(`/api/creator/contents/${encodeURIComponent(publishedSubId)}/details`, { noCache: true })
+          : Promise.resolve(null),
+        activeTab === 'drafts' && !draftSubId
+          ? apiFetch(buildDraftsListUrl(), { noCache: true })
+          : Promise.resolve(null),
+        activeTab === 'drafts' && draftSubId
+          ? apiFetch(`/api/creator/contents/${encodeURIComponent(draftSubId)}/details`, { noCache: true })
+          : Promise.resolve(null),
+        activeTab === 'pending' && !pendingSubId
+          ? apiFetch(buildPendingListUrl(), { noCache: true })
+          : Promise.resolve(null),
+        activeTab === 'pending' && pendingSubId
+          ? apiFetch(`/api/creator/pending/${encodeURIComponent(pendingSubId)}`, { noCache: true })
+          : Promise.resolve(null),
+        needMeta ? loadGlobalCatalogMeta() : Promise.resolve(null),
       ]);
     }
 
@@ -581,7 +681,7 @@ export async function renderCreatorDashboardPage(container, activeTab = 'overvie
       { id: 'overview', label: 'Overview' },
       { id: 'upload', label: editId ? 'Edit Content' : 'Upload Content' },
       { id: 'published', label: 'Published Content' },
-      { id: 'drafts', label: 'Drafts' },
+      { id: 'drafts', label: 'Draft Content' },
       { id: 'pending', label: 'Pending & Review' },
       { id: 'history', label: deletedCount > 0 ? `History & Recovery (${deletedCount})` : 'History & Recovery' },
       { id: 'analytics', label: 'Analytics' },
@@ -623,32 +723,29 @@ export async function renderCreatorDashboardPage(container, activeTab = 'overvie
     } else if (activeTab === 'upload') {
       bodyHtml = renderContentEditorHtml(editPayload, commRate);
     } else if (activeTab === 'published') {
-      const list = data.contents.filter((c) => c.status === 'approved');
-      bodyHtml = `
-        <div>
-          <div class="flex items-center justify-between mb-6">
-            <h1 class="font-display text-2xl font-semibold text-slate-900 dark:text-white">Published Content (${list.length})</h1>
-            <a href="#/creator/upload" class="px-4 py-2 text-xs font-semibold rounded-lg bg-[#0F2547] dark:bg-sky-500 text-white dark:text-slate-950">+ New Publication</a>
-          </div>
-          ${renderCreatorContentTable(list)}
-        </div>
-      `;
+      if (publishedSubId) {
+        if (publishedSubView === 'preview') {
+          bodyHtml = await renderPublishedPreviewHtml(publishedDetailPayload);
+        } else if (publishedSubView === 'analytics') {
+          bodyHtml = renderPublishedAnalyticsHtml(publishedDetailPayload);
+        } else {
+          bodyHtml = renderPublishedDetailViewHtml(publishedDetailPayload);
+        }
+      } else {
+        bodyHtml = renderPublishedContentSectionHtml(publishedPayload);
+      }
     } else if (activeTab === 'drafts') {
-      const list = data.contents.filter((c) => c.status === 'draft');
-      bodyHtml = `
-        <div>
-          <h1 class="font-display text-2xl font-semibold text-slate-900 dark:text-white mb-6">Saved Drafts (${list.length})</h1>
-          ${renderCreatorContentTable(list)}
-        </div>
-      `;
+      if (draftSubId && draftSubView === 'preview') {
+        bodyHtml = await renderDraftPreviewHtml(draftDetailPayload);
+      } else {
+        bodyHtml = renderDraftContentSectionHtml(draftsPayload);
+      }
     } else if (activeTab === 'pending') {
-      const list = data.contents.filter((c) => c.status === 'pending' || c.status === 'rejected' || c.status === 'removed');
-      bodyHtml = `
-        <div>
-          <h1 class="font-display text-2xl font-semibold text-slate-900 dark:text-white mb-6">Pending Approval &amp; Moderation Notes (${list.length})</h1>
-          ${renderCreatorContentTable(list, true)}
-        </div>
-      `;
+      if (pendingSubId) {
+        bodyHtml = await renderSubmissionDetailsHtml(pendingDetailPayload);
+      } else {
+        bodyHtml = renderPendingSectionHtml(pendingPayload);
+      }
     } else if (activeTab === 'history') {
       bodyHtml = renderCreatorHistoryHtml(historyPayload || { deletedContents: [], history: [], retentionDays: 15 });
     } else if (activeTab === 'analytics') {
@@ -1057,7 +1154,38 @@ export async function renderCreatorDashboardPage(container, activeTab = 'overvie
 
     // Wire Creator History & 15-Day Recovery Bin actions
     if (activeTab === 'history') {
-      wireCreatorHistoryHandlers(container, historyPayload || { deletedContents: [], history: [] });
+      wireCreatorHistoryHandlers(
+        container,
+        historyPayload || { deletedContents: [], history: [] },
+        () => renderCreatorDashboardPage(container, 'history')
+      );
+    }
+
+    // Wire Pending & Review section & Submission Details
+    if (activeTab === 'pending') {
+      if (pendingSubId) {
+        wireSubmissionDetailsEvents(container, pendingSubView);
+      } else {
+        wirePendingListEvents(container, pendingPayload);
+      }
+    }
+
+    // Wire Published Content section & subviews (Details, Preview, Analytics)
+    if (activeTab === 'published') {
+      if (publishedSubId) {
+        wirePublishedSubViewEvents(container, publishedSubView, publishedDetailPayload);
+      } else {
+        wirePublishedListEvents(container, publishedPayload);
+      }
+    }
+
+    // Wire Draft Content section & Draft Preview
+    if (activeTab === 'drafts') {
+      if (draftSubId && draftSubView === 'preview') {
+        wireDraftPreviewEvents(container, draftDetailPayload);
+      } else {
+        wireDraftsListEvents(container, draftsPayload);
+      }
     }
 
     // Wire Upload / Editor studio if active
@@ -1139,55 +1267,9 @@ export async function renderCreatorDashboardPage(container, activeTab = 'overvie
       </div>
     `;
     document.getElementById('creator-retry-load')?.addEventListener('click', () => {
-      renderCreatorDashboardPage(container, activeTab, editId);
+      renderCreatorDashboardPage(container, activeTab, routeParam);
     });
   }
-}
-
-function renderCreatorContentTable(list, showNotes = false) {
-  return `
-    <div class="bg-white dark:bg-[#111A2E] border border-slate-200 dark:border-slate-800 rounded-xl overflow-x-auto touch-scroll-x">
-      <table class="w-full min-w-[640px] text-left text-sm">
-        <thead class="text-xs text-slate-500 border-b border-slate-200 dark:border-slate-800">
-          <tr>
-            <th class="px-4 py-3 font-semibold">Title &amp; Type</th>
-            <th class="px-4 py-3 font-semibold">Pricing</th>
-            <th class="px-4 py-3 font-semibold">Status</th>
-            <th class="px-4 py-3 font-semibold text-right">Views / Sales</th>
-            ${showNotes ? '<th class="px-4 py-3 font-semibold">Moderator Note</th>' : ''}
-            <th class="px-4 py-3 font-semibold text-right">Actions</th>
-          </tr>
-        </thead>
-        <tbody class="divide-y divide-slate-100 dark:divide-slate-800">
-          ${
-            list.length
-              ? list
-                  .map(
-                    (c) => `
-                <tr class="hover:bg-slate-50/70 dark:hover:bg-slate-900/40">
-                  <td class="px-4 py-3">
-                    <a href="#/content/${esc(c.slug)}" class="font-medium text-slate-900 dark:text-white hover:underline block">${esc(c.title)}</a>
-                    <span class="text-xs text-slate-500">${esc(c.contentType)} · ${esc(c.categoryName || 'Uncategorized')}${c.authorName ? ` · Author: ${esc(c.authorName)}` : ''}</span>
-                  </td>
-                  <td class="px-4 py-3 font-mono text-xs tabular-nums">${c.isFree ? 'Free' : formatInr(c.priceInr)}</td>
-                  <td class="px-4 py-3">${renderStatusLabel(c.status)}</td>
-                  <td class="px-4 py-3 text-right font-mono text-xs tabular-nums">${c.viewsCount} / ${c.purchasesCount}</td>
-                  ${showNotes ? `<td class="px-4 py-3 text-xs text-red-600 dark:text-red-400">${esc(c.rejectionReason || '—')}</td>` : ''}
-                  <td class="px-4 py-3 text-right whitespace-nowrap space-x-3 text-xs font-semibold">
-                    <a href="#/creator/edit/${c.id}" class="text-[#0F2547] dark:text-sky-400 hover:underline">Edit</a>
-                    <a href="#/content/${esc(c.slug)}" class="text-slate-600 dark:text-slate-300 hover:underline">View</a>
-                    <button type="button" data-id="${c.id}" class="creator-delete-btn text-red-600 dark:text-red-400 hover:underline" title="Move to 15-day Recovery Bin">Delete</button>
-                  </td>
-                </tr>
-              `
-                  )
-                  .join('')
-              : `<tr><td colspan="${showNotes ? 6 : 5}" class="px-4 py-8 text-center text-slate-500">No publications in this view yet.</td></tr>`
-          }
-        </tbody>
-      </table>
-    </div>
-  `;
 }
 
 function renderContentEditorHtml(editPayload, commRate) {
@@ -1198,17 +1280,74 @@ function renderContentEditorHtml(editPayload, commRate) {
   const isPaid = item ? !item.isFree : false;
   const currentPrice = item ? Number(item.priceInr) : 49;
 
+  if (item && item.status === 'pending' && store.user?.role !== 'admin') {
+    return `
+      <div class="space-y-5 max-w-2xl">
+        <a href="#/creator/pending" class="inline-flex items-center gap-1 text-xs font-semibold text-[#5a1fd8] dark:text-sky-400 hover:underline">← Back to Pending &amp; Review</a>
+        <div class="bg-white dark:bg-[#111A2E] border border-amber-200 dark:border-amber-900/60 rounded-2xl p-6 sm:p-8 space-y-4">
+          <div class="inline-flex items-center gap-2 px-3 py-1 rounded-full text-xs font-semibold bg-amber-50 text-amber-800 dark:bg-amber-950/60 dark:text-amber-300">
+            Under Review · Editing Locked
+          </div>
+          <h1 class="font-display text-xl sm:text-2xl font-semibold text-slate-900 dark:text-white">${esc(item.title)}</h1>
+          <p class="text-sm text-slate-600 dark:text-slate-300 leading-relaxed">
+            This submission is currently under moderation review and cannot be edited until moderators finish reviewing it or request changes.
+          </p>
+          <div class="flex flex-wrap items-center gap-3 pt-2">
+            <a href="#/creator/pending/${item.id}" class="min-h-[42px] inline-flex items-center px-4 py-2 text-xs sm:text-sm font-semibold rounded-xl bg-[#5a1fd8] hover:bg-[#4c1d95] text-white">View Submission Details</a>
+            <a href="#/creator/pending" class="min-h-[42px] inline-flex items-center px-4 py-2 text-xs sm:text-sm font-semibold rounded-xl border border-slate-200 dark:border-slate-700 text-slate-700 dark:text-slate-200">← Back to Pending &amp; Review</a>
+          </div>
+        </div>
+      </div>
+    `;
+  }
+
+  const fromPublished = window.location.hash.includes('from=published');
+  const fromPending =
+    window.location.hash.includes('from=pending') || item?.status === 'changes_requested';
+  const fromDrafts =
+    !fromPending && (window.location.hash.includes('from=drafts') || item?.status === 'draft');
+
+  const backLinkHtml = fromPending
+    ? `<a href="#/creator/pending" class="inline-flex items-center gap-1 text-xs font-semibold text-[#5a1fd8] dark:text-sky-400 hover:underline mb-1">← Back to Pending &amp; Review</a>`
+    : fromDrafts
+    ? `<a href="#/creator/drafts" class="inline-flex items-center gap-1 text-xs font-semibold text-[#5a1fd8] dark:text-sky-400 hover:underline mb-1">← Back to Draft Content</a>`
+    : fromPublished
+    ? `<a href="#/creator/published" class="inline-flex items-center gap-1 text-xs font-semibold text-[#5a1fd8] dark:text-sky-400 hover:underline mb-1">← Back to Published Content</a>`
+    : '';
+
+  const editorHeading = item
+    ? item.status === 'changes_requested'
+      ? 'Revise &amp; Resubmit Content'
+      : item.status === 'draft'
+      ? 'Edit Draft Content'
+      : 'Edit Published Content'
+    : 'Publish New Educational Content';
+
+  const modFeedbackBanner =
+    item && (item.status === 'changes_requested' || item.status === 'rejected') && item.rejectionReason
+      ? `<div class="p-4 rounded-2xl border border-rose-200 dark:border-rose-900/60 bg-rose-50/80 dark:bg-rose-950/30 space-y-1.5">
+          <div class="flex items-center justify-between gap-2">
+            <span class="text-xs font-semibold uppercase tracking-wider text-rose-700 dark:text-rose-300">Moderator Feedback to Address</span>
+            <a href="#/creator/pending/${item.id}/feedback" class="text-xs font-semibold text-rose-700 dark:text-rose-300 hover:underline">Full Feedback Details →</a>
+          </div>
+          <p class="text-sm text-rose-950 dark:text-rose-100 leading-relaxed whitespace-pre-line">${esc(item.rejectionReason)}</p>
+        </div>`
+      : '';
+
   return `
     <div class="space-y-6">
       <div class="flex flex-wrap items-center justify-between gap-4">
-        <div>
-          <h1 class="font-display text-2xl font-semibold text-slate-900 dark:text-white">${item ? 'Edit Publication' : 'Publish New Educational Content'}</h1>
+        <div class="space-y-1">
+          ${backLinkHtml}
+          <h1 class="font-display text-2xl font-semibold text-slate-900 dark:text-white">${editorHeading}</h1>
           <p class="text-xs text-slate-500 dark:text-slate-400 mt-1">Select format, write rich text or attach PDFs/videos, configure Free or INR pricing, and preview before submission.</p>
         </div>
         <button type="button" id="ed-preview-btn" class="px-4 py-2 text-xs font-semibold rounded-lg border border-slate-300 dark:border-slate-700 hover:bg-slate-100 dark:hover:bg-slate-800 whitespace-nowrap shrink-0">
           Preview Content
         </button>
       </div>
+
+      ${modFeedbackBanner}
 
       <form id="creator-content-form" class="bg-white dark:bg-[#111A2E] border border-slate-200 dark:border-slate-800 rounded-xl p-4 sm:p-6 space-y-6">
         <!-- Content Type & Basic Metadata -->
@@ -1540,10 +1679,19 @@ function renderContentEditorHtml(editPayload, commRate) {
         </div>
 
         <div class="flex flex-col-reverse sm:flex-row sm:items-center justify-end gap-3 pt-2">
-          <button type="button" id="ed-save-draft" class="w-full sm:w-auto min-h-[44px] px-5 py-2.5 text-xs font-semibold rounded-lg border border-slate-300 dark:border-slate-700 hover:bg-slate-100 dark:hover:bg-slate-800">Save as Draft</button>
-          <button type="button" id="ed-submit-publish" class="w-full sm:w-auto min-h-[44px] px-6 py-2.5 text-xs font-semibold rounded-lg bg-[#0F2547] hover:bg-[#1B3B6F] dark:bg-sky-500 dark:hover:bg-sky-400 text-white dark:text-slate-950">
-            ${item ? 'Save & Submit for Approval' : 'Submit for Approval'}
-          </button>
+          ${
+            item && item.status === 'changes_requested'
+              ? `<button type="button" id="ed-save-draft" class="w-full sm:w-auto min-h-[44px] px-5 py-2.5 text-xs font-semibold rounded-lg border border-slate-300 dark:border-slate-700 hover:bg-slate-100 dark:hover:bg-slate-800">Save as Draft</button>
+                 <button type="button" id="ed-submit-publish" class="w-full sm:w-auto min-h-[44px] px-6 py-2.5 text-xs font-semibold rounded-lg bg-[#5a1fd8] hover:bg-[#4c1d95] text-white">Save Changes &amp; Resubmit</button>`
+              : item && item.status === 'draft'
+              ? `<button type="button" id="ed-submit-publish" class="w-full sm:w-auto min-h-[44px] px-5 py-2.5 text-xs font-semibold rounded-lg border border-slate-300 dark:border-slate-700 hover:bg-slate-100 dark:hover:bg-slate-800">Publish Content</button>
+                 <button type="button" id="ed-save-draft" class="w-full sm:w-auto min-h-[44px] px-6 py-2.5 text-xs font-semibold rounded-lg bg-[#5a1fd8] hover:bg-[#4c1d95] text-white">Save Changes</button>`
+              : item && item.status === 'approved'
+              ? `<button type="button" id="ed-save-draft" class="w-full sm:w-auto min-h-[44px] px-5 py-2.5 text-xs font-semibold rounded-lg border border-slate-300 dark:border-slate-700 hover:bg-slate-100 dark:hover:bg-slate-800">Save as Draft</button>
+                 <button type="button" id="ed-submit-publish" class="w-full sm:w-auto min-h-[44px] px-6 py-2.5 text-xs font-semibold rounded-lg bg-[#5a1fd8] hover:bg-[#4c1d95] text-white">Save Changes</button>`
+              : `<button type="button" id="ed-save-draft" class="w-full sm:w-auto min-h-[44px] px-5 py-2.5 text-xs font-semibold rounded-lg border border-slate-300 dark:border-slate-700 hover:bg-slate-100 dark:hover:bg-slate-800">Save as Draft</button>
+                 <button type="button" id="ed-submit-publish" class="w-full sm:w-auto min-h-[44px] px-6 py-2.5 text-xs font-semibold rounded-lg bg-[#5a1fd8] hover:bg-[#4c1d95] text-white">${item ? 'Save Changes' : 'Submit for Approval'}</button>`
+          }
         </div>
       </form>
     </div>
@@ -1551,6 +1699,9 @@ function renderContentEditorHtml(editPayload, commRate) {
 }
 
 function wireContentEditor(container, editPayload, commRate) {
+  if (editPayload?.content?.status === 'pending' && store.user?.role !== 'admin') {
+    return;
+  }
   let isFree = editPayload?.content ? Boolean(editPayload.content.isFree) : true;
   const editingId = editPayload?.content?.id || null;
 
@@ -2428,10 +2579,21 @@ function wireContentEditor(container, editPayload, commRate) {
 
     const draftBtn = document.getElementById('ed-save-draft');
     const pubBtn = document.getElementById('ed-submit-publish');
-    if (draftBtn) draftBtn.disabled = true;
+    const origDraftLabel = draftBtn?.textContent || 'Save as Draft';
+    const origPubLabel = pubBtn?.textContent || 'Save Changes';
+    if (draftBtn?.dataset.saving === '1' || pubBtn?.dataset.saving === '1') return;
+
+    if (draftBtn) {
+      draftBtn.disabled = true;
+      draftBtn.dataset.saving = '1';
+    }
     if (pubBtn) {
       pubBtn.disabled = true;
-      pubBtn.textContent = queuedUploadFiles.length
+      pubBtn.dataset.saving = '1';
+    }
+    const activeBtn = action === 'draft' ? draftBtn : pubBtn;
+    if (activeBtn) {
+      activeBtn.textContent = queuedUploadFiles.length
         ? `Saving & Uploading ${queuedUploadFiles.length} file(s)...`
         : 'Saving...';
     }
@@ -2448,284 +2610,50 @@ function wireContentEditor(container, editPayload, commRate) {
         await uploadAttachedFilesBatch(cid);
       }
       showToast(saved.message, 'success');
-      window.location.hash = action === 'draft' ? '#/creator/drafts' : '#/creator/overview';
+      const fromPublished = window.location.hash.includes('from=published');
+      const fromDrafts = window.location.hash.includes('from=drafts');
+      const fromPending = window.location.hash.includes('from=pending');
+      if (action === 'draft' || saved?.content?.status === 'draft') {
+        window.location.hash = '#/creator/drafts';
+      } else if ((fromPublished || editPayload?.content?.status === 'approved') && saved?.content?.status === 'approved') {
+        window.location.hash = `#/creator/published/${cid}`;
+      } else if (action === 'resubmit' || (fromPending && saved?.content?.status === 'pending')) {
+        window.location.hash = `#/creator/pending/${cid}`;
+      } else if (saved?.content?.status === 'pending') {
+        window.location.hash = '#/creator/pending';
+      } else {
+        window.location.hash = fromPending
+          ? '#/creator/pending'
+          : fromPublished
+          ? '#/creator/published'
+          : fromDrafts
+          ? '#/creator/drafts'
+          : '#/creator/overview';
+      }
     } catch (err) {
       showToast(err.message, 'error');
-      if (draftBtn) draftBtn.disabled = false;
+      if (draftBtn) {
+        draftBtn.disabled = false;
+        draftBtn.dataset.saving = '';
+        draftBtn.textContent = origDraftLabel;
+      }
       if (pubBtn) {
         pubBtn.disabled = false;
-        pubBtn.textContent = editingId ? 'Save & Submit for Approval' : 'Submit for Approval';
+        pubBtn.dataset.saving = '';
+        pubBtn.textContent = origPubLabel;
       }
     }
   };
 
+  const editingStatus = editPayload?.content?.status || null;
   document.getElementById('ed-save-draft')?.addEventListener('click', () => saveContent('draft'));
-  document.getElementById('ed-submit-publish')?.addEventListener('click', () => saveContent('submit'));
-}
-
-function formatRecoveryCountdown(purgeAfterIso) {
-  if (!purgeAfterIso) return '15 days remaining';
-  const diffMs = new Date(purgeAfterIso).getTime() - Date.now();
-  if (diffMs <= 0) return 'Expiring soon';
-  const totalHours = Math.floor(diffMs / 3_600_000);
-  const days = Math.floor(totalHours / 24);
-  const hrs = totalHours % 24;
-  return days > 0 ? `${days}d ${hrs}h left to recover` : `${Math.max(1, hrs)}h left to recover`;
-}
-
-function renderCreatorHistoryHtml(payload) {
-  const deletedList = payload.deletedContents || [];
-  const historyList = payload.history || [];
-  const retentionDays = Number(payload.retentionDays || 15);
-
-  const actionMeta = {
-    created: { label: 'Created', cls: 'text-sky-700 dark:text-sky-400' },
-    updated: { label: 'Updated', cls: 'text-slate-700 dark:text-slate-300' },
-    deleted: { label: 'Deleted (15d Bin)', cls: 'text-amber-700 dark:text-amber-400' },
-    recovered: { label: 'Recovered', cls: 'text-emerald-700 dark:text-emerald-400' },
-    permanently_deleted: { label: 'Deleted Forever', cls: 'text-red-700 dark:text-red-400' },
-    auto_purged: { label: 'Auto-Purged (15d)', cls: 'text-red-700 dark:text-red-400' },
-  };
-
-  return `
-    <div class="space-y-8">
-      <div>
-        <h1 class="font-display text-2xl sm:text-3xl font-semibold text-slate-900 dark:text-white">History &amp; 15-Day Recovery Bin</h1>
-        <p class="text-xs text-slate-500 dark:text-slate-400 mt-1">
-          Deleted content is safely kept in the database for <strong>${retentionDays} days</strong>. You can inspect details and recover any deleted work before its countdown expires.
-        </p>
-      </div>
-
-      <!-- 15-Day Deleted Content Recovery Bin -->
-      <section class="space-y-3">
-        <div class="flex flex-wrap items-center justify-between gap-2">
-          <h2 class="font-display text-lg font-semibold text-slate-900 dark:text-white">Deleted Content — Recoverable (${deletedList.length})</h2>
-          <span class="text-xs font-mono text-amber-700 dark:text-amber-400">Auto-deletes permanently after 15 days</span>
-        </div>
-
-        <div class="bg-white dark:bg-[#111A2E] border border-slate-200 dark:border-slate-800 rounded-xl overflow-x-auto touch-scroll-x">
-          <table class="w-full min-w-[760px] text-left text-xs">
-            <thead class="text-[11px] uppercase tracking-wider text-slate-500 border-b border-slate-200 dark:border-slate-800 bg-slate-50/70 dark:bg-[#0B1120]/60">
-              <tr>
-                <th class="px-4 py-3 font-semibold">Deleted Content</th>
-                <th class="px-4 py-3 font-semibold">Deleted On &amp; Age</th>
-                <th class="px-4 py-3 font-semibold">Recovery Window</th>
-                <th class="px-4 py-3 font-semibold text-right">Actions</th>
-              </tr>
-            </thead>
-            <tbody class="divide-y divide-slate-100 dark:divide-slate-800">
-              ${
-                deletedList.length
-                  ? deletedList
-                      .map(
-                        (item) => `
-                    <tr class="hover:bg-slate-50/70 dark:hover:bg-slate-900/40">
-                      <td class="px-4 py-3">
-                        <div class="font-semibold text-slate-900 dark:text-white">${esc(item.title)}</div>
-                        <div class="text-[11px] text-slate-500 mt-0.5">
-                          ${esc(item.contentType)} · ${esc(item.categoryName || 'Uncategorized')}
-                          ${item.authorName ? ` · Author: ${esc(item.authorName)}` : ''}
-                          · ${item.isFree ? 'Free' : formatInr(item.priceInr)}
-                        </div>
-                      </td>
-                      <td class="px-4 py-3 whitespace-nowrap">
-                        <div class="font-semibold text-slate-800 dark:text-slate-200">${esc(formatRelativeAge(item.deletedAt))}</div>
-                        <div class="text-[11px] font-mono text-slate-500">${esc(formatDateTime(item.deletedAt))}</div>
-                      </td>
-                      <td class="px-4 py-3 whitespace-nowrap">
-                        <div class="font-mono font-semibold text-amber-700 dark:text-amber-400">${esc(formatRecoveryCountdown(item.purgeAfter))}</div>
-                        <div class="text-[11px] text-slate-500">Expires ${esc(formatDate(item.purgeAfter))}</div>
-                      </td>
-                      <td class="px-4 py-3 text-right whitespace-nowrap space-x-2.5 font-semibold">
-                        <button type="button" data-del-detail-id="${item.id}" class="cr-deleted-detail text-slate-600 dark:text-slate-300 hover:underline">Details</button>
-                        <button type="button" data-recover-id="${item.id}" class="cr-recover-btn px-3 py-1.5 rounded-lg bg-emerald-700 hover:bg-emerald-800 text-white">Recover</button>
-                        <button type="button" data-perm-del-id="${item.id}" class="cr-perm-delete-btn text-red-600 dark:text-red-400 hover:underline">Delete Forever</button>
-                      </td>
-                    </tr>
-                  `
-                      )
-                      .join('')
-                  : `<tr><td colspan="4" class="px-4 py-10 text-center text-slate-500">Your 15-day Recovery Bin is empty. Any deleted publication will appear here for 15 days.</td></tr>`
-              }
-            </tbody>
-          </table>
-        </div>
-      </section>
-
-      <!-- Complete Creator Activity History Log -->
-      <section class="space-y-3">
-        <h2 class="font-display text-lg font-semibold text-slate-900 dark:text-white">Content Activity History (${historyList.length})</h2>
-        <div class="bg-white dark:bg-[#111A2E] border border-slate-200 dark:border-slate-800 rounded-xl overflow-x-auto touch-scroll-x">
-          <table class="w-full min-w-[700px] text-left text-xs">
-            <thead class="text-[11px] uppercase tracking-wider text-slate-500 border-b border-slate-200 dark:border-slate-800 bg-slate-50/70 dark:bg-[#0B1120]/60">
-              <tr>
-                <th class="px-4 py-3 font-semibold">Event</th>
-                <th class="px-4 py-3 font-semibold">Publication</th>
-                <th class="px-4 py-3 font-semibold">Date, Time &amp; Age</th>
-                <th class="px-4 py-3 font-semibold text-right">Details</th>
-              </tr>
-            </thead>
-            <tbody class="divide-y divide-slate-100 dark:divide-slate-800">
-              ${
-                historyList.length
-                  ? historyList
-                      .map((h) => {
-                        const meta = actionMeta[h.action] || { label: h.action, cls: 'text-slate-600 dark:text-slate-300' };
-                        return `
-                          <tr class="hover:bg-slate-50/70 dark:hover:bg-slate-900/40">
-                            <td class="px-4 py-3 font-semibold ${meta.cls} whitespace-nowrap">${esc(meta.label)}</td>
-                            <td class="px-4 py-3">
-                              <div class="font-medium text-slate-900 dark:text-white">${esc(h.contentTitle)}</div>
-                              <div class="text-[11px] text-slate-500">${esc(h.contentType || 'Publication')}${h.authorName ? ` · Author: ${esc(h.authorName)}` : ''}</div>
-                            </td>
-                            <td class="px-4 py-3 whitespace-nowrap">
-                              <div class="font-medium text-slate-800 dark:text-slate-200">${esc(formatRelativeAge(h.createdAt))}</div>
-                              <div class="text-[11px] font-mono text-slate-500">${esc(formatDateTime(h.createdAt))}</div>
-                            </td>
-                            <td class="px-4 py-3 text-right whitespace-nowrap">
-                              <button type="button" data-hist-id="${h.id}" class="cr-hist-detail font-semibold text-[#0F2547] dark:text-sky-400 hover:underline">Details</button>
-                            </td>
-                          </tr>
-                        `;
-                      })
-                      .join('')
-                  : `<tr><td colspan="4" class="px-4 py-8 text-center text-slate-500">No history events recorded yet.</td></tr>`
-              }
-            </tbody>
-          </table>
-        </div>
-      </section>
-    </div>
-  `;
-}
-
-function wireCreatorHistoryHandlers(container, payload) {
-  const deletedList = payload.deletedContents || [];
-  const historyList = payload.history || [];
-
-  container.querySelectorAll('.cr-recover-btn').forEach((btn) => {
-    btn.addEventListener('click', async () => {
-      const id = btn.dataset.recoverId;
-      btn.disabled = true;
-      btn.textContent = 'Recovering...';
-      try {
-        const res = await apiFetch(`/api/creator/contents/${id}/recover`, { method: 'POST' });
-        showToast(res.message || 'Content recovered successfully!', 'success');
-        renderCreatorDashboardPage(container, 'history');
-      } catch (err) {
-        showToast(err.message, 'error');
-        btn.disabled = false;
-        btn.textContent = 'Recover';
-      }
-    });
-  });
-
-  container.querySelectorAll('.cr-perm-delete-btn').forEach((btn) => {
-    btn.addEventListener('click', () => {
-      const id = Number(btn.dataset.permDelId);
-      const item = deletedList.find((d) => Number(d.id) === id);
-      openModal({
-        title: 'Delete Permanently?',
-        bodyHtml: `
-          <div class="space-y-4 text-xs">
-            <p class="text-slate-600 dark:text-slate-300 leading-relaxed">
-              Are you sure you want to permanently erase <strong>${esc(item?.title || 'this content')}</strong>? Once permanently deleted, it cannot be recovered.
-            </p>
-            <div class="flex justify-end gap-2 pt-2 border-t border-slate-100 dark:border-slate-800">
-              <button type="button" id="cr-perm-cancel" class="px-3.5 py-2 font-semibold rounded-lg border border-slate-300 dark:border-slate-700">Cancel</button>
-              <button type="button" id="cr-perm-confirm" class="px-4 py-2 font-semibold rounded-lg bg-red-700 hover:bg-red-800 text-white">Delete Permanently</button>
-            </div>
-          </div>
-        `,
-        onMount: (close) => {
-          document.getElementById('cr-perm-cancel')?.addEventListener('click', close);
-          document.getElementById('cr-perm-confirm')?.addEventListener('click', async () => {
-            try {
-              const res = await apiFetch(`/api/creator/contents/${id}/permanent`, { method: 'DELETE' });
-              showToast(res.message || 'Permanently deleted.', 'success');
-              close();
-              renderCreatorDashboardPage(container, 'history');
-            } catch (err) {
-              showToast(err.message, 'error');
-            }
-          });
-        },
-      });
-    });
-  });
-
-  container.querySelectorAll('.cr-deleted-detail').forEach((btn) => {
-    btn.addEventListener('click', () => {
-      const id = Number(btn.dataset.delDetailId);
-      const item = deletedList.find((d) => Number(d.id) === id);
-      if (!item) return;
-      openModal({
-        title: 'Deleted Content Details',
-        bodyHtml: `
-          <div class="space-y-4 text-xs">
-            <div class="p-3.5 rounded-lg bg-amber-50/70 dark:bg-amber-950/25 border border-amber-200 dark:border-amber-900/70">
-              <div class="font-semibold text-amber-900 dark:text-amber-200">${esc(formatRelativeAge(item.deletedAt))}</div>
-              <div class="text-amber-800/80 dark:text-amber-300/80 mt-0.5">Deleted at ${esc(formatDateTime(item.deletedAt))} · ${esc(formatRecoveryCountdown(item.purgeAfter))}</div>
-            </div>
-            <dl class="divide-y divide-slate-100 dark:divide-slate-800">
-              <div class="py-2 flex justify-between gap-4"><dt class="text-slate-500">Title</dt><dd class="font-semibold text-slate-900 dark:text-white text-right">${esc(item.title)}</dd></div>
-              <div class="py-2 flex justify-between gap-4"><dt class="text-slate-500">Author Name</dt><dd class="text-slate-800 dark:text-slate-200">${esc(item.authorName || store.user?.name || '—')}</dd></div>
-              ${item.publisherName ? `<div class="py-2 flex justify-between gap-4"><dt class="text-slate-500">Publisher</dt><dd class="text-slate-800 dark:text-slate-200">${esc(item.publisherName)}</dd></div>` : ''}
-              <div class="py-2 flex justify-between gap-4"><dt class="text-slate-500">Format &amp; Category</dt><dd class="text-slate-800 dark:text-slate-200">${esc(item.contentType)} · ${esc(item.categoryName || 'General')}</dd></div>
-              <div class="py-2 flex justify-between gap-4"><dt class="text-slate-500">Pricing</dt><dd class="font-mono">${item.isFree ? 'Free' : formatInr(item.priceInr)}</dd></div>
-              <div class="py-2 flex justify-between gap-4"><dt class="text-slate-500">Status Before Deletion</dt><dd class="capitalize font-semibold">${esc(item.previousStatus || 'draft')}</dd></div>
-              <div class="py-2 flex justify-between gap-4"><dt class="text-slate-500">Views / Paid Sales</dt><dd class="font-mono">${item.viewsCount} views · ${item.purchasesCount} sales</dd></div>
-              <div class="py-2 flex justify-between gap-4"><dt class="text-slate-500">Permanent Auto-Purge Date</dt><dd class="font-mono text-red-700 dark:text-red-400">${esc(formatDateTime(item.purgeAfter))}</dd></div>
-            </dl>
-            ${item.shortDescription ? `<div class="p-3 rounded-lg bg-slate-50 dark:bg-[#0B1120] border border-slate-200 dark:border-slate-800 text-slate-600 dark:text-slate-300 leading-relaxed">${esc(item.shortDescription)}</div>` : ''}
-          </div>
-        `,
-      });
-    });
-  });
-
-  container.querySelectorAll('.cr-hist-detail').forEach((btn) => {
-    btn.addEventListener('click', () => {
-      const id = Number(btn.dataset.histId);
-      const h = historyList.find((x) => Number(x.id) === id);
-      if (!h) return;
-      const detailsEntries = Object.entries(h.details || {}).filter(
-        ([, v]) => v !== null && v !== undefined && v !== ''
-      );
-      openModal({
-        title: 'History Event Details',
-        bodyHtml: `
-          <div class="space-y-4 text-xs">
-            <div class="p-3.5 rounded-lg bg-slate-50 dark:bg-[#0B1120] border border-slate-200 dark:border-slate-800 space-y-1">
-              <div class="font-semibold text-slate-900 dark:text-white">${esc(h.contentTitle)}</div>
-              <div class="text-slate-500">Action: <strong class="capitalize text-slate-800 dark:text-slate-200">${esc(String(h.action).replace(/_/g, ' '))}</strong> · ${esc(formatRelativeAge(h.createdAt))}</div>
-              <div class="font-mono text-[11px] text-slate-500">${esc(formatDateTime(h.createdAt))}</div>
-            </div>
-            ${
-              detailsEntries.length
-                ? `<dl class="divide-y divide-slate-100 dark:divide-slate-800">
-                    ${detailsEntries
-                      .map(
-                        ([k, v]) => `
-                      <div class="py-2 flex justify-between gap-4">
-                        <dt class="text-slate-500 capitalize">${esc(k.replace(/([A-Z])/g, ' $1'))}</dt>
-                        <dd class="font-mono text-slate-900 dark:text-slate-100 text-right break-all">${esc(
-                          k.toLowerCase().includes('at') || k.toLowerCase().includes('after')
-                            ? formatDateTime(String(v))
-                            : typeof v === 'object'
-                            ? JSON.stringify(v)
-                            : String(v)
-                        )}</dd>
-                      </div>
-                    `
-                      )
-                      .join('')}
-                  </dl>`
-                : `<p class="text-slate-500">No extra metadata recorded for this event.</p>`
-            }
-          </div>
-        `,
-      });
-    });
-  });
+  document.getElementById('ed-submit-publish')?.addEventListener('click', () =>
+    saveContent(
+      editingStatus === 'changes_requested'
+        ? 'resubmit'
+        : editingStatus === 'approved'
+        ? 'update'
+        : 'submit'
+    )
+  );
 }

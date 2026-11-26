@@ -723,10 +723,15 @@ export function renderStatusLabel(status) {
     credited: 'text-emerald-700 dark:text-emerald-400',
     resolved: 'text-emerald-700 dark:text-emerald-400',
     pending: 'text-amber-700 dark:text-amber-400',
+    under_review: 'text-amber-700 dark:text-amber-400',
+    changes_requested: 'text-rose-700 dark:text-rose-400',
+    submitted_for_review: 'text-violet-700 dark:text-violet-400',
+    resubmitted: 'text-indigo-700 dark:text-indigo-400',
     reviewing: 'text-amber-700 dark:text-amber-400',
     open: 'text-amber-700 dark:text-amber-400',
     created: 'text-amber-700 dark:text-amber-400',
     draft: 'text-slate-500 dark:text-slate-400',
+    moved_to_draft: 'text-amber-700 dark:text-amber-400',
     dismissed: 'text-slate-500 dark:text-slate-400',
     rejected: 'text-red-700 dark:text-red-400',
     removed: 'text-red-700 dark:text-red-400',
@@ -736,10 +741,18 @@ export function renderStatusLabel(status) {
     suspended: 'text-amber-700 dark:text-amber-400',
     blocked: 'text-red-700 dark:text-red-400',
     deleted: 'text-red-700 dark:text-red-400',
+    permanently_deleted: 'text-red-700 dark:text-red-400',
+    auto_purged: 'text-red-700 dark:text-red-400',
     recovered: 'text-emerald-700 dark:text-emerald-400',
   };
   const cls = map[status] || 'text-slate-600 dark:text-slate-300';
-  const label = String(status || '').replace(/_/g, ' ');
+  const labelMap = {
+    pending: 'Under Review',
+    under_review: 'Under Review',
+    changes_requested: 'Changes Requested',
+    submitted_for_review: 'Submitted for Review',
+  };
+  const label = labelMap[status] || String(status || '').replace(/_/g, ' ');
   return `<span class="text-xs font-semibold capitalize ${cls}">${esc(label)}</span>`;
 }
 

@@ -772,10 +772,13 @@ async function routeCurrentView() {
     if (mySeq !== routeSeq) return;
     await renderCreatorDashboardPage(main, 'upload', editId);
   } else if (path === '/creator' || path.startsWith('/creator/')) {
-    const tab = path.split('/')[2] || 'overview';
+    const parts = path.split('/');
+    const tab = parts[2] || 'overview';
+    const subId = parts[3] || null;
+    const subView = parts[4] || null;
     const { renderCreatorDashboardPage } = await loadCreatorPages();
     if (mySeq !== routeSeq) return;
-    await renderCreatorDashboardPage(main, tab);
+    await renderCreatorDashboardPage(main, tab, { subId, subView });
   } else if (path === '/admin' || path.startsWith('/admin/')) {
     const parts = path.split('/');
     const tab = parts[2] || 'overview';

@@ -87,6 +87,147 @@ export interface IndexedCatalogItem {
 
 const CATALOG_INDEX_CACHE_KEY = 'catalog:search_index_v1';
 
+function buildIndexedCatalogItem(
+  row: {
+    id: number;
+    title: string;
+    slug: string;
+    authorName: string | null;
+    publisherName: string | null;
+    shortDescription: string;
+    coverImageUrl: string | null;
+    contentType: string;
+    language: string;
+    priceInr: string;
+    isFree: boolean;
+    isFeatured: boolean;
+    viewsCount: number;
+    likesCount: number;
+    purchasesCount: number;
+    avgRating: string;
+    reviewsCount: number;
+    readingTimeMins: number;
+    publishedAt: Date | null;
+    createdAt: Date;
+    categoryId: number | null;
+    categoryName: string | null;
+    categorySlug: string | null;
+    subjectId: number | null;
+    subjectName: string | null;
+    subjectSlug: string | null;
+    creatorId: number;
+    creatorName: string;
+    creatorAvatar: string | null;
+    classLevel: string | null;
+    chapter: string | null;
+    topic: string | null;
+    chapterOrder: number | null;
+    durationSeconds: number | null;
+    studyLabel: string | null;
+  },
+  tags: string[],
+  embed: { embeddingModel: string; vectorJson: unknown; fallbackVectorJson: unknown } | undefined,
+  ctrScore: number
+): IndexedCatalogItem {
+  const combinedRaw = [
+    row.title,
+    row.classLevel || '',
+    row.categoryName || '',
+    row.subjectName || '',
+    row.chapter || '',
+    row.topic || '',
+    row.studyLabel || '',
+    tags.join(' '),
+    row.shortDescription,
+  ]
+    .filter(Boolean)
+    .join(' ');
+
+  const extracted = extractEducationalMeta(combinedRaw, {
+    classLevel: row.classLevel,
+    chapter: row.chapter,
+    topic: row.topic,
+    chapterOrder: row.chapterOrder,
+    studyLabel: row.studyLabel,
+    language: row.language,
+  });
+
+  const normTitle = normalizeEduQuery(row.title);
+  const normCreator = normalizeEduQuery(row.creatorName || '');
+  const normSubject = normalizeEduQuery(row.subjectName || '');
+  const normCategory = normalizeEduQuery(row.categoryName || '');
+  const normChapter = normalizeEduQuery(row.chapter || '');
+  const normTopic = normalizeEduQuery(row.topic || '');
+  const normTags = normalizeEduQuery(tags.join(' '));
+  const normDesc = normalizeEduQuery(row.shortDescription);
+  const normAll = [
+    normTitle,
+    normSubject,
+    normCategory,
+    normChapter,
+    normTopic,
+    normTags,
+    normCreator,
+    normalizeEduQuery(row.contentType),
+    normalizeEduQuery(row.classLevel || ''),
+    normalizeEduQuery(row.studyLabel || ''),
+    normDesc,
+  ]
+    .filter(Boolean)
+    .join(' ');
+
+  const titleTokens = tokenizeEdu(normTitle, true);
+  const metaTokens = tokenizeEdu(
+    [
+      row.classLevel || '',
+      row.categoryName || '',
+      row.subjectName || '',
+      row.chapter || '',
+      row.topic || '',
+      row.studyLabel || '',
+      tags.join(' '),
+      row.creatorName,
+      row.contentType,
+      row.language,
+    ].join(' '),
+    true
+  );
+  const allTokens = Array.from(new Set([...titleTokens, ...metaTokens, ...tokenizeEdu(normDesc, true)]));
+  const stemmedTokenSet = new Set(allTokens.map(stemEduToken));
+
+  const fallbackVectorJson =
+    (embed?.fallbackVectorJson as number[] | undefined) ||
+    computeLocalSemanticVector(normAll);
+  const vectorJson = (embed?.vectorJson as number[] | undefined) || fallbackVectorJson;
+
+  return {
+    ...row,
+    tags,
+    effectiveClassLevel: row.classLevel || extracted.classLevel,
+    effectiveChapter: row.chapter || (extracted.chapterOrder ? `Chapter ${extracted.chapterOrder}` : null),
+    effectiveTopic: row.topic || row.subjectName || null,
+    effectiveChapterOrder: row.chapterOrder ?? extracted.chapterOrder,
+    effectiveStudyLabel: row.studyLabel || extracted.studyLabelHint,
+    normTitle,
+    normCreator,
+    normSubject,
+    normCategory,
+    normChapter,
+    normTopic,
+    normTags,
+    normDesc,
+    normAll,
+    titleTokens,
+    metaTokens,
+    allTokens,
+    stemmedTokenSet,
+    embeddingModel: embed?.embeddingModel || 'local-edu-v1',
+    vectorJson,
+    fallbackVectorJson,
+    ctrScore,
+  };
+}
+
 export async function getIndexedCatalog(): Promise<IndexedCatalogItem[]> {
   return getOrCompute(CATALOG_INDEX_CACHE_KEY, 45_000, async () => {
     const rows = await db
@@ -169,108 +310,110 @@ export async function getIndexedCatalog(): Promise<IndexedCatalogItem[]> {
       }
     }
 
-    return rows.map((row) => {
-      const tags = tagsMap.get(row.id) || [];
-      const combinedRaw = [
-        row.title,
-        row.classLevel || '',
-        row.categoryName || '',
-        row.subjectName || '',
-        row.chapter || '',
-        row.topic || '',
-        row.studyLabel || '',
-        tags.join(' '),
-        row.shortDescription,
-      ]
-        .filter(Boolean)
-        .join(' ');
-
-      const extracted = extractEducationalMeta(combinedRaw, {
-        classLevel: row.classLevel,
-        chapter: row.chapter,
-        topic: row.topic,
-        chapterOrder: row.chapterOrder,
-        studyLabel: row.studyLabel,
-        language: row.language,
-      });
-
-      const normTitle = normalizeEduQuery(row.title);
-      const normCreator = normalizeEduQuery(row.creatorName || '');
-      const normSubject = normalizeEduQuery(row.subjectName || '');
-      const normCategory = normalizeEduQuery(row.categoryName || '');
-      const normChapter = normalizeEduQuery(row.chapter || '');
-      const normTopic = normalizeEduQuery(row.topic || '');
-      const normTags = normalizeEduQuery(tags.join(' '));
-      const normDesc = normalizeEduQuery(row.shortDescription);
-      const normAll = [
-        normTitle,
-        normSubject,
-        normCategory,
-        normChapter,
-        normTopic,
-        normTags,
-        normCreator,
-        normalizeEduQuery(row.contentType),
-        normalizeEduQuery(row.classLevel || ''),
-        normalizeEduQuery(row.studyLabel || ''),
-        normDesc,
-      ]
-        .filter(Boolean)
-        .join(' ');
-
-      const titleTokens = tokenizeEdu(normTitle, true);
-      const metaTokens = tokenizeEdu(
-        [
-          row.classLevel || '',
-          row.categoryName || '',
-          row.subjectName || '',
-          row.chapter || '',
-          row.topic || '',
-          row.studyLabel || '',
-          tags.join(' '),
-          row.creatorName,
-          row.contentType,
-          row.language,
-        ].join(' '),
-        true
-      );
-      const allTokens = Array.from(new Set([...titleTokens, ...metaTokens, ...tokenizeEdu(normDesc, true)]));
-      const stemmedTokenSet = new Set(allTokens.map(stemEduToken));
-
-      const embed = embedMap.get(row.id);
-      const fallbackVectorJson =
-        (embed?.fallbackVectorJson as number[] | undefined) ||
-        computeLocalSemanticVector(normAll);
-      const vectorJson = (embed?.vectorJson as number[] | undefined) || fallbackVectorJson;
-
-      return {
-        ...row,
-        tags,
-        effectiveClassLevel: row.classLevel || extracted.classLevel,
-        effectiveChapter: row.chapter || (extracted.chapterOrder ? `Chapter ${extracted.chapterOrder}` : null),
-        effectiveTopic: row.topic || row.subjectName || null,
-        effectiveChapterOrder: row.chapterOrder ?? extracted.chapterOrder,
-        effectiveStudyLabel: row.studyLabel || extracted.studyLabelHint,
-        normTitle,
-        normCreator,
-        normSubject,
-        normCategory,
-        normChapter,
-        normTopic,
-        normTags,
-        normDesc,
-        normAll,
-        titleTokens,
-        metaTokens,
-        allTokens,
-        stemmedTokenSet,
-        embeddingModel: embed?.embeddingModel || 'local-edu-v1',
-        vectorJson,
-        fallbackVectorJson,
-        ctrScore: ctrMap.get(row.id) || 0,
-      };
-    });
+    return rows.map((row) =>
+      buildIndexedCatalogItem(
+        row,
+        tagsMap.get(row.id) || [],
+        embedMap.get(row.id),
+        ctrMap.get(row.id) || 0
+      )
+    );
   });
+}
+
+function scoreCatalogItemWithQuery(
+  item: IndexedCatalogItem,
+  qNorm: string,
+  queryTokens: string[],
+  parsedIntent: ReturnType<typeof extractEducationalMeta>,
+  queryVec: { model: string; vector: number[]; fallbackVector: number[] },
+  personalBoost = 0
+): { matched: boolean; score: number; matchedTokens: number; semanticScore: number } {
+  const exactPhraseTitle = item.normTitle.includes(qNorm) ? 1 : 0;
+  const exactPhraseAll = item.normAll.includes(qNorm) ? 1 : 0;
+
+  let titleMatchSum = 0;
+  let metaMatchSum = 0;
+  let allMatchSum = 0;
+  let matchedTokensCount = 0;
+
+  for (const qt of queryTokens) {
+    const sTitle = scoreTokenAgainstPool(qt, item.titleTokens);
+    const sMeta = scoreTokenAgainstPool(qt, item.metaTokens);
+    const sAll = Math.max(sTitle, sMeta, scoreTokenAgainstPool(qt, item.allTokens));
+
+    titleMatchSum += sTitle;
+    metaMatchSum += sMeta;
+    allMatchSum += sAll;
+    if (sAll >= 0.65) matchedTokensCount += 1;
+  }
+
+  const tokenDenom = Math.max(1, queryTokens.length);
+  const titleCov = titleMatchSum / tokenDenom;
+  const metaCov = metaMatchSum / tokenDenom;
+  const allCov = allMatchSum / tokenDenom;
+
+  const useGeminiSpace =
+    queryVec.model === 'gemini-embedding-2' &&
+    item.embeddingModel === 'gemini-embedding-2' &&
+    queryVec.vector.length === item.vectorJson.length;
+  const semanticScore = useGeminiSpace
+    ? cosineSimilarity(queryVec.vector, item.vectorJson)
+    : cosineSimilarity(queryVec.fallbackVector, item.fallbackVectorJson);
+
+  let intentBonus = 0;
+  if (
+    parsedIntent.classLevel &&
+    item.effectiveClassLevel &&
+    normalizeEduQuery(item.effectiveClassLevel).includes(normalizeEduQuery(parsedIntent.classLevel))
+  ) {
+    intentBonus += 0.14;
+  }
+  if (
+    parsedIntent.chapterOrder !== null &&
+    item.effectiveChapterOrder !== null &&
+    parsedIntent.chapterOrder === item.effectiveChapterOrder
+  ) {
+    intentBonus += 0.12;
+  }
+  if (
+    parsedIntent.languageHint &&
+    item.language.toLowerCase() === parsedIntent.languageHint.toLowerCase()
+  ) {
+    intentBonus += 0.08;
+  }
+  if (
+    parsedIntent.studyLabelHint &&
+    item.effectiveStudyLabel &&
+    item.effectiveStudyLabel.toLowerCase() === parsedIntent.studyLabelHint.toLowerCase()
+  ) {
+    intentBonus += 0.08;
+  }
+
+  const quality = computeQualityScore(item);
+  const hybridScore =
+    exactPhraseTitle * 0.25 +
+    exactPhraseAll * 0.08 +
+    titleCov * 0.34 +
+    metaCov * 0.22 +
+    allCov * 0.16 +
+    semanticScore * 0.24 +
+    intentBonus +
+    personalBoost +
+    quality * 0.12;
+
+  const minLexicalOrSemantic =
+    exactPhraseAll > 0 ||
+    matchedTokensCount >= 1 ||
+    allCov >= 0.42 ||
+    semanticScore >= 0.34;
+
+  return {
+    matched: minLexicalOrSemantic && hybridScore >= 0.24,
+    score: hybridScore,
+    matchedTokens: matchedTokensCount,
+    semanticScore,
+  };
 }
 
 // ===== FUZZY MATCHING (LEVENSHTEIN + CHARACTER TRIGRAM) =====
@@ -598,72 +741,6 @@ export async function runSmartSearch(params: SearchParams, userId?: number) {
     const queryVec = await getQueryEmbedding(qRaw);
 
     for (const item of filteredCatalog) {
-      // Exact & substring checks
-      const exactPhraseTitle = item.normTitle.includes(qNorm) ? 1 : 0;
-      const exactPhraseAll = item.normAll.includes(qNorm) ? 1 : 0;
-
-      // Token-level word-order-independent & typo-tolerant scoring
-      let titleMatchSum = 0;
-      let metaMatchSum = 0;
-      let allMatchSum = 0;
-      let matchedTokensCount = 0;
-
-      for (const qt of queryTokens) {
-        const sTitle = scoreTokenAgainstPool(qt, item.titleTokens);
-        const sMeta = scoreTokenAgainstPool(qt, item.metaTokens);
-        const sAll = Math.max(sTitle, sMeta, scoreTokenAgainstPool(qt, item.allTokens));
-
-        titleMatchSum += sTitle;
-        metaMatchSum += sMeta;
-        allMatchSum += sAll;
-        if (sAll >= 0.65) matchedTokensCount += 1;
-      }
-
-      const tokenDenom = Math.max(1, queryTokens.length);
-      const titleCov = titleMatchSum / tokenDenom;
-      const metaCov = metaMatchSum / tokenDenom;
-      const allCov = allMatchSum / tokenDenom;
-
-      // Semantic cosine similarity (match Gemini space when both use Gemini, else local 128-dim educational space)
-      const useGeminiSpace =
-        queryVec.model === 'gemini-embedding-2' &&
-        item.embeddingModel === 'gemini-embedding-2' &&
-        queryVec.vector.length === item.vectorJson.length;
-      const semanticScore = useGeminiSpace
-        ? cosineSimilarity(queryVec.vector, item.vectorJson)
-        : cosineSimilarity(queryVec.fallbackVector, item.fallbackVectorJson);
-
-      // Structured educational intent alignment
-      let intentBonus = 0;
-      if (
-        parsedIntent.classLevel &&
-        item.effectiveClassLevel &&
-        normalizeEduQuery(item.effectiveClassLevel).includes(normalizeEduQuery(parsedIntent.classLevel))
-      ) {
-        intentBonus += 0.14;
-      }
-      if (
-        parsedIntent.chapterOrder !== null &&
-        item.effectiveChapterOrder !== null &&
-        parsedIntent.chapterOrder === item.effectiveChapterOrder
-      ) {
-        intentBonus += 0.12;
-      }
-      if (
-        parsedIntent.languageHint &&
-        item.language.toLowerCase() === parsedIntent.languageHint.toLowerCase()
-      ) {
-        intentBonus += 0.08;
-      }
-      if (
-        parsedIntent.studyLabelHint &&
-        item.effectiveStudyLabel &&
-        item.effectiveStudyLabel.toLowerCase() === parsedIntent.studyLabelHint.toLowerCase()
-      ) {
-        intentBonus += 0.08;
-      }
-
-      // Mild personalization nudge (only if signed in & enabled)
       let personalBoost = 0;
       if (userSignals.personalizationEnabled && userSignals.interestTokens.size > 0) {
         let overlap = 0;
@@ -673,32 +750,20 @@ export async function runSmartSearch(params: SearchParams, userId?: number) {
         personalBoost = Math.min(0.06, overlap * 0.015);
       }
 
-      const quality = computeQualityScore(item);
-
-      const hybridScore =
-        exactPhraseTitle * 0.25 +
-        exactPhraseAll * 0.08 +
-        titleCov * 0.34 +
-        metaCov * 0.22 +
-        allCov * 0.16 +
-        semanticScore * 0.24 +
-        intentBonus +
-        personalBoost +
-        quality * 0.12;
-
-      // Require genuine relevance when a search query is entered
-      const minLexicalOrSemantic =
-        exactPhraseAll > 0 ||
-        matchedTokensCount >= 1 ||
-        allCov >= 0.42 ||
-        semanticScore >= 0.34;
-
-      if (minLexicalOrSemantic && hybridScore >= 0.24) {
+      const scored = scoreCatalogItemWithQuery(
+        item,
+        qNorm,
+        queryTokens,
+        parsedIntent,
+        queryVec,
+        personalBoost
+      );
+      if (scored.matched) {
         scoredResults.push({
           item,
-          score: hybridScore,
-          matchedTokens: matchedTokensCount,
-          semanticScore,
+          score: scored.score,
+          matchedTokens: scored.matchedTokens,
+          semanticScore: scored.semanticScore,
         });
       }
     }
@@ -1306,4 +1371,438 @@ export async function logSearchHistoryEntry(params: {
   } catch {
     return null;
   }
+}
+
+export type DraftTypeGroup = 'all' | 'articles' | 'videos' | 'pdfs';
+
+export function classifyDraftTypeGroup(contentType: string): 'articles' | 'videos' | 'pdfs' {
+  if (contentType === 'Video Lectures' || contentType === 'Online Tutorials') {
+    return 'videos';
+  }
+  if (contentType === 'PDF / Documents' || contentType === 'E-books') {
+    return 'pdfs';
+  }
+  return 'articles';
+}
+
+export interface CreatorDraftSearchParams {
+  creatorId: number;
+  q?: string;
+  typeGroup?: DraftTypeGroup;
+  subjectId?: number | null;
+  categoryId?: number | null;
+  sort?: 'newest' | 'oldest' | 'relevant';
+  page?: number;
+  limit?: number;
+}
+
+/**
+ * Creator-isolated AI Smart Search for Draft Content.
+ * Reuses the exact same educational normalizer, typo fuzzy matcher, Hinglish expansion,
+ * and semantic embedding scorer as Home Search, strictly scoped to `status = 'draft'` owned by `creatorId`.
+ */
+export async function runCreatorDraftSmartSearch(params: CreatorDraftSearchParams) {
+  const { creatorId } = params;
+  const rows = await db
+    .select({
+      id: contents.id,
+      title: contents.title,
+      slug: contents.slug,
+      authorName: contents.authorName,
+      publisherName: contents.publisherName,
+      shortDescription: contents.shortDescription,
+      coverImageUrl: contents.coverImageUrl,
+      contentType: contents.contentType,
+      language: contents.language,
+      priceInr: contents.priceInr,
+      isFree: contents.isFree,
+      isFeatured: contents.isFeatured,
+      viewsCount: contents.viewsCount,
+      likesCount: contents.likesCount,
+      purchasesCount: contents.purchasesCount,
+      avgRating: contents.avgRating,
+      reviewsCount: contents.reviewsCount,
+      readingTimeMins: contents.readingTimeMins,
+      publishedAt: contents.publishedAt,
+      createdAt: contents.createdAt,
+      updatedAt: contents.updatedAt,
+      categoryId: contents.categoryId,
+      categoryName: categories.name,
+      categorySlug: categories.slug,
+      subjectId: contents.subjectId,
+      subjectName: subjects.name,
+      subjectSlug: subjects.slug,
+      creatorId: users.id,
+      creatorName: sql<string>`COALESCE(NULLIF(TRIM(${contents.authorName}), ''), ${users.name})`,
+      creatorAvatar: users.avatarUrl,
+      classLevel: contents.classLevel,
+      chapter: contents.chapter,
+      topic: contents.topic,
+      chapterOrder: contents.chapterOrder,
+      durationSeconds: contents.durationSeconds,
+      studyLabel: contents.studyLabel,
+    })
+    .from(contents)
+    .innerJoin(users, eq(contents.creatorId, users.id))
+    .leftJoin(categories, eq(contents.categoryId, categories.id))
+    .leftJoin(subjects, eq(contents.subjectId, subjects.id))
+    .where(
+      and(
+        eq(contents.creatorId, creatorId),
+        eq(contents.status, 'draft'),
+        isNull(contents.deletedAt)
+      )
+    );
+
+  const counts = {
+    all: rows.length,
+    articles: 0,
+    videos: 0,
+    pdfs: 0,
+  };
+  const catMap = new Map<number, string>();
+  const subjMap = new Map<number, string>();
+  const updatedAtMap = new Map<number, Date>();
+
+  for (const r of rows) {
+    const grp = classifyDraftTypeGroup(r.contentType);
+    counts[grp] += 1;
+    if (r.categoryId && r.categoryName) catMap.set(r.categoryId, r.categoryName);
+    if (r.subjectId && r.subjectName) subjMap.set(r.subjectId, r.subjectName);
+    updatedAtMap.set(r.id, r.updatedAt);
+  }
+
+  let indexedDrafts: IndexedCatalogItem[] = [];
+  if (rows.length > 0) {
+    const ids = rows.map((r) => r.id);
+    const [tagRows, embedRows] = await Promise.all([
+      db.select().from(contentTags).where(inArray(contentTags.contentId, ids)),
+      db.select().from(contentEmbeddings).where(inArray(contentEmbeddings.contentId, ids)),
+    ]);
+
+    const tagsMap = new Map<number, string[]>();
+    for (const t of tagRows) {
+      const list = tagsMap.get(t.contentId) || [];
+      list.push(t.tag);
+      tagsMap.set(t.contentId, list);
+    }
+    const embedMap = new Map<number, typeof embedRows[number]>();
+    for (const e of embedRows) embedMap.set(e.contentId, e);
+
+    indexedDrafts = rows.map((row) =>
+      buildIndexedCatalogItem(row, tagsMap.get(row.id) || [], embedMap.get(row.id), 0)
+    );
+  }
+
+  const typeGroup = params.typeGroup && ['all', 'articles', 'videos', 'pdfs'].includes(params.typeGroup)
+    ? params.typeGroup
+    : 'all';
+
+  const filtered = indexedDrafts.filter((item) => {
+    if (typeGroup !== 'all' && classifyDraftTypeGroup(item.contentType) !== typeGroup) {
+      return false;
+    }
+    if (params.categoryId && item.categoryId !== params.categoryId) {
+      return false;
+    }
+    if (params.subjectId && item.subjectId !== params.subjectId) {
+      return false;
+    }
+    return true;
+  });
+
+  const qRaw = String(params.q || '').trim().slice(0, 160);
+  const qNorm = normalizeEduQuery(qRaw);
+  const parsedIntent = extractEducationalMeta(qRaw);
+  const queryTokens = parsedIntent.meaningfulTokens.length
+    ? parsedIntent.meaningfulTokens
+    : parsedIntent.tokens;
+
+  let scored: Array<{ item: IndexedCatalogItem; score: number }> = [];
+  let aiSearchUsed = false;
+
+  if (qNorm.length > 0) {
+    aiSearchUsed = true;
+    const queryVec = await getQueryEmbedding(qRaw);
+    for (const item of filtered) {
+      const res = scoreCatalogItemWithQuery(item, qNorm, queryTokens, parsedIntent, queryVec, 0);
+      if (res.matched) {
+        scored.push({ item, score: res.score });
+      }
+    }
+  } else {
+    scored = filtered.map((item) => ({ item, score: 0 }));
+  }
+
+  const sortMode = params.sort || (qNorm.length > 0 ? 'relevant' : 'newest');
+  scored.sort((a, b) => {
+    const ca = new Date(a.item.createdAt).getTime();
+    const cb = new Date(b.item.createdAt).getTime();
+    const ua = new Date(updatedAtMap.get(a.item.id) || a.item.createdAt).getTime();
+    const ub = new Date(updatedAtMap.get(b.item.id) || b.item.createdAt).getTime();
+    if (sortMode === 'oldest') {
+      return ca - cb || a.item.id - b.item.id;
+    }
+    if (sortMode === 'relevant' && qNorm.length > 0) {
+      return b.score - a.score || ub - ua || b.item.id - a.item.id;
+    }
+    // newest first
+    return cb - ca || ub - ua || b.item.id - a.item.id;
+  });
+
+  const limit = Math.min(30, Math.max(1, Number(params.limit || 9)));
+  const total = scored.length;
+  const totalPages = Math.max(1, Math.ceil(total / limit));
+  const page = Math.min(totalPages, Math.max(1, Number(params.page || 1)));
+  const offset = (page - 1) * limit;
+
+  const items = scored.slice(offset, offset + limit).map(({ item, score }) => ({
+    ...serializeCardItem(item, qNorm.length > 0 ? { relevanceScore: Number(score.toFixed(3)) } : undefined),
+    status: 'draft',
+    typeGroup: classifyDraftTypeGroup(item.contentType),
+    updatedAt: updatedAtMap.get(item.id) || item.createdAt,
+  }));
+
+  return {
+    items,
+    counts,
+    pagination: {
+      page,
+      limit,
+      total,
+      totalPages,
+    },
+    filtersMeta: {
+      categories: Array.from(catMap.entries())
+        .map(([id, name]) => ({ id, name }))
+        .sort((a, b) => a.name.localeCompare(b.name)),
+      subjects: Array.from(subjMap.entries())
+        .map(([id, name]) => ({ id, name }))
+        .sort((a, b) => a.name.localeCompare(b.name)),
+    },
+    searchMeta: {
+      query: qRaw,
+      aiSearchUsed,
+      sortApplied: sortMode,
+    },
+  };
+}
+
+export type PendingStatusFilter = 'all' | 'under_review' | 'changes_requested';
+
+export interface CreatorPendingSearchParams {
+  creatorId: number;
+  q?: string;
+  statusFilter?: PendingStatusFilter;
+  contentType?: string;
+  subjectId?: number | null;
+  categoryId?: number | null;
+  pricing?: 'all' | 'free' | 'paid';
+  sort?: 'latest' | 'oldest' | 'relevant';
+  page?: number;
+  limit?: number;
+}
+
+/**
+ * Creator-isolated AI Smart Search for Pending & Review submissions.
+ * Scoped strictly to status IN ('pending', 'changes_requested') owned by creatorId.
+ */
+export async function runCreatorPendingSmartSearch(params: CreatorPendingSearchParams) {
+  const { creatorId } = params;
+  const rows = await db
+    .select({
+      id: contents.id,
+      title: contents.title,
+      slug: contents.slug,
+      authorName: contents.authorName,
+      publisherName: contents.publisherName,
+      shortDescription: contents.shortDescription,
+      coverImageUrl: contents.coverImageUrl,
+      contentType: contents.contentType,
+      language: contents.language,
+      priceInr: contents.priceInr,
+      isFree: contents.isFree,
+      isFeatured: contents.isFeatured,
+      viewsCount: contents.viewsCount,
+      likesCount: contents.likesCount,
+      purchasesCount: contents.purchasesCount,
+      avgRating: contents.avgRating,
+      reviewsCount: contents.reviewsCount,
+      readingTimeMins: contents.readingTimeMins,
+      publishedAt: contents.publishedAt,
+      createdAt: contents.createdAt,
+      updatedAt: contents.updatedAt,
+      status: contents.status,
+      rejectionReason: contents.rejectionReason,
+      categoryId: contents.categoryId,
+      categoryName: categories.name,
+      categorySlug: categories.slug,
+      subjectId: contents.subjectId,
+      subjectName: subjects.name,
+      subjectSlug: subjects.slug,
+      creatorId: users.id,
+      creatorName: sql<string>`COALESCE(NULLIF(TRIM(${contents.authorName}), ''), ${users.name})`,
+      creatorAvatar: users.avatarUrl,
+      classLevel: contents.classLevel,
+      chapter: contents.chapter,
+      topic: contents.topic,
+      chapterOrder: contents.chapterOrder,
+      durationSeconds: contents.durationSeconds,
+      studyLabel: contents.studyLabel,
+    })
+    .from(contents)
+    .innerJoin(users, eq(contents.creatorId, users.id))
+    .leftJoin(categories, eq(contents.categoryId, categories.id))
+    .leftJoin(subjects, eq(contents.subjectId, subjects.id))
+    .where(
+      and(
+        eq(contents.creatorId, creatorId),
+        inArray(contents.status, ['pending', 'changes_requested']),
+        isNull(contents.deletedAt)
+      )
+    );
+
+  const counts = {
+    all: rows.length,
+    underReview: 0,
+    changesRequested: 0,
+  };
+  const catMap = new Map<number, string>();
+  const subjMap = new Map<number, string>();
+  const typeSet = new Set<string>();
+  const rowMetaMap = new Map<
+    number,
+    { status: string; rejectionReason: string | null; updatedAt: Date }
+  >();
+
+  for (const r of rows) {
+    if (r.status === 'changes_requested') counts.changesRequested += 1;
+    else counts.underReview += 1;
+    if (r.categoryId && r.categoryName) catMap.set(r.categoryId, r.categoryName);
+    if (r.subjectId && r.subjectName) subjMap.set(r.subjectId, r.subjectName);
+    if (r.contentType) typeSet.add(r.contentType);
+    rowMetaMap.set(r.id, {
+      status: r.status,
+      rejectionReason: r.rejectionReason,
+      updatedAt: r.updatedAt,
+    });
+  }
+
+  let indexedItems: IndexedCatalogItem[] = [];
+  if (rows.length > 0) {
+    const ids = rows.map((r) => r.id);
+    const [tagRows, embedRows] = await Promise.all([
+      db.select().from(contentTags).where(inArray(contentTags.contentId, ids)),
+      db.select().from(contentEmbeddings).where(inArray(contentEmbeddings.contentId, ids)),
+    ]);
+
+    const tagsMap = new Map<number, string[]>();
+    for (const t of tagRows) {
+      const list = tagsMap.get(t.contentId) || [];
+      list.push(t.tag);
+      tagsMap.set(t.contentId, list);
+    }
+    const embedMap = new Map<number, typeof embedRows[number]>();
+    for (const e of embedRows) embedMap.set(e.contentId, e);
+
+    indexedItems = rows.map((row) =>
+      buildIndexedCatalogItem(row, tagsMap.get(row.id) || [], embedMap.get(row.id), 0)
+    );
+  }
+
+  const statusFilter: PendingStatusFilter =
+    params.statusFilter && ['all', 'under_review', 'changes_requested'].includes(params.statusFilter)
+      ? params.statusFilter
+      : 'all';
+
+  const filtered = indexedItems.filter((item) => {
+    const meta = rowMetaMap.get(item.id);
+    if (statusFilter === 'under_review' && meta?.status !== 'pending') return false;
+    if (statusFilter === 'changes_requested' && meta?.status !== 'changes_requested') return false;
+    if (params.contentType && item.contentType !== params.contentType) return false;
+    if (params.categoryId && item.categoryId !== params.categoryId) return false;
+    if (params.subjectId && item.subjectId !== params.subjectId) return false;
+    if (params.pricing === 'free' && !item.isFree) return false;
+    if (params.pricing === 'paid' && item.isFree) return false;
+    return true;
+  });
+
+  const qRaw = String(params.q || '').trim().slice(0, 160);
+  const qNorm = normalizeEduQuery(qRaw);
+  const parsedIntent = extractEducationalMeta(qRaw);
+  const queryTokens = parsedIntent.meaningfulTokens.length
+    ? parsedIntent.meaningfulTokens
+    : parsedIntent.tokens;
+
+  let scored: Array<{ item: IndexedCatalogItem; score: number }> = [];
+  let aiSearchUsed = false;
+
+  if (qNorm.length > 0) {
+    aiSearchUsed = true;
+    const queryVec = await getQueryEmbedding(qRaw);
+    for (const item of filtered) {
+      const res = scoreCatalogItemWithQuery(item, qNorm, queryTokens, parsedIntent, queryVec, 0);
+      if (res.matched) {
+        scored.push({ item, score: res.score });
+      }
+    }
+  } else {
+    scored = filtered.map((item) => ({ item, score: 0 }));
+  }
+
+  const sortMode = params.sort || (qNorm.length > 0 ? 'relevant' : 'latest');
+  scored.sort((a, b) => {
+    const ua = new Date(rowMetaMap.get(a.item.id)?.updatedAt || a.item.createdAt).getTime();
+    const ub = new Date(rowMetaMap.get(b.item.id)?.updatedAt || b.item.createdAt).getTime();
+    const ca = new Date(a.item.createdAt).getTime();
+    const cb = new Date(b.item.createdAt).getTime();
+    if (sortMode === 'oldest') {
+      return ca - cb || a.item.id - b.item.id;
+    }
+    if (sortMode === 'relevant' && qNorm.length > 0) {
+      return b.score - a.score || ub - ua || b.item.id - a.item.id;
+    }
+    return ub - ua || cb - ca || b.item.id - a.item.id;
+  });
+
+  const limit = Math.min(30, Math.max(1, Number(params.limit || 10)));
+  const total = scored.length;
+  const totalPages = Math.max(1, Math.ceil(total / limit));
+  const page = Math.min(totalPages, Math.max(1, Number(params.page || 1)));
+  const offset = (page - 1) * limit;
+
+  const items = scored.slice(offset, offset + limit).map(({ item, score }) => {
+    const meta = rowMetaMap.get(item.id);
+    return {
+      ...serializeCardItem(item, qNorm.length > 0 ? { relevanceScore: Number(score.toFixed(3)) } : undefined),
+      status: meta?.status || 'pending',
+      rejectionReason: meta?.rejectionReason || null,
+      updatedAt: meta?.updatedAt || item.createdAt,
+    };
+  });
+
+  return {
+    items,
+    counts,
+    pagination: {
+      page,
+      limit,
+      total,
+      totalPages,
+    },
+    filtersMeta: {
+      contentTypes: Array.from(typeSet).sort(),
+      categories: Array.from(catMap.entries())
+        .map(([id, name]) => ({ id, name }))
+        .sort((a, b) => a.name.localeCompare(b.name)),
+      subjects: Array.from(subjMap.entries())
+        .map(([id, name]) => ({ id, name }))
+        .sort((a, b) => a.name.localeCompare(b.name)),
+    },
+    searchMeta: {
+      query: qRaw,
+      aiSearchUsed,
+      sortApplied: sortMode,
+    },
+  };
 }

@@ -51,12 +51,18 @@ const ABBREVIATION_MAP: Record<string, string> = {
   math: 'mathematics',
   maths: 'mathematics',
   ganit: 'mathematics',
+  ganith: 'mathematics',
+  ganita: 'mathematics',
   phy: 'physics',
   bhautiki: 'physics',
+  bhautik: 'physics',
   chem: 'chemistry',
   rasayan: 'chemistry',
   bio: 'biology',
   jeev: 'biology',
+  jeew: 'biology',
+  sharir: 'human body',
+  manav: 'human',
   cs: 'computer science',
   cse: 'computer science',
   it: 'information technology',
@@ -76,6 +82,7 @@ const ABBREVIATION_MAP: Record<string, string> = {
   sst: 'social studies',
   sci: 'science',
   vigyan: 'science',
+  vigyaan: 'science',
   gk: 'general knowledge',
   rev: 'revision',
   samjhao: 'explanation',
@@ -154,7 +161,7 @@ const SEMANTIC_CONCEPT_CLUSTERS: Array<{ id: number; keywords: string[] }> = [
   { id: 0, keywords: ['mathematics', 'algebra', 'quadratic', 'equation', 'polynomial', 'matrix', 'matrices', 'linear', 'calculus', 'derivative', 'integral', 'trigonometry', 'geometry', 'theorem', 'proof', 'rs', 'aggarwal', 'rd', 'sharma', 'ncert'] },
   { id: 1, keywords: ['physics', 'newton', 'law', 'laws', 'motion', 'force', 'mechanics', 'kinematics', 'energy', 'work', 'power', 'electricity', 'magnetism', 'current', 'circuit', 'optics', 'wave', 'thermodynamics', 'quantum', 'numericals', 'hc', 'verma'] },
   { id: 2, keywords: ['chemistry', 'organic', 'inorganic', 'physical', 'reaction', 'mechanism', 'hydrocarbon', 'alcohol', 'acid', 'base', 'mole', 'atom', 'molecule', 'periodic', 'bond', 'polymer', 'alkane', 'ketone', 'aldehyde'] },
-  { id: 3, keywords: ['biology', 'cell', 'genetics', 'dna', 'rna', 'evolution', 'ecology', 'plant', 'human', 'physiology', 'anatomy', 'botany', 'zoology', 'mitosis', 'photosynthesis', 'neet', 'enzyme'] },
+  { id: 3, keywords: ['biology', 'body', 'organ', 'organs', 'system', 'systems', 'cell', 'genetics', 'dna', 'rna', 'evolution', 'ecology', 'plant', 'human', 'physiology', 'anatomy', 'botany', 'zoology', 'mitosis', 'photosynthesis', 'neet', 'enzyme'] },
   { id: 4, keywords: ['computer', 'science', 'algorithm', 'algorithms', 'data', 'structure', 'structures', 'distributed', 'consensus', 'raft', 'paxos', 'database', 'sql', 'operating', 'system', 'network', 'programming', 'python', 'java', 'javascript', 'gate', 'coding'] },
   { id: 5, keywords: ['literature', 'poem', 'poems', 'poetry', 'story', 'stories', 'novel', 'essay', 'verse', 'prose', 'grammar', 'english', 'hindi', 'writing', 'comprehension', 'shakespeare', 'author'] },
   { id: 6, keywords: ['history', 'geography', 'polity', 'economics', 'civics', 'constitution', 'upsc', 'ias', 'social', 'modern', 'ancient', 'medieval', 'economy', 'gdp', 'parliament'] },
@@ -598,7 +605,8 @@ export async function syncContentEmbedding(contentId: number): Promise<void> {
       .where(eq(contents.id, contentId))
       .limit(1);
 
-    if (!row || row.deletedAt || row.status !== 'approved') {
+    const allowedStatuses = new Set(['approved', 'draft', 'pending', 'changes_requested', 'rejected']);
+    if (!row || row.deletedAt || !allowedStatuses.has(row.status)) {
       return;
     }
 
