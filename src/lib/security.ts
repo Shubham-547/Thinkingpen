@@ -206,8 +206,9 @@ export function getTrustedAppBaseUrl(): string {
   const candidates = [
     process.env.APP_BASE_URL,
     process.env.APP_URL,
+    process.env.RENDER_EXTERNAL_URL,
     process.env.NODE_ENV === 'production'
-      ? 'https://thinkingpen-ksf3.onrender.com'
+      ? 'https://scholarpress.onrender.com'
       : `http://localhost:${Number(process.env.PORT) || 3000}`,
   ];
 
@@ -228,7 +229,7 @@ export function getTrustedAppBaseUrl(): string {
     }
   }
 
-  return 'https://thinkingpen-ksf3.onrender.com';
+  return 'https://scholarpress.onrender.com';
 }
 
 export function slugify(input: string): string {

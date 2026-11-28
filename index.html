@@ -3,20 +3,45 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>ScholarPress — Educational Content Publishing & Knowledge Marketplace</title>
+    <meta name="google-site-verification" content="82c3KX3A2BLsZw3QV7daHI2Q85bzIx9w5KjAzA6R-6M" />
+    <meta name="robots" content="index, follow" />
+    <title>ScholarPress — Educational Notes, PDFs & Knowledge Platform</title>
     <meta
       name="description"
-      content="Educational content publishing, study library, and creator monetization marketplace for notes, PDFs, articles, e-books, research papers, video lectures, poems, and stories."
+      content="Discover and publish educational notes, PDFs, e-books, articles, and video lectures. Learn, share knowledge, and earn transparently on ScholarPress."
     />
-    <meta property="og:title" content="ScholarPress — Educational Content Publishing & Knowledge Marketplace" />
+    <meta property="og:site_name" content="ScholarPress" />
+    <meta property="og:title" content="ScholarPress — Educational Notes, PDFs & Knowledge Platform" />
     <meta
       property="og:description"
-      content="Share your knowledge, publish educational notes, PDFs, articles, and lectures, and earn transparently."
+      content="Discover and publish educational notes, PDFs, e-books, articles, and video lectures. Learn, share knowledge, and earn transparently on ScholarPress."
     />
     <meta property="og:type" content="website" />
+    <meta property="og:image" content="/scholarpress-app-icon.png" />
     <meta name="twitter:card" content="summary_large_image" />
+    <meta name="twitter:title" content="ScholarPress — Educational Notes, PDFs & Knowledge Platform" />
+    <meta
+      name="twitter:description"
+      content="Discover and publish educational notes, PDFs, e-books, articles, and video lectures on ScholarPress."
+    />
+    <meta name="twitter:image" content="/scholarpress-app-icon.png" />
     <link rel="icon" type="image/png" href="/scholarpress-app-icon.png" />
     <link rel="apple-touch-icon" href="/scholarpress-app-icon.png" />
+    <script type="application/ld+json">
+      {
+        "@context": "https://schema.org",
+        "@type": "WebApplication",
+        "name": "ScholarPress",
+        "applicationCategory": "EducationalApplication",
+        "operatingSystem": "All",
+        "description": "Discover and publish educational notes, PDFs, e-books, articles, and video lectures. Learn, share knowledge, and earn transparently on ScholarPress.",
+        "offers": {
+          "@type": "Offer",
+          "price": "0",
+          "priceCurrency": "INR"
+        }
+      }
+    </script>
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
     <link
@@ -43,7 +68,14 @@
     </script>
   </head>
   <body class="bg-[#F8FAFC] text-[#0F172A] dark:bg-[#0B1120] dark:text-[#F1F5F9] antialiased selection:bg-[#0F2547] selection:text-white">
-    <div id="app-shell" class="min-h-screen flex flex-col"></div>
+    <div id="app-shell" class="min-h-screen flex flex-col">
+      <noscript>
+        <main style="max-width:720px;margin:48px auto;padding:0 16px;font-family:sans-serif">
+          <h1>ScholarPress — Learn. Create. Share. Earn.</h1>
+          <p>Discover and publish educational notes, PDFs, e-books, research papers, articles, poems, stories, and video lectures on ScholarPress.</p>
+        </main>
+      </noscript>
+    </div>
     <div id="modal-root"></div>
     <div id="toast-root" class="fixed bottom-6 right-6 z-50 flex flex-col gap-2 max-w-sm pointer-events-none"></div>
     <script type="module" src="/src/main.js"></script>

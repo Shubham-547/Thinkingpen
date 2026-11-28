@@ -15,6 +15,7 @@ import { discoveryRouter, searchRouter } from './src/routes/search.ts';
 import { ensureBaselineCatalog } from './src/db/bootstrap.ts';
 import { backfillMissingEmbeddings } from './src/lib/embeddings.ts';
 import { flushPendingViews } from './src/lib/jobs.ts';
+import { getTrustedAppBaseUrl } from './src/lib/security.ts';
 
 dotenv.config();
 
@@ -273,6 +274,41 @@ async function startServer() {
   app.get('/api/health', (_req, res) => {
     res.setHeader('Cache-Control', 'no-store');
     res.json({ ok: true, service: 'scholarpress-api' });
+  });
+
+  app.get('/robots.txt', (_req, res) => {
+    const baseUrl = getTrustedAppBaseUrl();
+    res.type('text/plain');
+    res.setHeader('Cache-Control', 'public, max-age=3600');
+    res.send(
+      [
+        'User-agent: *',
+        'Allow: /',
+        'Disallow: /api/',
+        '',
+        `Sitemap: ${baseUrl}/sitemap.xml`,
+      ].join('\n')
+    );
+  });
+
+  app.get('/sitemap.xml', (_req, res) => {
+    const baseUrl = getTrustedAppBaseUrl();
+    const today = new Date().toISOString().slice(0, 10);
+    res.type('application/xml');
+    res.setHeader('Cache-Control', 'public, max-age=3600');
+    res.send(
+      [
+        '<?xml version="1.0" encoding="UTF-8"?>',
+        '<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">',
+        '  <url>',
+        `    <loc>${baseUrl}/</loc>`,
+        `    <lastmod>${today}</lastmod>`,
+        '    <changefreq>daily</changefreq>',
+        '    <priority>1.0</priority>',
+        '  </url>',
+        '</urlset>',
+      ].join('\n')
+    );
   });
 
   // Return clean JSON errors for unknown API routes & multer/payload errors
