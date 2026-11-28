@@ -1,4 +1,5 @@
 const FIREBASE_HINT_KEY = 'sp_has_firebase_session';
+const PENDING_REDIRECT_KEY = 'sp_pending_firebase_redirect';
 
 let firebasePromise = null;
 let loadedFirebase = null;
@@ -11,6 +12,14 @@ export function hasStoredFirebaseHint() {
   }
 }
 
+export function hasPendingFirebaseRedirect() {
+  try {
+    return Boolean(sessionStorage.getItem(PENDING_REDIRECT_KEY));
+  } catch {
+    return false;
+  }
+}
+
 function setFirebaseHint(active) {
   try {
     if (active) localStorage.setItem(FIREBASE_HINT_KEY, '1');
@@ -18,8 +27,23 @@ function setFirebaseHint(active) {
   } catch {}
 }
 
+function setPendingRedirectProvider(label) {
+  try {
+    if (label) sessionStorage.setItem(PENDING_REDIRECT_KEY, String(label));
+    else sessionStorage.removeItem(PENDING_REDIRECT_KEY);
+  } catch {}
+}
+
+function getPendingRedirectProvider() {
+  try {
+    return sessionStorage.getItem(PENDING_REDIRECT_KEY) || '';
+  } catch {
+    return '';
+  }
+}
+
 /**
- * Dynamically loads Firebase App & Auth SDK only when needed (Google Sign-In or returning Google session).
+ * Dynamically loads Firebase App & Auth SDK only when needed (Social Sign-In or returning Firebase session).
  * Keeps initial Home page bundle free of ~280 KB of unused Firebase Auth JavaScript.
  */
 async function ensureFirebaseLoaded() {
@@ -53,7 +77,15 @@ async function ensureFirebaseLoaded() {
   return firebasePromise;
 }
 
-async function runPopupSignIn(providerKey) {
+function isPopupFallbackError(err) {
+  const code = err?.code || '';
+  return (
+    code === 'auth/popup-blocked' ||
+    code === 'auth/operation-not-supported-in-this-environment'
+  );
+}
+
+async function runPopupSignIn(providerKey, providerLabel = 'Social') {
   const loaded = await ensureFirebaseLoaded();
   const provider = loaded[providerKey];
   if (providerKey === 'facebookAuthProvider') {
@@ -62,26 +94,60 @@ async function runPopupSignIn(providerKey) {
       (window.innerWidth < 768 || /Android|iPhone|iPad|iPod/i.test(navigator.userAgent || ''));
     provider.setCustomParameters({ display: isMobile ? 'touch' : 'popup' });
   }
-  const result = await loaded.authMod.signInWithPopup(loaded.auth, provider);
-  setFirebaseHint(true);
-  const idToken = await result.user.getIdToken(true);
-  return { firebaseUser: result.user, idToken };
+  try {
+    const result = await loaded.authMod.signInWithPopup(loaded.auth, provider);
+    setPendingRedirectProvider('');
+    setFirebaseHint(true);
+    const idToken = await result.user.getIdToken(true);
+    return { firebaseUser: result.user, idToken, redirected: false };
+  } catch (err) {
+    if (isPopupFallbackError(err)) {
+      setPendingRedirectProvider(providerLabel);
+      setFirebaseHint(true);
+      await loaded.authMod.signInWithRedirect(loaded.auth, provider);
+      return { redirected: true };
+    }
+    throw err;
+  }
+}
+
+export async function consumeFirebaseRedirectResult() {
+  const pendingLabel = getPendingRedirectProvider();
+  try {
+    const loaded = await ensureFirebaseLoaded();
+    const result = await loaded.authMod.getRedirectResult(loaded.auth);
+    if (!result?.user) {
+      setPendingRedirectProvider('');
+      return null;
+    }
+    setPendingRedirectProvider('');
+    setFirebaseHint(true);
+    const idToken = await result.user.getIdToken(true);
+    return { firebaseUser: result.user, idToken, providerLabel: pendingLabel || 'Social' };
+  } catch (err) {
+    setPendingRedirectProvider('');
+    return {
+      error: err,
+      providerLabel: pendingLabel || 'Social',
+    };
+  }
 }
 
 export async function signInWithGoogle() {
-  return runPopupSignIn('googleAuthProvider');
+  return runPopupSignIn('googleAuthProvider', 'Google');
 }
 
 export async function signInWithFacebook() {
-  return runPopupSignIn('facebookAuthProvider');
+  return runPopupSignIn('facebookAuthProvider', 'Facebook');
 }
 
 export async function signInWithTwitter() {
-  return runPopupSignIn('twitterAuthProvider');
+  return runPopupSignIn('twitterAuthProvider', 'Twitter');
 }
 
 export function formatFirebaseAuthError(err, providerLabel = 'Social') {
   const code = err?.code || '';
+  const currentHost = typeof window !== 'undefined' ? window.location.hostname : '';
   if (code === 'auth/popup-closed-by-user' || code === 'auth/cancelled-popup-request') {
     return `${providerLabel} sign-in popup was closed before completing.`;
   }
@@ -95,13 +161,21 @@ export function formatFirebaseAuthError(err, providerLabel = 'Social') {
     return `${providerLabel} sign-in is not enabled yet in Firebase Authentication. Enable ${providerLabel} under Firebase Console → Authentication → Sign-in method (with your ${providerLabel} App ID & Secret).`;
   }
   if (code === 'auth/unauthorized-domain') {
-    return `This domain is not authorized in Firebase Authentication. Add the current hostname under Firebase Console → Authentication → Settings → Authorized domains.`;
+    const hostHint = currentHost ? ` (${currentHost})` : '';
+    return `This domain${hostHint} is not authorized in Firebase Authentication. Add "${currentHost || 'your domain'}" under Firebase Console → Authentication → Settings → Authorized domains.`;
+  }
+  if (code === 'auth/network-request-failed') {
+    return `Network error while contacting ${providerLabel} sign-in. Please check your internet connection and try again.`;
+  }
+  if (code === 'auth/internal-error') {
+    return `${providerLabel} sign-in encountered a configuration or browser error. Check Firebase Authorized Domains and ${providerLabel} OAuth settings, then try again.`;
   }
   return err?.message || `${providerLabel} sign-in failed. Please try again.`;
 }
 
 export async function signOutFirebase() {
   setFirebaseHint(false);
+  setPendingRedirectProvider('');
   if (!loadedFirebase) return;
   try {
     await loadedFirebase.authMod.signOut(loadedFirebase.auth);

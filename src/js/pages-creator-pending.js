@@ -153,13 +153,13 @@ function renderPendingEmptyStateHtml(isFiltered) {
   }
 
   let heading = 'No Pending Submissions';
-  let body = 'You have no content currently waiting for review. Upload new material or publish a draft to submit it for moderation.';
+  let body = 'Your submitted content will appear here when it is awaiting moderation.';
   if (pendingListState.status === 'under_review') {
     heading = 'No Content Under Review';
-    body = 'None of your submissions are currently waiting in the moderation queue.';
+    body = 'You currently have no submissions waiting for review.';
   } else if (pendingListState.status === 'changes_requested') {
     heading = 'No Changes Requested';
-    body = 'You have no submissions requiring revisions right now.';
+    body = 'There are no submissions requiring corrections.';
   }
 
   return `
@@ -518,6 +518,7 @@ function openPendingActionMenu({ triggerEl, item }) {
   root.id = 'pnd-action-menu-root';
   root.className = 'fixed inset-0 z-50';
 
+  const hasItemFeedback = Boolean(item.feedbackSnippet || item.rejectionReason);
   const options = [
     {
       action: 'details',
@@ -531,20 +532,12 @@ function openPendingActionMenu({ triggerEl, item }) {
     },
   ];
 
-  if (isChangesRequested) {
-    options.push(
-      {
-        action: 'edit',
-        label: 'Edit & Resubmit',
-        highlight: true,
-        iconPath: 'M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z',
-      },
-      {
-        action: 'feedback',
-        label: 'View Feedback',
-        iconPath: 'M7 8h10M7 12h4m1 8l-4-4H5a2 2 0 01-2-2V6a2 2 0 012-2h14a2 2 0 012 2v8a2 2 0 01-2 2h-3l-4 4z',
-      }
-    );
+  if (isChangesRequested || hasItemFeedback || item.status === 'rejected') {
+    options.push({
+      action: 'feedback',
+      label: 'View Feedback',
+      iconPath: 'M7 8h10M7 12h4m1 8l-4-4H5a2 2 0 01-2-2V6a2 2 0 012-2h14a2 2 0 012 2v8a2 2 0 01-2 2h-3l-4 4z',
+    });
   }
 
   options.push({
@@ -552,6 +545,21 @@ function openPendingActionMenu({ triggerEl, item }) {
     label: 'View History',
     iconPath: 'M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z',
   });
+
+  if (isChangesRequested) {
+    options.push({
+      action: 'edit',
+      label: 'Edit & Resubmit',
+      highlight: true,
+      iconPath: 'M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z',
+    });
+  } else if (item.status === 'approved' && item.slug) {
+    options.push({
+      action: 'published',
+      label: 'View Published Content',
+      iconPath: 'M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14',
+    });
+  }
 
   const menuOptionsHtml = options
     .map(
@@ -642,6 +650,8 @@ function openPendingActionMenu({ triggerEl, item }) {
         window.location.hash = `#/creator/pending/${item.id}/feedback`;
       } else if (action === 'history') {
         window.location.hash = '#/creator/history';
+      } else if (action === 'published' && item.slug) {
+        window.location.hash = `#/content/${item.slug}`;
       }
     });
   });
@@ -1216,11 +1226,18 @@ export async function renderSubmissionDetailsHtml(payload) {
           <span>← Back to Pending &amp; Review</span>
         </a>
         <div class="flex flex-wrap items-center gap-2.5">
+          <button type="button" id="pnd-scroll-preview-btn" class="min-h-[44px] inline-flex items-center px-4 py-2 text-xs sm:text-sm font-semibold rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-[#111A2E] text-slate-700 dark:text-slate-200 hover:bg-slate-50 dark:hover:bg-slate-800 transition-colors">
+            Preview Content
+          </button>
           <a href="#/creator/history" class="min-h-[44px] inline-flex items-center px-4 py-2 text-xs sm:text-sm font-semibold rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-[#111A2E] text-slate-700 dark:text-slate-200 hover:bg-slate-50 dark:hover:bg-slate-800 transition-colors">
             View History
           </a>
           ${
-            caps.canEditResubmit
+            c.status === 'approved' && c.slug
+              ? `<a href="#/content/${esc(c.slug)}" class="min-h-[44px] inline-flex items-center gap-2 px-5 py-2 text-xs sm:text-sm font-semibold rounded-xl bg-emerald-700 hover:bg-emerald-800 text-white transition-colors">
+                  <span>View Published Content</span>
+                </a>`
+              : caps.canEditResubmit
               ? `<a href="#/creator/edit/${c.id}?from=pending" class="min-h-[44px] inline-flex items-center gap-2 px-5 py-2 text-xs sm:text-sm font-semibold rounded-xl bg-[#5a1fd8] hover:bg-[#4c1d95] text-white transition-colors">
                   <span>Edit &amp; Resubmit</span>
                 </a>`
@@ -1244,6 +1261,10 @@ export function wireSubmissionDetailsEvents(container, subView) {
       requestAnimationFrame(() => pvSection.scrollIntoView({ behavior: 'smooth', block: 'start' }));
     }
   }
+
+  document.getElementById('pnd-scroll-preview-btn')?.addEventListener('click', () => {
+    document.getElementById('pnd-preview-section')?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  });
 
   let zoomPct = 100;
   const pdfFrame = document.getElementById('pnd-pdf-frame');

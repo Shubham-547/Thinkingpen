@@ -665,8 +665,94 @@ router.get('/contents/:slugOrId', optionalAuth, async (req: AuthRequest, res) =>
       return res.status(404).json({ error: 'Publication is not currently available.' });
     }
 
-    // Non-blocking batched view increment (flushed in bulk every 5s; zero write lock on GET)
-    queueContentView(item.id);
+    // Non-blocking batched view increment + timestamped telemetry (flushed in bulk every 5s; zero write lock on GET)
+    const rawSrc = String(req.query.src || '').trim().slice(0, 160);
+    const rawReferer = String(req.get('referer') || '').trim().slice(0, 300);
+    const reqHost = String(req.get('host') || '').toLowerCase();
+
+    let referrerSource: string = 'direct';
+    let referrerLabel: string = 'Direct';
+
+    if (rawSrc.startsWith('#/')) {
+      if (rawSrc.includes('q=')) {
+        referrerSource = 'search';
+        referrerLabel = 'ScholarPress Search';
+      } else if (
+        rawSrc.startsWith('#/explore') ||
+        rawSrc.startsWith('#/notes') ||
+        rawSrc.startsWith('#/study-materials') ||
+        rawSrc.startsWith('#/pdf-library') ||
+        rawSrc.startsWith('#/articles') ||
+        rawSrc.startsWith('#/videos') ||
+        rawSrc.startsWith('#/poems-stories') ||
+        rawSrc.startsWith('#/categories')
+      ) {
+        referrerSource = 'explore';
+        referrerLabel = 'Explore Catalog';
+      } else if (rawSrc.startsWith('#/creator-profile') || rawSrc.startsWith('#/creators')) {
+        referrerSource = 'profile';
+        referrerLabel = 'Creator Profile';
+      } else if (rawSrc.startsWith('#/dashboard')) {
+        referrerSource = 'internal';
+        referrerLabel = 'Reader Library';
+      } else if (rawSrc === '#/' || rawSrc === '#') {
+        referrerSource = 'internal';
+        referrerLabel = 'ScholarPress Home';
+      }
+    } else if (rawReferer) {
+      try {
+        const refUrl = new URL(rawReferer);
+        const refHost = refUrl.hostname.toLowerCase().replace(/^www\./, '');
+        const cleanReqHost = reqHost.split(':')[0].replace(/^www\./, '');
+        if (refHost && refHost !== cleanReqHost) {
+          if (refHost.includes('google.')) {
+            referrerSource = 'search';
+            referrerLabel = 'Google Search';
+          } else if (refHost.includes('bing.') || refHost.includes('duckduckgo.') || refHost.includes('yahoo.')) {
+            referrerSource = 'search';
+            referrerLabel = 'Web Search';
+          } else if (refHost.includes('youtube.') || refHost === 'youtu.be') {
+            referrerSource = 'social';
+            referrerLabel = 'YouTube';
+          } else if (refHost.includes('whatsapp.') || refHost === 'wa.me' || refHost === 't.me' || refHost.includes('telegram.')) {
+            referrerSource = 'social';
+            referrerLabel = 'Messaging / Share';
+          } else if (
+            refHost.includes('instagram.') ||
+            refHost.includes('facebook.') ||
+            refHost === 'fb.com' ||
+            refHost.includes('linkedin.') ||
+            refHost === 'x.com' ||
+            refHost.includes('twitter.') ||
+            refHost.includes('reddit.')
+          ) {
+            referrerSource = 'social';
+            referrerLabel = 'Social Media';
+          } else {
+            referrerSource = 'external';
+            referrerLabel = refHost.slice(0, 60);
+          }
+        }
+      } catch {
+        // Ignore malformed referer
+      }
+    }
+
+    const visitorIdentity = req.user?.id
+      ? `u:${req.user.id}`
+      : `anon:${req.ip || '0.0.0.0'}:${String(req.headers['user-agent'] || '').slice(0, 120)}`;
+    const visitorHash = crypto.createHash('sha256').update(visitorIdentity).digest('hex').slice(0, 24);
+
+    if (item.status === 'approved' && !item.deletedAt) {
+      queueContentView(item.id, {
+        userId: req.user?.id ?? null,
+        visitorHash,
+        referrerSource,
+        referrerLabel,
+      });
+    } else {
+      queueContentView(item.id);
+    }
 
     // Consolidate all 4 per-user state lookups (purchase, bookmark, like, follow) into 1 SQL query
     let hasPurchased = false;

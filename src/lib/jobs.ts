@@ -44,37 +44,82 @@ export function enqueueBackgroundJob(name: string, fn: JobFn): boolean {
   return true;
 }
 
-// ===== BATCHED ASYNC VIEW COUNTER FLUSHER =====
-// Accumulates content view increments in memory and flushes to PostgreSQL in a single bulk UPDATE every 5s.
+// ===== BATCHED ASYNC VIEW COUNTER & EVENT FLUSHER =====
+// Accumulates content view increments & timestamped view events in memory and flushes to PostgreSQL every 5s.
 // Eliminates blocking row-level write locks on GET /api/catalog/contents/:slugOrId.
+export interface QueuedViewEventMeta {
+  userId?: number | null;
+  visitorHash?: string | null;
+  referrerSource?: string | null;
+  referrerLabel?: string | null;
+}
+
+interface BufferedViewEvent {
+  contentId: number;
+  userId: number | null;
+  visitorHash: string | null;
+  referrerSource: string | null;
+  referrerLabel: string | null;
+  createdAt: Date;
+}
+
 const pendingViews = new Map<number, number>();
+let pendingViewEvents: BufferedViewEvent[] = [];
+const MAX_BUFFERED_VIEW_EVENTS = 2500;
 let flushingViews = false;
 
-export function queueContentView(contentId: number): void {
+export function queueContentView(contentId: number, meta?: QueuedViewEventMeta): void {
   if (!Number.isInteger(contentId) || contentId <= 0) return;
   pendingViews.set(contentId, (pendingViews.get(contentId) || 0) + 1);
+  if (pendingViewEvents.length < MAX_BUFFERED_VIEW_EVENTS) {
+    pendingViewEvents.push({
+      contentId,
+      userId: meta?.userId ?? null,
+      visitorHash: meta?.visitorHash ?? null,
+      referrerSource: meta?.referrerSource ?? null,
+      referrerLabel: meta?.referrerLabel ?? null,
+      createdAt: new Date(),
+    });
+  }
 }
 
 export async function flushPendingViews(): Promise<number> {
-  if (flushingViews || pendingViews.size === 0) return 0;
+  if (flushingViews || (pendingViews.size === 0 && pendingViewEvents.length === 0)) return 0;
   flushingViews = true;
 
   const batch = Array.from(pendingViews.entries());
   pendingViews.clear();
+  const eventBatch = pendingViewEvents;
+  pendingViewEvents = [];
 
   try {
-    const valueTuples = batch.map(([id, inc]) => sql`(${id}::int, ${inc}::int)`);
-    await db.execute(sql`
-      UPDATE contents AS c
-      SET views_count = c.views_count + v.inc
-      FROM (VALUES ${sql.join(valueTuples, sql`, `)}) AS v(id, inc)
-      WHERE c.id = v.id
-    `);
+    if (batch.length > 0) {
+      const valueTuples = batch.map(([id, inc]) => sql`(${id}::int, ${inc}::int)`);
+      await db.execute(sql`
+        UPDATE contents AS c
+        SET views_count = c.views_count + v.inc
+        FROM (VALUES ${sql.join(valueTuples, sql`, `)}) AS v(id, inc)
+        WHERE c.id = v.id
+      `);
+    }
+    if (eventBatch.length > 0) {
+      const eventTuples = eventBatch.map(
+        (ev) =>
+          sql`(${ev.contentId}::int, ${ev.userId}::int, ${ev.visitorHash}::text, ${ev.referrerSource}::text, ${ev.referrerLabel}::text, ${ev.createdAt})`
+      );
+      await db.execute(sql`
+        INSERT INTO content_view_events (content_id, user_id, visitor_hash, referrer_source, referrer_label, created_at)
+        VALUES ${sql.join(eventTuples, sql`, `)}
+      `);
+    }
     return batch.length;
   } catch (err) {
     // Re-queue failed increments so view counts are not silently lost
     for (const [id, inc] of batch) {
       pendingViews.set(id, (pendingViews.get(id) || 0) + inc);
+    }
+    if (pendingViewEvents.length + eventBatch.length <= MAX_BUFFERED_VIEW_EVENTS) {
+      pendingViewEvents.unshift(...eventBatch);
     }
     console.warn('Batched view flush retry scheduled:', (err as Error).message);
     return 0;
@@ -93,5 +138,6 @@ export function getJobQueueStats() {
     activeJobs,
     queuedJobs: queue.length,
     pendingViewTargets: pendingViews.size,
+    pendingViewEvents: pendingViewEvents.length,
   };
 }

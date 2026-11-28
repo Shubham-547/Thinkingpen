@@ -56,6 +56,17 @@ import {
   slugify,
 } from '../lib/security.ts';
 import { resolveCommissionRate } from '../lib/payments.ts';
+import {
+  AnalyticsValidationError,
+  getCreatorAnalyticsOverview,
+  getCreatorAnalyticsPublicationsList,
+  getCreatorEarningsAnalytics,
+  getCreatorLikesAnalytics,
+  getCreatorSalesAnalytics,
+  getCreatorViewsAnalytics,
+  getPublicationAnalyticsDetail,
+  resolveAnalyticsDateRange,
+} from '../lib/creator-analytics.ts';
 import { requireAuth, requireCreator, type AuthRequest } from '../middleware/auth.ts';
 
 const router = Router();
@@ -971,6 +982,116 @@ router.get('/overview', requireAuth, requireCreator, async (req: AuthRequest, re
   } catch (error) {
     console.error('Creator overview error:', error);
     return res.status(500).json({ error: 'Unable to load creator overview.' });
+  }
+});
+
+// ===== CREATOR ANALYTICS SYSTEM ROUTES (Strictly Read-Only, Creator-Isolated) =====
+
+function handleAnalyticsError(res: import('express').Response, error: unknown, fallbackMsg: string) {
+  if (error instanceof AnalyticsValidationError) {
+    return res.status(error.statusCode).json({ error: error.message });
+  }
+  console.error(fallbackMsg, error);
+  return res.status(500).json({ error: fallbackMsg });
+}
+
+// GET /api/creator/analytics (Content Performance Analytics Dashboard)
+router.get('/analytics', requireAuth, requireCreator, async (req: AuthRequest, res) => {
+  try {
+    const range = resolveAnalyticsDateRange(req.query.range, req.query.startDate, req.query.endDate);
+    const payload = await getCreatorAnalyticsOverview(req.user!.id, range);
+    return res.json(payload);
+  } catch (error) {
+    return handleAnalyticsError(res, error, 'Unable to load creator performance analytics.');
+  }
+});
+
+// GET /api/creator/analytics/views
+router.get('/analytics/views', requireAuth, requireCreator, async (req: AuthRequest, res) => {
+  try {
+    const range = resolveAnalyticsDateRange(req.query.range, req.query.startDate, req.query.endDate);
+    const payload = await getCreatorViewsAnalytics(req.user!.id, range);
+    return res.json(payload);
+  } catch (error) {
+    return handleAnalyticsError(res, error, 'Unable to load views analytics.');
+  }
+});
+
+// GET /api/creator/analytics/likes
+router.get('/analytics/likes', requireAuth, requireCreator, async (req: AuthRequest, res) => {
+  try {
+    const range = resolveAnalyticsDateRange(req.query.range, req.query.startDate, req.query.endDate);
+    const payload = await getCreatorLikesAnalytics(req.user!.id, range);
+    return res.json(payload);
+  } catch (error) {
+    return handleAnalyticsError(res, error, 'Unable to load likes analytics.');
+  }
+});
+
+// GET /api/creator/analytics/sales
+router.get('/analytics/sales', requireAuth, requireCreator, async (req: AuthRequest, res) => {
+  try {
+    const range = resolveAnalyticsDateRange(req.query.range, req.query.startDate, req.query.endDate);
+    const payload = await getCreatorSalesAnalytics(req.user!.id, range, {
+      orderStatus: String(req.query.orderStatus || 'all'),
+      page: parsePositiveInt(req.query.page) || 1,
+      limit: parsePositiveInt(req.query.limit) || 10,
+    });
+    return res.json(payload);
+  } catch (error) {
+    return handleAnalyticsError(res, error, 'Unable to load sales analytics.');
+  }
+});
+
+// GET /api/creator/analytics/earnings
+router.get('/analytics/earnings', requireAuth, requireCreator, async (req: AuthRequest, res) => {
+  try {
+    const range = resolveAnalyticsDateRange(req.query.range, req.query.startDate, req.query.endDate);
+    const payload = await getCreatorEarningsAnalytics(req.user!.id, range, {
+      page: parsePositiveInt(req.query.page) || 1,
+      limit: parsePositiveInt(req.query.limit) || 10,
+    });
+    return res.json(payload);
+  } catch (error) {
+    return handleAnalyticsError(res, error, 'Unable to load earnings analytics.');
+  }
+});
+
+// GET /api/creator/analytics/publications (View All paginated, searchable, filterable publications analytics)
+router.get('/analytics/publications', requireAuth, requireCreator, async (req: AuthRequest, res) => {
+  try {
+    const range = resolveAnalyticsDateRange(req.query.range, req.query.startDate, req.query.endDate);
+    const payload = await getCreatorAnalyticsPublicationsList(req.user!.id, range, {
+      metric: String(req.query.metric || 'overview'),
+      q: String(req.query.q || ''),
+      contentType: String(req.query.contentType || 'all'),
+      tier: String(req.query.tier || 'all'),
+      sort: req.query.sort ? String(req.query.sort) : undefined,
+      page: parsePositiveInt(req.query.page) || 1,
+      limit: parsePositiveInt(req.query.limit) || 12,
+    });
+    return res.json(payload);
+  } catch (error) {
+    return handleAnalyticsError(res, error, 'Unable to load publications analytics list.');
+  }
+});
+
+// GET /api/creator/analytics/publications/:id (Individual Publication Performance Details)
+router.get('/analytics/publications/:id', requireAuth, requireCreator, async (req: AuthRequest, res) => {
+  try {
+    const contentId = parsePositiveInt(req.params.id);
+    if (!contentId) {
+      return res.status(400).json({ error: 'Invalid publication ID.' });
+    }
+    const range = resolveAnalyticsDateRange(req.query.range, req.query.startDate, req.query.endDate);
+    const payload = await getPublicationAnalyticsDetail(
+      contentId,
+      { id: req.user!.id, role: req.user!.role },
+      range
+    );
+    return res.json(payload);
+  } catch (error) {
+    return handleAnalyticsError(res, error, 'Unable to load publication performance details.');
   }
 });
 

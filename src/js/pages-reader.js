@@ -43,7 +43,11 @@ export async function renderContentDetailPage(container, slug) {
   container.innerHTML = `<div class="max-w-6xl mx-auto px-4 py-14 text-sm text-slate-500">Loading publication...</div>`;
 
   try {
-    const data = await apiFetch(`/api/catalog/contents/${encodeURIComponent(slug)}`);
+    const prevHash = typeof window !== 'undefined' && window.__spPrevRouteHash ? String(window.__spPrevRouteHash).slice(0, 140) : '';
+    const detailUrl = prevHash
+      ? `/api/catalog/contents/${encodeURIComponent(slug)}?src=${encodeURIComponent(prevHash)}`
+      : `/api/catalog/contents/${encodeURIComponent(slug)}`;
+    const data = await apiFetch(detailUrl);
     const c = data.content;
     const creator = data.creator;
     const files = data.files || [];

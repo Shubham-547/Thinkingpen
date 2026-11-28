@@ -340,6 +340,25 @@ export async function ensureBaselineCatalog(): Promise<void> {
         CREATE INDEX IF NOT EXISTS idx_content_downloads_content_created
         ON content_downloads(content_id, created_at)
       `);
+      await db.execute(sql`
+        CREATE TABLE IF NOT EXISTS content_view_events (
+          id SERIAL PRIMARY KEY,
+          content_id INTEGER NOT NULL REFERENCES contents(id) ON DELETE CASCADE,
+          user_id INTEGER REFERENCES users(id) ON DELETE SET NULL,
+          visitor_hash TEXT,
+          referrer_source TEXT,
+          referrer_label TEXT,
+          created_at TIMESTAMP NOT NULL DEFAULT NOW()
+        )
+      `);
+      await db.execute(sql`
+        CREATE INDEX IF NOT EXISTS idx_content_view_events_content_created
+        ON content_view_events(content_id, created_at)
+      `);
+      await db.execute(sql`
+        CREATE INDEX IF NOT EXISTS idx_content_view_events_created
+        ON content_view_events(created_at)
+      `);
     } catch {
       // Managed Cloud SQL environments apply schema changes via Drizzle UpdateSchema (admin role)
     }

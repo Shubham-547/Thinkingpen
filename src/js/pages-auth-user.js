@@ -354,7 +354,9 @@ async function handleFirebaseSocialAuth({
   restrictionBanner?.classList.add('hidden');
 
   try {
-    const { idToken } = await providerFn();
+    const authRes = await providerFn();
+    if (authRes?.redirected) return;
+    const { idToken } = authRes;
     setSessionToken(null); // Use verified Firebase ID token
     const res = await apiFetch('/api/auth/firebase-sync', {
       method: 'POST',
@@ -2368,6 +2370,7 @@ export function renderAuthPage(container, mode = 'login', options = {}) {
         </p>
 
         <div id="auth-restriction-banner" class="hidden mb-5"></div>
+        <div id="auth-login-status" class="hidden mb-5" role="alert"></div>
 
         <!-- Social Sign-In Buttons (Firebase Auth) -->
         <div class="space-y-2.5 mb-5">
@@ -2494,6 +2497,16 @@ export function renderAuthPage(container, mode = 'login', options = {}) {
   }
 
   const restrictionBanner = document.getElementById('auth-restriction-banner');
+  const loginStatusBox = document.getElementById('auth-login-status');
+  const showLoginStatus = (tone, message) => {
+    if (!loginStatusBox) return;
+    const toneClasses =
+      tone === 'success'
+        ? 'bg-sky-50 dark:bg-sky-950/40 border-sky-200 dark:border-sky-800 text-sky-900 dark:text-sky-200'
+        : 'bg-red-50 dark:bg-red-950/40 border-red-200 dark:border-red-900/70 text-red-800 dark:text-red-200';
+    loginStatusBox.className = `mb-5 rounded-xl px-4 py-3 text-[13px] leading-relaxed border ${toneClasses}`;
+    loginStatusBox.textContent = message;
+  };
   if (!isSignup && restrictionBanner) {
     try {
       const savedNotice = sessionStorage.getItem('sp_last_block_notice');
@@ -2509,37 +2522,44 @@ export function renderAuthPage(container, mode = 'login', options = {}) {
   const loginTwitterBtn = document.getElementById('twitter-signin-btn');
   const loginSocialBtns = [loginGoogleBtn, loginFacebookBtn, loginTwitterBtn];
 
-  loginGoogleBtn?.addEventListener('click', () =>
+  loginGoogleBtn?.addEventListener('click', () => {
+    loginStatusBox?.classList.add('hidden');
     handleFirebaseSocialAuth({
       providerFn: signInWithGoogle,
       providerLabel: 'Google',
       buttonEl: loginGoogleBtn,
       allButtons: loginSocialBtns,
       restrictionBanner,
-    })
-  );
-  loginFacebookBtn?.addEventListener('click', () =>
+      showStatus: showLoginStatus,
+    });
+  });
+  loginFacebookBtn?.addEventListener('click', () => {
+    loginStatusBox?.classList.add('hidden');
     handleFirebaseSocialAuth({
       providerFn: signInWithFacebook,
       providerLabel: 'Facebook',
       buttonEl: loginFacebookBtn,
       allButtons: loginSocialBtns,
       restrictionBanner,
-    })
-  );
-  loginTwitterBtn?.addEventListener('click', () =>
+      showStatus: showLoginStatus,
+    });
+  });
+  loginTwitterBtn?.addEventListener('click', () => {
+    loginStatusBox?.classList.add('hidden');
     handleFirebaseSocialAuth({
       providerFn: signInWithTwitter,
       providerLabel: 'Twitter',
       buttonEl: loginTwitterBtn,
       allButtons: loginSocialBtns,
       restrictionBanner,
-    })
-  );
+      showStatus: showLoginStatus,
+    });
+  });
 
   document.getElementById('auth-email-form')?.addEventListener('submit', async (e) => {
     e.preventDefault();
     restrictionBanner?.classList.add('hidden');
+    loginStatusBox?.classList.add('hidden');
     const fd = new FormData(e.target);
     try {
       const endpoint = isSignup ? '/api/auth/register' : '/api/auth/login';

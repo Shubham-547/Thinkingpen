@@ -50,6 +50,13 @@ import {
   renderCreatorHistoryHtml,
   wireCreatorHistoryHandlers,
 } from './pages-creator-history.js';
+import {
+  analyticsUiState,
+  buildAnalyticsApiUrl,
+  renderAnalyticsSectionHtml,
+  resolveAnalyticsSubRoute,
+  wireAnalyticsEvents,
+} from './pages-creator-analytics.js';
 
 function renderOverviewSkeletonHtml() {
   return `
@@ -590,10 +597,22 @@ export async function renderCreatorDashboardPage(container, activeTab = 'overvie
     activeTab === 'pending' && routeParam && typeof routeParam === 'object'
       ? routeParam.subView || null
       : null;
+  const analyticsSubId =
+    activeTab === 'analytics' && routeParam && typeof routeParam === 'object'
+      ? routeParam.subId || null
+      : null;
+  const analyticsSubView =
+    activeTab === 'analytics' && routeParam && typeof routeParam === 'object'
+      ? routeParam.subView || null
+      : null;
+  const isAnalyticsOrEarnings = activeTab === 'analytics' || activeTab === 'earnings';
+  const analyticsRoute = isAnalyticsOrEarnings
+    ? resolveAnalyticsSubRoute(activeTab, analyticsSubId, analyticsSubView)
+    : null;
 
   container.innerHTML =
-    activeTab === 'overview'
-      ? `<div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-6 sm:py-8">${renderOverviewSkeletonHtml()}</div>`
+    activeTab === 'overview' || isAnalyticsOrEarnings
+      ? `<div class="${isAnalyticsOrEarnings ? 'min-h-[calc(100vh-3.5rem)] bg-[#F5F6FC] dark:bg-[#0B1120] ' : ''}"><div class="max-w-7xl mx-auto px-3 sm:px-6 lg:px-8 py-4 sm:py-6">${renderOverviewSkeletonHtml()}</div></div>`
       : `<div class="max-w-7xl mx-auto px-4 py-12 text-sm text-slate-500">Loading Creator Studio...</div>`;
 
   const overviewState = {
@@ -617,6 +636,7 @@ export async function renderCreatorDashboardPage(container, activeTab = 'overvie
   try {
     let data = null;
     let overviewData = null;
+    let analyticsPayload = null;
     let editPayload = null;
     let historyPayload = null;
     let publishedPayload = null;
@@ -638,6 +658,7 @@ export async function renderCreatorDashboardPage(container, activeTab = 'overvie
         (!store.categories?.length || !store.subjects?.length);
       [
         data,
+        analyticsPayload,
         editPayload,
         historyPayload,
         publishedPayload,
@@ -648,6 +669,9 @@ export async function renderCreatorDashboardPage(container, activeTab = 'overvie
         pendingDetailPayload,
       ] = await Promise.all([
         apiFetch('/api/creator/dashboard'),
+        isAnalyticsOrEarnings && analyticsRoute
+          ? apiFetch(buildAnalyticsApiUrl(analyticsRoute.mode, analyticsRoute.subId), { noCache: true })
+          : Promise.resolve(null),
         activeTab === 'upload' && editId ? apiFetch(`/api/creator/contents/${editId}`, { noCache: true }) : Promise.resolve(null),
         activeTab === 'history' ? apiFetch(buildHistoryUrl(), { noCache: true }) : Promise.resolve(null),
         activeTab === 'published' && !publishedSubId
@@ -670,6 +694,11 @@ export async function renderCreatorDashboardPage(container, activeTab = 'overvie
           : Promise.resolve(null),
         needMeta ? loadGlobalCatalogMeta() : Promise.resolve(null),
       ]);
+      if (analyticsPayload?.filter) {
+        analyticsUiState.range = analyticsPayload.filter.range || analyticsUiState.range;
+        analyticsUiState.startDate = analyticsPayload.filter.startDate || analyticsUiState.startDate;
+        analyticsUiState.endDate = analyticsPayload.filter.endDate || analyticsUiState.endDate;
+      }
     }
 
     const deletedCount = Number(
@@ -748,93 +777,8 @@ export async function renderCreatorDashboardPage(container, activeTab = 'overvie
       }
     } else if (activeTab === 'history') {
       bodyHtml = renderCreatorHistoryHtml(historyPayload || { deletedContents: [], history: [], retentionDays: 15 });
-    } else if (activeTab === 'analytics') {
-      const maxViews = Math.max(1, ...data.contents.map((c) => c.viewsCount || 0));
-      bodyHtml = `
-        <div class="space-y-6">
-          <h1 class="font-display text-2xl font-semibold text-slate-900 dark:text-white">Content Performance Analytics</h1>
-          <div class="grid grid-cols-1 sm:grid-cols-3 gap-4">
-            <div class="p-5 rounded-xl bg-white dark:bg-[#111A2E] border border-slate-200 dark:border-slate-800">
-              <div class="text-xs text-slate-500">Total Views</div>
-              <div class="font-mono text-2xl font-semibold mt-1 tabular-nums">${data.analytics.totalViews}</div>
-            </div>
-            <div class="p-5 rounded-xl bg-white dark:bg-[#111A2E] border border-slate-200 dark:border-slate-800">
-              <div class="text-xs text-slate-500">Total Likes</div>
-              <div class="font-mono text-2xl font-semibold mt-1 tabular-nums">${data.analytics.totalLikes}</div>
-            </div>
-            <div class="p-5 rounded-xl bg-white dark:bg-[#111A2E] border border-slate-200 dark:border-slate-800">
-              <div class="text-xs text-slate-500">Total Paid Conversions</div>
-              <div class="font-mono text-2xl font-semibold mt-1 tabular-nums">${data.analytics.totalPurchases}</div>
-            </div>
-          </div>
-
-          <div class="bg-white dark:bg-[#111A2E] border border-slate-200 dark:border-slate-800 rounded-xl p-6">
-            <h2 class="text-sm font-semibold text-slate-900 dark:text-white mb-4">Views &amp; Conversion Breakdown by Publication</h2>
-            ${
-              data.contents.length
-                ? `<div class="space-y-4">
-                    ${data.contents
-                      .map((c) => {
-                        const pct = Math.max(4, Math.round((c.viewsCount / maxViews) * 100));
-                        return `
-                          <div>
-                            <div class="flex flex-col sm:flex-row sm:items-center justify-between gap-1 text-xs mb-1.5">
-                              <span class="font-medium text-slate-900 dark:text-slate-100 truncate sm:pr-4">${esc(c.title)}</span>
-                              <span class="font-mono text-slate-500 tabular-nums shrink-0">${c.viewsCount} views · ${c.likesCount} likes · ${c.purchasesCount} sales · ★ ${Number(c.avgRating).toFixed(1)}</span>
-                            </div>
-                            <div class="h-2 w-full rounded-full bg-slate-100 dark:bg-slate-800 overflow-hidden">
-                              <div class="h-full bg-[#0F2547] dark:bg-sky-400 rounded-full" style="width:${pct}%"></div>
-                            </div>
-                          </div>
-                        `;
-                      })
-                      .join('')}
-                  </div>`
-                : `<p class="text-sm text-slate-500">Publish content to view readership analytics.</p>`
-            }
-          </div>
-        </div>
-      `;
-    } else if (activeTab === 'earnings') {
-      bodyHtml = `
-        <div class="space-y-6">
-          <h1 class="font-display text-2xl font-semibold text-slate-900 dark:text-white">Earnings &amp; Commission Breakdown</h1>
-          <div class="bg-white dark:bg-[#111A2E] border border-slate-200 dark:border-slate-800 rounded-xl overflow-x-auto touch-scroll-x">
-            <table class="w-full min-w-[640px] text-left text-sm">
-              <thead class="text-xs text-slate-500 border-b border-slate-200 dark:border-slate-800">
-                <tr>
-                  <th class="px-4 py-3 font-semibold">Date</th>
-                  <th class="px-4 py-3 font-semibold">Publication</th>
-                  <th class="px-4 py-3 font-semibold text-right">Sale Price</th>
-                  <th class="px-4 py-3 font-semibold text-right">Commission</th>
-                  <th class="px-4 py-3 font-semibold text-right">Your Earnings</th>
-                  <th class="px-4 py-3 font-semibold">Status</th>
-                </tr>
-              </thead>
-              <tbody class="divide-y divide-slate-100 dark:divide-slate-800">
-                ${
-                  data.commissions.length
-                    ? data.commissions
-                        .map(
-                          (cm) => `
-                      <tr>
-                        <td class="px-4 py-3 text-xs text-slate-500 whitespace-nowrap">${formatDate(cm.createdAt)}</td>
-                        <td class="px-4 py-3 font-medium">${esc(cm.contentTitle)}</td>
-                        <td class="px-4 py-3 text-right font-mono tabular-nums">${formatInr(cm.grossAmountInr)}</td>
-                        <td class="px-4 py-3 text-right font-mono text-xs text-slate-500 tabular-nums">${formatInr(cm.platformCommissionInr)} (${Number(cm.commissionRate)}%)</td>
-                        <td class="px-4 py-3 text-right font-mono font-semibold text-emerald-700 dark:text-emerald-400 tabular-nums">${formatInr(cm.creatorEarningsInr)}</td>
-                        <td class="px-4 py-3">${renderStatusLabel(cm.status)}</td>
-                      </tr>
-                    `
-                        )
-                        .join('')
-                    : `<tr><td colspan="6" class="px-4 py-8 text-center text-slate-500">No paid sales recorded yet.</td></tr>`
-                }
-              </tbody>
-            </table>
-          </div>
-        </div>
-      `;
+    } else if (activeTab === 'analytics' || activeTab === 'earnings') {
+      bodyHtml = renderAnalyticsSectionHtml(activeTab, analyticsSubId, analyticsSubView, analyticsPayload);
     } else if (activeTab === 'wallet') {
       const pd = data.profile?.payoutDetails || {};
       const pm = data.profile?.payoutMethod || 'upi';
@@ -1027,9 +971,10 @@ export async function renderCreatorDashboardPage(container, activeTab = 'overvie
     }
 
     container.innerHTML = `
-      <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-6 sm:py-8">
+      <div class="${isAnalyticsOrEarnings ? 'min-h-[calc(100vh-3.5rem)] bg-[#F5F6FC] dark:bg-[#0B1120]' : ''}">
+      <div class="max-w-7xl mx-auto ${isAnalyticsOrEarnings ? 'px-3 sm:px-6 lg:px-8 py-3.5 sm:py-6 pb-20 md:pb-8' : 'px-4 sm:px-6 lg:px-8 py-6 sm:py-8'}">
         <div class="flex flex-col lg:flex-row gap-5 lg:gap-8">
-          <aside class="lg:w-60 shrink-0">
+          <aside class="${isAnalyticsOrEarnings ? 'hidden lg:block ' : ''}lg:w-60 shrink-0">
             <div class="bg-white dark:bg-[#111A2E] border border-slate-200 dark:border-slate-800 rounded-xl p-3 sm:p-4">
               <div class="flex items-center justify-between gap-3 px-2 sm:px-3 pb-2.5 mb-2.5 border-b border-slate-100 dark:border-slate-800">
                 <div class="min-w-0">
@@ -1062,6 +1007,7 @@ export async function renderCreatorDashboardPage(container, activeTab = 'overvie
           </aside>
           <div id="creator-tab-body" class="flex-1 min-w-0">${bodyHtml}</div>
         </div>
+      </div>
       </div>
     `;
 
@@ -1191,6 +1137,17 @@ export async function renderCreatorDashboardPage(container, activeTab = 'overvie
     // Wire Upload / Editor studio if active
     if (activeTab === 'upload') {
       wireContentEditor(container, editPayload, commRate);
+    }
+
+    // Wire Creator Analytics & Earnings System
+    if (isAnalyticsOrEarnings) {
+      const tabBody = document.getElementById('creator-tab-body') || container;
+      wireAnalyticsEvents(tabBody, {
+        activeTab,
+        subId: analyticsSubId,
+        subView: analyticsSubView,
+        initialPayload: analyticsPayload,
+      });
     }
 
     // Wire Payout Details & Withdrawal forms

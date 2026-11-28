@@ -1005,6 +1005,11 @@ export function renderPublishedAnalyticsHtml(payload) {
               : ''
           }
         </div>
+        <div class="pt-2 border-t border-slate-100 dark:border-slate-800 flex justify-end">
+          <a href="#/creator/analytics/publication/${c.id}" class="inline-flex items-center gap-1.5 text-xs font-semibold text-[#5a1fd8] dark:text-sky-400 hover:underline">
+            <span>Open Full Analytics Charts &amp; Referrers →</span>
+          </a>
+        </div>
       </section>
     </div>
   `;

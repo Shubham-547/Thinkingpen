@@ -337,7 +337,9 @@ async function resolveUserFromToken(token: string, expectedFileId?: number): Pro
       name: decoded.name || `${providerRaw || 'ScholarPress'} User`,
       picture: decoded.picture,
     });
-  } catch {
+  } catch (err) {
+    const code = (err as { code?: string; message?: string })?.code || (err as { message?: string })?.message || 'unknown';
+    console.warn('Firebase ID token verification failed:', code);
     return null;
   }
 }

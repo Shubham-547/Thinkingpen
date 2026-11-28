@@ -822,6 +822,26 @@ export const contentDownloads = pgTable(
   ]
 );
 
+// 37. Content View Events (Privacy-safe timestamped view & referrer source telemetry for Creator Analytics)
+export const contentViewEvents = pgTable(
+  'content_view_events',
+  {
+    id: serial('id').primaryKey(),
+    contentId: integer('content_id')
+      .references(() => contents.id, { onDelete: 'cascade' })
+      .notNull(),
+    userId: integer('user_id').references(() => users.id, { onDelete: 'set null' }),
+    visitorHash: text('visitor_hash'),
+    referrerSource: text('referrer_source'), // 'direct' | 'search' | 'explore' | 'profile' | 'social' | 'external'
+    referrerLabel: text('referrer_label'),
+    createdAt: timestamp('created_at').defaultNow().notNull(),
+  },
+  (table) => [
+    index('idx_content_view_events_content_created').on(table.contentId, table.createdAt),
+    index('idx_content_view_events_created').on(table.createdAt),
+  ]
+);
+
 // Relations
 export const usersRelations = relations(users, ({ one, many }) => ({
   profile: one(userProfiles, { fields: [users.id], references: [userProfiles.userId] }),

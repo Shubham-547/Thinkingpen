@@ -13,6 +13,9 @@ import {
   subscribeStore,
 } from './js/api.js';
 import {
+  consumeFirebaseRedirectResult,
+  formatFirebaseAuthError,
+  hasPendingFirebaseRedirect,
   hasStoredFirebaseHint,
   signOutFirebase,
   subscribeFirebaseAuth,
@@ -580,6 +583,7 @@ async function routeCurrentView() {
   // Save previous route scroll position so navigating Back restores exact reading/feed position
   const nextHashKey = window.location.hash || '#/';
   if (lastHashKey && lastHashKey !== nextHashKey) {
+    window.__spPrevRouteHash = lastHashKey;
     routeScrollPositions.set(lastHashKey, window.scrollY);
   }
   lastHashKey = nextHashKey;
@@ -862,11 +866,45 @@ async function bootstrap() {
     }
   }
 
-  // Lazy-load Firebase Auth SDK ONLY if user has a prior Google Sign-In session or is opening a protected route
+  // Lazy-load Firebase Auth SDK ONLY if user has a prior Social Sign-In session, pending redirect, or is opening a protected route
   const shouldHydrateFirebase =
-    !store.sessionToken && (hasStoredFirebaseHint() || needsAuthBeforeRender);
+    !store.sessionToken &&
+    (hasStoredFirebaseHint() || hasPendingFirebaseRedirect() || needsAuthBeforeRender);
 
   if (shouldHydrateFirebase) {
+    if (hasPendingFirebaseRedirect()) {
+      const redirectRes = await consumeFirebaseRedirectResult();
+      if (redirectRes?.error) {
+        showToast(formatFirebaseAuthError(redirectRes.error, redirectRes.providerLabel), 'error');
+      } else if (redirectRes?.idToken) {
+        try {
+          const syncRes = await apiFetch('/api/auth/firebase-sync', {
+            method: 'POST',
+            headers: { Authorization: `Bearer ${redirectRes.idToken}` },
+          });
+          store.user = syncRes.user;
+          notifyStore();
+          showToast(`Signed in as ${syncRes.user.name}.`, 'success');
+          const needsProfileSetup = !syncRes.user.username || !syncRes.user.profile?.profileCompleted;
+          if (needsProfileSetup && !syncRes.user.isSuperAdmin) {
+            window.location.hash = '#/complete-profile';
+          } else {
+            window.location.hash = syncRes.user.role === 'admin' ? '#/admin' : '#/dashboard';
+          }
+        } catch (err) {
+          if (err?.data?.accountBlocked || err?.data?.accountDeleted) {
+            try {
+              sessionStorage.setItem('sp_last_block_notice', JSON.stringify(err.data));
+            } catch {}
+            await signOutFirebase();
+            store.user = null;
+            notifyStore();
+            window.location.hash = '#/login';
+          }
+        }
+      }
+    }
+
     subscribeFirebaseAuth(async (firebaseUser) => {
       const prevUserId = store.user?.id || null;
       if (firebaseUser && !store.sessionToken) {
